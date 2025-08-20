@@ -1,0 +1,36 @@
+/* Main CSS file for HyperTrader */
+
+:root {
+  --primary-color: #3b82f6;
+  --secondary-color: #1e40af;
+  --success-color: #10b981;
+  --danger-color: #ef4444;
+  --warning-color: #f59e0b;
+  --background-color: #f8fafc;
+  --text-color: #1e293b;
+  --border-color: #e2e8f0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  color: var(--text-color);
+  background-color: var(--background-color);
+}
+
+.container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 0 1rem;
+}
+
+/* Trading phase indicators */
+.phase-advance { color: var(--success-color); }
+.phase-retracement { color: var(--warning-color); }
+.phase-decline { color: var(--danger-color); }
+.phase-recovery { color: var(--primary-color); }
+
+/* Allocation displays */
+.allocation-long { border-left: 4px solid var(--success-color); }
+.allocation-hedge { border-left: 4px solid var(--primary-color); }
+.allocation-cash { border-left: 4px solid var(--warning-color); }
+.allocation-short { border-left: 4px solid var(--danger-color); }
