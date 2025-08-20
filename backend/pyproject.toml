@@ -14,6 +14,7 @@ dependencies = [
     "pydantic-settings>=2.10.1",
     "python-dotenv>=1.1.1",
     "python-multipart>=0.0.20",
+    "sqlalchemy[asyncio]>=2.0.0",
     "uvicorn[standard]>=0.35.0",
     "websockets>=15.0.1",
 ]
@@ -21,6 +22,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "hypothesis>=6.138.0",
+    "loguru>=0.7.3",
     "pact>=1.12.0",
     "pytest>=8.4.1",
     "pytest-asyncio>=1.1.0",
