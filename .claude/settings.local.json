@@ -1,7 +1,18 @@
 {
   "permissions": {
     "allow": [
-      "Bash(bun test:*)"
+      "Bash(bun test:*)",
+      "Bash(mkdir:*)",
+      "Bash(touch:*)",
+      "Bash(mv:*)",
+      "Bash(python:*)",
+      "Bash(uv run:*)",
+      "Bash(curl:*)",
+      "Bash(bun install:*)",
+      "Bash(timeout:*)",
+      "Bash(bun add:*)",
+      "Bash(cp:*)",
+      "Bash(bun run:*)"
     ],
     "deny": [],
     "ask": []
