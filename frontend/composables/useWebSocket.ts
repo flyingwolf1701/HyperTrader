@@ -1,167 +1,56 @@
-import type { WebSocketMessage, WebSocketSystemStateUpdate, WebSocketPriceUpdate } from '~/types'
+// frontend/composables/useWebSocket.ts
 
-export const useWebSocket = () => {
-  const { updateSystemState, updateCurrentPrice, setConnectionStatus } = useSystemState()
-  
-  // Reactive state
-  const ws = ref<WebSocket | null>(null)
-  const connectionState = ref<'disconnected' | 'connecting' | 'connected' | 'error'>('disconnected')
-  const error = ref<string | null>(null)
-  const reconnectAttempts = ref(0)
-  const maxReconnectAttempts = 5
-  const reconnectDelay = ref(1000) // Start with 1 second
+import { ref } from 'vue'
+import { useSystemState } from './useSystemState'
+import type { SystemState } from '~/types'
 
-  // Connection management
-  const connect = async (symbol: string) => {
-    if (ws.value?.readyState === WebSocket.OPEN) {
-      console.log('WebSocket already connected')
-      return
+const ws = ref<WebSocket | null>(null)
+const isConnected = ref(false)
+
+export function useWebSocket() {
+  const { setSystemState } = useSystemState()
+
+  const connect = () => {
+    if (process.server) return; // Don't run on server
+    if (ws.value) return; // Already connected or connecting
+
+    const wsUrl = `ws://${window.location.host}/ws/123`
+    console.log(`[useWebSocket] Attempting to connect to: ${wsUrl}`)
+    
+    const newWs = new WebSocket(wsUrl)
+
+    newWs.onopen = () => {
+      isConnected.value = true
+      console.log('[useWebSocket] Connection established.')
     }
 
-    try {
-      connectionState.value = 'connecting'
-      error.value = null
-      
-      // Connect to WebSocket endpoint
-      const wsUrl = `ws://localhost:3000/ws/${symbol}`
-      ws.value = new WebSocket(wsUrl)
-
-      ws.value.onopen = () => {
-        console.log(`WebSocket connected to ${symbol}`)
-        connectionState.value = 'connected'
-        setConnectionStatus(true)
-        reconnectAttempts.value = 0
-        reconnectDelay.value = 1000
-        error.value = null
+    newWs.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data) as SystemState
+        setSystemState(data)
+      } catch (error) {
+        console.error('[useWebSocket] Failed to parse message:', error)
       }
-
-      ws.value.onmessage = (event) => {
-        try {
-          const message: WebSocketMessage = JSON.parse(event.data)
-          handleMessage(message)
-        } catch (e) {
-          console.error('Failed to parse WebSocket message:', e)
-        }
-      }
-
-      ws.value.onclose = (event) => {
-        console.log('WebSocket connection closed:', event.code, event.reason)
-        connectionState.value = 'disconnected'
-        setConnectionStatus(false)
-        
-        // Attempt to reconnect if not intentionally closed
-        if (event.code !== 1000 && reconnectAttempts.value < maxReconnectAttempts) {
-          scheduleReconnect(symbol)
-        }
-      }
-
-      ws.value.onerror = (event) => {
-        console.error('WebSocket error:', event)
-        connectionState.value = 'error'
-        error.value = 'WebSocket connection error'
-        setConnectionStatus(false)
-      }
-
-    } catch (e) {
-      console.error('Failed to create WebSocket connection:', e)
-      connectionState.value = 'error'
-      error.value = 'Failed to establish connection'
-      setConnectionStatus(false)
     }
+
+    newWs.onerror = (error) => {
+      console.error('[useWebSocket] WebSocket Error:', error)
+    }
+
+    newWs.onclose = (event) => {
+      ws.value = null
+      isConnected.value = false
+      console.log(`[useWebSocket] Connection closed. Code: ${event.code}`)
+    }
+
+    ws.value = newWs
   }
 
   const disconnect = () => {
     if (ws.value) {
-      ws.value.close(1000, 'User requested disconnect')
-      ws.value = null
-    }
-    connectionState.value = 'disconnected'
-    setConnectionStatus(false)
-    reconnectAttempts.value = 0
-  }
-
-  const scheduleReconnect = (symbol: string) => {
-    reconnectAttempts.value++
-    
-    if (reconnectAttempts.value > maxReconnectAttempts) {
-      console.log('Max reconnect attempts reached')
-      error.value = 'Connection lost and max reconnect attempts exceeded'
-      return
-    }
-
-    console.log(`Scheduling reconnect attempt ${reconnectAttempts.value} in ${reconnectDelay.value}ms`)
-    
-    setTimeout(() => {
-      connect(symbol)
-    }, reconnectDelay.value)
-    
-    // Exponential backoff with max delay of 30 seconds
-    reconnectDelay.value = Math.min(reconnectDelay.value * 2, 30000)
-  }
-
-  const handleMessage = (message: WebSocketMessage) => {
-    switch (message.type) {
-      case 'system_state_update':
-        handleSystemStateUpdate(message as WebSocketSystemStateUpdate)
-        break
-        
-      case 'price_update':
-        handlePriceUpdate(message as WebSocketPriceUpdate)
-        break
-        
-      case 'error':
-        console.error('WebSocket error message:', message.data)
-        error.value = message.data.message || 'Unknown error'
-        break
-        
-      case 'connection_status':
-        console.log('Connection status:', message.data)
-        break
-        
-      default:
-        console.log('Unknown message type:', message.type)
+      ws.value.close()
     }
   }
 
-  const handleSystemStateUpdate = (message: WebSocketSystemStateUpdate) => {
-    const { system_state, current_price } = message.data
-    
-    updateSystemState(system_state)
-    if (current_price !== null && current_price !== undefined) {
-      updateCurrentPrice(current_price)
-    }
-  }
-
-  const handlePriceUpdate = (message: WebSocketPriceUpdate) => {
-    const { price } = message.data
-    updateCurrentPrice(price)
-  }
-
-  // Cleanup on unmount
-  const cleanup = () => {
-    disconnect()
-  }
-
-  // Auto cleanup when component unmounts
-  onUnmounted(() => {
-    cleanup()
-  })
-
-  return {
-    // State
-    connectionState: readonly(connectionState),
-    error: readonly(error),
-    reconnectAttempts: readonly(reconnectAttempts),
-    
-    // Methods
-    connect,
-    disconnect,
-    cleanup,
-    
-    // Computed
-    isConnected: computed(() => connectionState.value === 'connected'),
-    isConnecting: computed(() => connectionState.value === 'connecting'),
-    isDisconnected: computed(() => connectionState.value === 'disconnected'),
-    hasError: computed(() => connectionState.value === 'error' || error.value !== null)
-  }
+  return { isConnected, connect, disconnect }
 }

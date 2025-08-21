@@ -1,148 +1,92 @@
-from pydantic import BaseModel, Field, validator
-from decimal import Decimal
-from typing import Optional, Literal
-from datetime import datetime
+# backend/app/models/state.py
 
+import logging
+from decimal import Decimal
+from typing import Literal, Optional, List
+
+from pydantic import BaseModel, Field
+
+logger = logging.getLogger(__name__)
 
 PhaseType = Literal["advance", "retracement", "decline", "recovery"]
 
 
 class SystemState(BaseModel):
     """
-    Core SystemState model that holds all information about a single trading plan.
-    All financial fields use high-precision Decimal type for accurate calculations.
+    Represents the complete state of the trading system for a single symbol.
     """
+    symbol: str = "ETH"
+    is_active: bool = False
+    current_price: Decimal = Field(default=Decimal("0.0"))
+
+    # Core Strategy Parameters
+    entry_price: Decimal = Field(default=Decimal("3500.0"))
+    unit_value: Decimal = Field(default=Decimal("10.0"))
+    current_unit: int = Field(default=0)
+    leverage: int = Field(default=10)
+
+    # Phase and Peak/Valley Tracking
+    current_phase: PhaseType = Field(default="advance")
+    peak_unit: Optional[int] = None
+    peak_price: Optional[Decimal] = None
+    valley_unit: Optional[int] = None
+    valley_price: Optional[Decimal] = None
+
+    # Allocation States (in USD)
+    long_invested: Decimal = Field(default=Decimal("500.0"))
+    long_cash: Decimal = Field(default=Decimal("0.0"))
+    hedge_long: Decimal = Field(default=Decimal("500.0"))
+    hedge_short: Decimal = Field(default=Decimal("0.0"))
+
+    # PNL and Reset Tracking
+    initial_portfolio_value: Decimal = Field(default=Decimal("1000.0"))
+    realized_pnl: Decimal = Field(default=Decimal("0.0"))
+    reset_threshold_pnl_percentage: Decimal = Field(default=Decimal("100.0"))
+    choppy_markets_count: int = Field(default=0)
     
-    # Basic Trading Information
-    symbol: str = Field(..., description="Trading pair, e.g., 'BTC/USDT'")
-    current_phase: PhaseType = Field(default="advance", description="Current trading phase")
-    
-    # Price and Unit Information
-    entry_price: Decimal = Field(..., description="Initial average fill price")
-    unit_value: Decimal = Field(..., description="Dollar value of one unit of price movement")
-    peak_price: Optional[Decimal] = Field(None, description="Highest price reached since last reset")
-    valley_price: Optional[Decimal] = Field(None, description="Lowest price reached since last reset")
-    
-    # Unit Tracking
-    current_unit: int = Field(default=0, description="Current unit relative to entry price")
-    peak_unit: Optional[int] = Field(None, description="Highest unit reached")
-    valley_unit: Optional[int] = Field(None, description="Lowest unit reached")
-    
-    # Allocation Amounts (all in dollars)
-    long_invested: Decimal = Field(default=Decimal("0"), description="Dollar amount in long positions")
-    long_cash: Decimal = Field(default=Decimal("0"), description="Dollar amount held as cash")
-    hedge_long: Decimal = Field(default=Decimal("0"), description="Dollar amount in hedge long positions")
-    hedge_short: Decimal = Field(default=Decimal("0"), description="Dollar amount in hedge short positions")
-    
-    # System Information
-    initial_margin: Decimal = Field(..., description="Total margin used to enter the trade")
-    leverage: int = Field(default=1, description="Leverage used for the trade")
-    created_at: datetime = Field(default_factory=datetime.utcnow, description="When the trade was started")
-    updated_at: datetime = Field(default_factory=datetime.utcnow, description="Last update timestamp")
-    
-    # Performance Tracking
-    realized_pnl: Decimal = Field(default=Decimal("0"), description="Realized profit/loss")
-    unrealized_pnl: Decimal = Field(default=Decimal("0"), description="Unrealized profit/loss")
-    
-    class Config:
-        """Pydantic configuration"""
-        json_encoders = {
-            Decimal: str  # Serialize Decimal as string for JSON compatibility
-        }
-        validate_assignment = True  # Validate on assignment
-        use_enum_values = True
-    
-    @validator('entry_price', 'unit_value', 'initial_margin')
-    def validate_positive_required_fields(cls, v):
-        """Ensure critical financial fields are positive"""
-        if v <= 0:
-            raise ValueError("Must be positive")
-        return v
-    
-    @validator('peak_price', 'valley_price', pre=True)
-    def validate_optional_prices(cls, v):
-        """Validate optional price fields"""
-        if v is not None and v <= 0:
-            raise ValueError("Price must be positive when provided")
-        return v
-    
-    @validator('long_invested', 'long_cash', 'hedge_long', 'hedge_short', 'realized_pnl', 'unrealized_pnl')
-    def validate_financial_fields(cls, v):
-        """Ensure financial fields are valid decimals (can be negative for PnL)"""
-        return Decimal(str(v)) if v is not None else Decimal("0")
-    
-    @validator('leverage')
-    def validate_leverage(cls, v):
-        """Ensure leverage is positive integer"""
-        if v <= 0:
-            raise ValueError("Leverage must be positive")
-        return v
-    
-    @validator('updated_at', always=True)
-    def set_updated_at(cls, v):
-        """Always update the timestamp when model is modified"""
-        return datetime.utcnow()
-    
+    # Constants
+    MIN_TRADE_VALUE: Decimal = Field(default=Decimal("1.0"))
+    UNIT_PERCENTAGE: Decimal = Field(default=Decimal("0.05"))
+
     def get_total_portfolio_value(self) -> Decimal:
-        """Calculate total portfolio value"""
         return self.long_invested + self.long_cash + self.hedge_long + self.hedge_short
-    
-    def get_long_allocation_percent(self) -> Decimal:
-        """Get long allocation percentage (invested / total long allocation)"""
-        total_long = self.long_invested + self.long_cash
-        if total_long == 0:
-            return Decimal("0")
-        return (self.long_invested / total_long) * 100
-    
-    def get_hedge_allocation_percent(self) -> Decimal:
-        """Get hedge allocation percentage (long / total hedge allocation)"""
-        total_hedge = self.hedge_long + abs(self.hedge_short)
-        if total_hedge == 0:
-            return Decimal("0")
-        return (self.hedge_long / total_hedge) * 100
-    
+
     def is_reset_condition_met(self) -> bool:
-        """Check if system reset conditions are met"""
-        return self.hedge_short == 0 and self.long_cash == 0
-    
+        if self.initial_portfolio_value == 0:
+            return False
+        profit_target = self.initial_portfolio_value * (self.reset_threshold_pnl_percentage / 100)
+        return self.realized_pnl >= profit_target
+
     def is_choppy_trading_active(self) -> bool:
-        """Check if choppy trading detection is active"""
-        total_long = self.long_invested + self.long_cash
-        total_hedge = self.hedge_long + abs(self.hedge_short)
+        return self.choppy_markets_count > 0
         
-        # Long allocation partially allocated
-        long_partial = 0 < self.long_invested < total_long
-        
-        # Hedge allocation partially allocated (has both long and short)
-        hedge_partial = self.hedge_long > 0 and self.hedge_short > 0
-        
-        return long_partial or hedge_partial
+    def update_from_model(self, data: 'SystemState') -> None:
+        """Helper to update the current model from another model instance."""
+        if data is None:
+            return
+        for key, value in data.model_dump().items():
+            setattr(self, key, value)
+
+# Create a single, global instance of the SystemState.
+system_state = SystemState()
 
 
-class TradingPlanCreate(BaseModel):
-    """Schema for creating a new trading plan"""
-    symbol: str
-    initial_margin: Decimal
-    leverage: int = 1
-    
-    @validator('initial_margin')
-    def validate_margin(cls, v):
-        if v <= 0:
-            raise ValueError("Initial margin must be positive")
-        return v
+# --- ADD THESE MISSING CLASSES ---
 
+class TradingPlanBase(BaseModel):
+    """Base model for a trading plan, used for creation and updates."""
+    symbol: str = Field(..., description="The trading symbol, e.g., 'ETH'")
+    entry_price: Decimal = Field(..., description="The initial entry price for the strategy")
+    initial_portfolio_value: Decimal = Field(..., description="The starting capital in USD")
+    leverage: int = Field(default=10, gt=0, description="The leverage to be used")
+
+class TradingPlanCreate(TradingPlanBase):
+    """Model for creating a new trading plan via the API."""
+    pass
 
 class TradingPlanUpdate(BaseModel):
-    """Schema for updating a trading plan"""
-    current_phase: Optional[PhaseType] = None
-    peak_price: Optional[Decimal] = None
-    valley_price: Optional[Decimal] = None
-    current_unit: Optional[int] = None
-    peak_unit: Optional[int] = None
-    valley_unit: Optional[int] = None
-    long_invested: Optional[Decimal] = None
-    long_cash: Optional[Decimal] = None
-    hedge_long: Optional[Decimal] = None
-    hedge_short: Optional[Decimal] = None
-    realized_pnl: Optional[Decimal] = None
-    unrealized_pnl: Optional[Decimal] = None
+    """Model for updating an existing trading plan via the API."""
+    is_active: Optional[bool] = None
+    leverage: Optional[int] = Field(None, gt=0)
+
+# ------------------------------------

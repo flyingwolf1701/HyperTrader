@@ -1,3 +1,4 @@
-from . import endpoints, websockets
+# backend/app/api/__init__.py
 
-__all__ = ["endpoints", "websockets"]
+# This file makes the 'api' folder a Python package and imports the routers.
+from . import endpoints, websockets

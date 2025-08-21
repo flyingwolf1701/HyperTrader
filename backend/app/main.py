@@ -1,3 +1,5 @@
+# backend/app/main.py
+
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,30 +10,47 @@ from app.core.config import settings
 from app.db.session import init_db, close_db
 from app.api import endpoints, websockets
 from app.services.exchange import exchange_manager
+from app.services.market_data import market_data_manager
 
-logging.basicConfig(level=getattr(logging, settings.LOG_LEVEL))
+logging.basicConfig(level=getattr(logging, settings.LOG_LEVEL.upper()))
 logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Starting HyperTrader backend...")
+    """
+    Handles application startup and shutdown events, managing all necessary services.
+    """
+    logger.info("--- Starting HyperTrader Backend ---")
     
-    # Initialize database connection
+    # Initialize the database connection pool.
     await init_db()
-    logger.info("Database connection initialized")
+    logger.info("Database connection initialized.")
     
-    # Initialize exchange manager
+    # Initialize the exchange manager to handle trading operations.
     await exchange_manager.initialize()
-    logger.info("Exchange manager initialized")
+    logger.info("Exchange manager initialized.")
+    
+    # Start the market data manager to listen for live price feeds.
+    market_data_manager.start()
+    logger.info("Market data manager started.")
     
     yield
     
-    # Cleanup
-    logger.info("Shutting down HyperTrader backend...")
+    # --- Cleanup on Shutdown ---
+    logger.info("--- Shutting Down HyperTrader Backend ---")
+    
+    # Stop all background services gracefully.
+    await market_data_manager.stop()
+    logger.info("Market data manager stopped.")
+    
     await exchange_manager.close()
+    logger.info("Exchange manager connection closed.")
+
     await close_db()
-    logger.info("Shutdown complete")
+    logger.info("Database connection closed.")
+    
+    logger.info("--- Shutdown complete. ---")
 
 
 app = FastAPI(
@@ -41,7 +60,7 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# CORS middleware
+# CORS middleware to allow the frontend to connect.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.ALLOWED_ORIGINS,
@@ -50,9 +69,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include routers
+# Include both REST API and WebSocket routers.
 app.include_router(endpoints.router, prefix="/api/v1")
-app.include_router(websockets.router, prefix="/ws")
+app.include_router(websockets.router)
 
 
 @app.get("/")
