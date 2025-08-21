@@ -46,12 +46,17 @@ async def start_trading_plan(
         total_position_value = plan_data.initial_margin * plan_data.leverage
         position_size = total_position_value / current_price
         
+        # Round to reasonable precision for HyperLiquid (6 decimal places)
+        position_size_rounded = round(float(position_size), 6)
+        
+        logger.info(f"Order calculation: margin=${plan_data.initial_margin}, leverage={plan_data.leverage}, price=${current_price}, position_size={position_size}, rounded={position_size_rounded}")
+        
         # Place initial buy order
         order_result = await exchange_manager.place_order(
             symbol=plan_data.symbol,
             order_type="market",
             side="buy",
-            amount=position_size
+            amount=position_size_rounded
         )
         
         if not order_result.success:
@@ -275,6 +280,25 @@ async def get_current_price(symbol: str):
         raise
     except Exception as e:
         logger.error(f"Error getting price for {symbol}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Service error: {str(e)}"
+        )
+
+
+@router.get("/exchange/balances")
+async def get_account_balances():
+    """Get all account balances"""
+    try:
+        balances = await exchange_manager.fetch_all_balances()
+        
+        return {
+            "balances": balances,
+            "timestamp": None
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting account balances: {e}")
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=f"Service error: {str(e)}"

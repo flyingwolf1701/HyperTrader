@@ -23,7 +23,7 @@ export const useWebSocket = () => {
       error.value = null
       
       // Connect to WebSocket endpoint
-      const wsUrl = `ws://localhost:3000/ws/${symbol}`
+      const wsUrl = `ws://localhost:3001/ws/${symbol}`
       ws.value = new WebSocket(wsUrl)
 
       ws.value.onopen = () => {
