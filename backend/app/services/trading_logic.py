@@ -10,6 +10,12 @@ class TradingLogic:
     Encapsulates the 4-phase trading strategy logic, including placing orders.
     """
 
+    # --- Unit Calculation Parameters (Manual Price Movement) ---
+    # The fixed amount the price must move to constitute one "unit".
+    # This value should be manually set based on the asset's volatility and price.
+    # NOTE: This should ideally be loaded from configuration and stored in the SystemState.
+    UNIT_PRICE_MOVEMENT: Decimal = Decimal("0.0025") # Example for an asset like ARB
+
     def __init__(self, state: SystemState):
         self.state = state
         self.trade_logger = get_trade_logger(state.symbol)
@@ -41,9 +47,19 @@ class TradingLogic:
         return self.state
 
     def _update_current_unit(self):
-        """Calculates the current unit based on price movement."""
-        price_change = self.state.current_price - self.state.entry_price
-        self.state.current_unit = int(price_change / self.state.unit_value)
+        """
+        Calculates the current unit based on user-defined unit_size.
+        The unit_size represents how much the price must move to constitute one unit.
+        """
+        unit_size = self.state.unit_size
+
+        if unit_size <= 0:
+            self.state.current_unit = 0
+            return
+
+        # Calculate how many "units" the price has moved from entry price
+        total_price_change = self.state.current_price - self.state.entry_price
+        self.state.current_unit = int(total_price_change / unit_size)
 
     def _transition_to(self, new_phase: PhaseType):
         """Handles state transitions."""

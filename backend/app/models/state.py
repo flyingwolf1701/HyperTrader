@@ -21,7 +21,8 @@ class SystemState(BaseModel):
 
     # Core Strategy Parameters
     entry_price: Decimal
-    unit_value: Decimal
+    unit_size: Decimal  # User-defined price movement for one unit (e.g., 42.45 for ETH)
+    unit_value: Decimal  # Calculated USD value per unit (unit_size * position_size / total_position)
     current_unit: int = Field(default=0)
     leverage: int = Field(default=10)
     # This now represents the margin required for the initial position
@@ -66,11 +67,12 @@ class SystemState(BaseModel):
 class TradingPlanCreate(BaseModel):
     """
     Model for creating a new trading plan via the API.
-    Client specifies the desired position size in USD.
+    Client specifies the desired position size in USD and unit size for price movements.
     """
     symbol: str = Field(..., description="The trading symbol, e.g., 'DOGE/USDC'")
     position_size_usd: Decimal = Field(..., gt=0, description="The desired total position size in USD")
     leverage: int = Field(default=10, gt=0, description="The leverage to be used")
+    unit_size: Decimal = Field(..., gt=0, description="The price movement that constitutes one unit (e.g., 42.45 for ETH)")
 
 
 class TradingPlanUpdate(BaseModel):

@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, insert, update, delete
+from sqlalchemy import select, insert, update, delete, func
 from typing import List, Optional
 import logging
 from decimal import Decimal
@@ -76,11 +76,13 @@ async def start_trading_plan(
         # --- Create State ---
         entry_price = order_result.average_price or current_price
         actual_cost = order_result.cost or total_position_value
-        unit_value = (required_margin * Decimal("0.05")) / plan_data.leverage
+        # Calculate USD value per unit based on user-defined unit_size
+        unit_value = (plan_data.unit_size * plan_data.position_size_usd) / (current_price * 100)  # Example calculation
         
         system_state = SystemState(
             symbol=symbol_to_use,
             entry_price=entry_price,
+            unit_size=plan_data.unit_size,
             unit_value=unit_value,
             required_margin=required_margin,
             leverage=plan_data.leverage,
@@ -95,6 +97,7 @@ async def start_trading_plan(
             system_state=system_state.model_dump_json_safe(),
             initial_margin=float(required_margin),
             leverage=plan_data.leverage,
+            unit_size=float(plan_data.unit_size),
             current_phase=system_state.current_phase
         )
         
@@ -605,7 +608,7 @@ async def run_trading_logic_single_position(symbol: str, db: AsyncSession = Depe
         # Get current price
         try:
             price_info = await exchange_manager.get_current_price(symbol)
-            current_price = price_info.price
+            current_price = price_info
             logger.info(f"Current price for {symbol}: ${current_price}")
         except Exception as e:
             logger.error(f"Failed to get price for {symbol}: {e}")
@@ -633,7 +636,7 @@ async def run_trading_logic_single_position(symbol: str, db: AsyncSession = Depe
         
         # Calculate new unit before running logic
         price_change = current_price - system_state.entry_price
-        new_unit = int(price_change / system_state.unit_value)
+        new_unit = int(price_change / system_state.unit_size)
         unit_changed = new_unit != system_state.current_unit
         
         if unit_changed:
@@ -716,8 +719,8 @@ async def run_trading_logic_all_positions_batch(db: AsyncSession = Depends(get_d
         for symbol in symbols:
             try:
                 price_info = await exchange_manager.get_current_price(symbol)
-                current_prices[symbol] = price_info.price
-                logger.info(f"Current price for {symbol}: ${price_info.price}")
+                current_prices[symbol] = price_info
+                logger.info(f"Current price for {symbol}: ${price_info}")
             except Exception as e:
                 logger.error(f"Failed to get price for {symbol}: {e}")
                 continue
@@ -735,6 +738,8 @@ async def run_trading_logic_all_positions_batch(db: AsyncSession = Depends(get_d
                 
             try:
                 # Load SystemState from database
+                logger.info(f"Attempting to load SystemState for {symbol}...")
+                logger.info(f"Raw system_state keys: {list(plan.system_state.keys())}")
                 system_state = SystemState(**plan.system_state)
                 current_price = current_prices[symbol]
                 
@@ -753,7 +758,7 @@ async def run_trading_logic_all_positions_batch(db: AsyncSession = Depends(get_d
                 
                 # Calculate new unit before running logic
                 price_change = current_price - system_state.entry_price
-                new_unit = int(price_change / system_state.unit_value)
+                new_unit = int(price_change / system_state.unit_size)
                 unit_changed = new_unit != system_state.current_unit
                 
                 if unit_changed:
@@ -851,3 +856,213 @@ async def get_all_trading_plans(db: AsyncSession = Depends(get_db_session)):
     except Exception as e:
         logger.error(f"Error fetching trading plans: {e}", exc_info=True)
         raise HTTPException(status_code=503, detail=f"Database error: {str(e)}")
+
+@router.post("/trade/close/{symbol}")
+async def close_position(symbol: str, db: AsyncSession = Depends(get_db_session)):
+    """
+    Close an open position by selling all contracts.
+    """
+    try:
+        logger.info(f"Closing position for {symbol}...")
+        
+        # Get current positions to find the one to close
+        positions = await exchange_manager.fetch_positions()
+        target_position = None
+        
+        for pos in positions:
+            if pos.symbol == symbol:
+                target_position = pos
+                break
+        
+        if not target_position:
+            return {
+                "success": False,
+                "message": f"No open position found for {symbol}"
+            }
+        
+        if target_position.contracts <= 0:
+            return {
+                "success": False,
+                "message": f"Position for {symbol} has no contracts to close"
+            }
+        
+        # Place sell order to close the position
+        logger.info(f"Closing {target_position.contracts} contracts for {symbol}")
+        
+        order_result = await exchange_manager.place_order(
+            symbol=symbol,
+            order_type="market",
+            side="sell",
+            amount=float(target_position.contracts),
+            params={"reduceOnly": True}
+        )
+        
+        if order_result.success:
+            # Mark trading plan as inactive in database
+            result = await db.execute(
+                select(TradingPlan).where(TradingPlan.symbol == symbol, TradingPlan.is_active == "active")
+            )
+            trading_plan = result.scalar_one_or_none()
+            
+            if trading_plan:
+                trading_plan.is_active = "closed"
+                trading_plan.notes = f"Position closed manually on {datetime.now().isoformat()}"
+                await db.commit()
+                logger.info(f"Marked trading plan {trading_plan.id} as closed")
+            
+            return {
+                "success": True,
+                "message": f"Successfully closed position for {symbol}",
+                "symbol": symbol,
+                "contracts_closed": float(target_position.contracts),
+                "order_id": order_result.order_id,
+                "pnl": float(target_position.pnl)
+            }
+        else:
+            return {
+                "success": False,
+                "message": f"Failed to close position: {order_result.error_message}",
+                "symbol": symbol
+            }
+            
+    except Exception as e:
+        logger.error(f"Error closing position for {symbol}: {e}", exc_info=True)
+        raise HTTPException(status_code=503, detail=f"Close position error: {str(e)}")
+
+
+@router.delete("/plans/{plan_id}")
+async def delete_trading_plan(plan_id: int, db: AsyncSession = Depends(get_db)):
+    """Delete a trading plan by ID."""
+    try:
+        result = await db.execute(
+            select(TradingPlan).where(TradingPlan.id == plan_id)
+        )
+        trading_plan = result.scalar_one_or_none()
+        
+        if not trading_plan:
+            raise HTTPException(status_code=404, detail="Trading plan not found")
+        
+        await db.delete(trading_plan)
+        await db.commit()
+        
+        return {
+            "success": True,
+            "message": f"Trading plan {plan_id} deleted successfully"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error deleting trading plan {plan_id}: {e}")
+        raise HTTPException(status_code=500, detail=f"Delete error: {str(e)}")
+
+
+@router.post("/sync-positions")
+async def sync_positions_with_exchange(db: AsyncSession = Depends(get_db)):
+    """
+    Sync trading plans with actual exchange positions.
+    Close plans for positions that no longer exist, and detect orphaned positions.
+    """
+    try:
+        # Get all active trading plans
+        result = await db.execute(
+            select(TradingPlan).where(TradingPlan.is_active == "active")
+        )
+        active_plans = result.scalars().all()
+        
+        # Get all current positions from exchange
+        positions = await exchange_manager.get_positions()
+        position_symbols = {pos.symbol for pos in positions if pos.size != 0}
+        
+        sync_results = {
+            "plans_closed": [],
+            "orphaned_positions": [],
+            "active_matches": []
+        }
+        
+        # Check each active plan against actual positions
+        for plan in active_plans:
+            if plan.symbol not in position_symbols:
+                # Plan exists but no position - close the plan
+                plan.is_active = "closed"
+                plan.notes = f"Auto-closed: No position found on exchange at {datetime.now().isoformat()}"
+                sync_results["plans_closed"].append({
+                    "id": plan.id,
+                    "symbol": plan.symbol,
+                    "reason": "No exchange position"
+                })
+            else:
+                sync_results["active_matches"].append(plan.symbol)
+        
+        # Check for positions without plans (orphaned positions)
+        plan_symbols = {plan.symbol for plan in active_plans}
+        for symbol in position_symbols:
+            if symbol not in plan_symbols:
+                sync_results["orphaned_positions"].append(symbol)
+        
+        await db.commit()
+        
+        return {
+            "success": True,
+            "message": "Position sync completed",
+            "results": sync_results
+        }
+        
+    except Exception as e:
+        logger.error(f"Error syncing positions: {e}")
+        raise HTTPException(status_code=500, detail=f"Sync error: {str(e)}")
+
+
+@router.post("/recover-state")
+async def recover_trading_state(db: AsyncSession = Depends(get_db)):
+    """
+    Attempt to recover trading state after a crash by syncing with exchange positions
+    and cleaning up corrupted database entries.
+    """
+    try:
+        recovery_results = {
+            "cleaned_plans": [],
+            "recovered_positions": [],
+            "errors": []
+        }
+        
+        # First, clean up duplicate plans for the same symbol
+        result = await db.execute(
+            select(TradingPlan.symbol, func.count(TradingPlan.id).label('count'))
+            .where(TradingPlan.is_active == "active")
+            .group_by(TradingPlan.symbol)
+            .having(func.count(TradingPlan.id) > 1)
+        )
+        duplicates = result.all()
+        
+        for symbol, count in duplicates:
+            # Get all plans for this symbol
+            dup_result = await db.execute(
+                select(TradingPlan)
+                .where(TradingPlan.symbol == symbol, TradingPlan.is_active == "active")
+                .order_by(TradingPlan.created_at.desc())
+            )
+            dup_plans = dup_result.scalars().all()
+            
+            # Keep the most recent one, delete the rest
+            for plan in dup_plans[1:]:
+                await db.delete(plan)
+                recovery_results["cleaned_plans"].append({
+                    "id": plan.id,
+                    "symbol": symbol,
+                    "reason": "Duplicate plan removed"
+                })
+        
+        await db.commit()
+        
+        # Now sync with exchange positions
+        sync_response = await sync_positions_with_exchange(db)
+        recovery_results["sync_results"] = sync_response["results"]
+        
+        return {
+            "success": True,
+            "message": "State recovery completed",
+            "results": recovery_results
+        }
+        
+    except Exception as e:
+        logger.error(f"Error recovering state: {e}")
+        raise HTTPException(status_code=500, detail=f"Recovery error: {str(e)}")

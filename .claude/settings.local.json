@@ -13,7 +13,8 @@
       "Bash(bun add:*)",
       "Bash(cp:*)",
       "Bash(bun run:*)",
-      "WebFetch(domain:docs.ccxt.com)"
+      "WebFetch(domain:docs.ccxt.com)",
+      "Bash(uvicorn:*)"
     ],
     "deny": [],
     "ask": []
