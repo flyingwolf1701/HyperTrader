@@ -931,7 +931,7 @@ async def close_position(symbol: str, db: AsyncSession = Depends(get_db_session)
 
 
 @router.delete("/plans/{plan_id}")
-async def delete_trading_plan(plan_id: int, db: AsyncSession = Depends(get_db)):
+async def delete_trading_plan(plan_id: int, db: AsyncSession = Depends(get_db_session)):
     """Delete a trading plan by ID."""
     try:
         result = await db.execute(
@@ -956,7 +956,7 @@ async def delete_trading_plan(plan_id: int, db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/sync-positions")
-async def sync_positions_with_exchange(db: AsyncSession = Depends(get_db)):
+async def sync_positions_with_exchange(db: AsyncSession = Depends(get_db_session)):
     """
     Sync trading plans with actual exchange positions.
     Close plans for positions that no longer exist, and detect orphaned positions.
@@ -969,7 +969,7 @@ async def sync_positions_with_exchange(db: AsyncSession = Depends(get_db)):
         active_plans = result.scalars().all()
         
         # Get all current positions from exchange
-        positions = await exchange_manager.get_positions()
+        positions = await exchange_manager.fetch_positions()
         position_symbols = {pos.symbol for pos in positions if pos.size != 0}
         
         sync_results = {
@@ -1012,7 +1012,7 @@ async def sync_positions_with_exchange(db: AsyncSession = Depends(get_db)):
 
 
 @router.post("/recover-state")
-async def recover_trading_state(db: AsyncSession = Depends(get_db)):
+async def recover_trading_state(db: AsyncSession = Depends(get_db_session)):
     """
     Attempt to recover trading state after a crash by syncing with exchange positions
     and cleaning up corrupted database entries.
