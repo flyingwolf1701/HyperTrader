@@ -262,7 +262,17 @@ async def get_exchange_pairs():
 async def get_current_price(symbol: str):
     """Get current price for a symbol"""
     try:
-        price = await exchange_manager.get_current_price(symbol)
+        # Convert symbol format for HyperLiquid if needed
+        # API accepts BTC/USDC but HyperLiquid needs BTC/USDC:USDC
+        hyperliquid_symbol = symbol
+        if "/" in symbol and ":" not in symbol:
+            parts = symbol.split("/")
+            if len(parts) == 2 and parts[1] == "USDC":
+                # For HyperLiquid, USDC pairs need settlement currency
+                hyperliquid_symbol = f"{parts[0]}/USDC:USDC"
+            
+        logger.info(f"Getting price for symbol: {symbol} (converted to: {hyperliquid_symbol})")
+        price = await exchange_manager.get_current_price(hyperliquid_symbol)
         
         if price is None:
             raise HTTPException(

@@ -2,7 +2,7 @@
 
 Advanced crypto trading bot implementing a sophisticated 4-phase hedging strategy on HyperLiquid DEX. This system automatically manages long/hedge allocations based on price movements, providing downside protection while capturing upside gains.
 
-## =€ Quick Start
+## =ï¿½ Quick Start
 
 ### Prerequisites
 
@@ -70,7 +70,7 @@ LOG_LEVEL=INFO
    - Create an API wallet (for trading only, no withdrawal risk)
    - Copy the credentials to your `.env`
 
-## <¯ Testing the System
+## <ï¿½ Testing the System
 
 ### 1. Start the Backend
 
@@ -160,7 +160,7 @@ Returns comprehensive state including:
 - Allocation percentages
 - Unrealized P&L
 
-## >ê 4-Phase Strategy Testing
+## >ï¿½ 4-Phase Strategy Testing
 
 ### Understanding the Phases
 
@@ -201,7 +201,7 @@ Returns comprehensive state including:
 2. Verify portfolio value recalculation
 3. Check fresh unit/phase initialization
 
-## =Ê Monitoring & Debugging
+## =ï¿½ Monitoring & Debugging
 
 ### Logs
 
@@ -232,7 +232,7 @@ Visit `http://localhost:3000/docs` for interactive API documentation with:
 - Request/response examples
 - Try-it-now functionality
 
-##   Important Testnet Notes
+## ï¿½ Important Testnet Notes
 
 1. **Always Verify Testnet Mode:**
    - Ensure `HYPERLIQUID_TESTNET=true` in `.env`
@@ -250,7 +250,8 @@ Visit `http://localhost:3000/docs` for interactive API documentation with:
    - All trades and states saved to database
    - Safe to restart server - state resumes automatically
 
-## = Troubleshooting
+## =
+ Troubleshooting
 
 ### Common Issues
 
@@ -280,14 +281,14 @@ LOG_LEVEL=DEBUG
 
 This provides verbose output for all operations.
 
-## =€ Next Steps
+## =ï¿½ Next Steps
 
 1. **Test Strategy Performance:** Run multiple scenarios with different market conditions
 2. **Monitor Allocation Changes:** Track how system responds to price movements  
 3. **Verify Reset Mechanism:** Test portfolio growth and unit scaling
 4. **Prepare for Mainnet:** When ready, set up dedicated HyperLiquid account
 
-## =È Production Readiness
+## =ï¿½ Production Readiness
 
 Before moving to mainnet:
 - [ ] Set up dedicated HyperLiquid account
@@ -298,4 +299,4 @@ Before moving to mainnet:
 
 ---
 
-**  Remember: This is testnet - no real money at risk!** Use this environment to fully understand and test the 4-phase strategy before any mainnet deployment.
+**ï¿½ Remember: This is testnet - no real money at risk!** Use this environment to fully understand and test the 4-phase strategy before any mainnet deployment.
