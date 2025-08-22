@@ -175,7 +175,9 @@ class ExchangeManager:
 
     async def fetch_all_balances(self):
         try:
-            balance = await self.exchange.fetch_balance()
+            # HyperLiquid requires user parameter for account-specific calls
+            params = {'user': settings.HYPERLIQUID_WALLET_KEY}
+            balance = await self.exchange.fetch_balance(params=params)
             return balance.get('total', {})
         except Exception as e:
             logger.error(f"Could not fetch balances: {e}")
@@ -192,7 +194,9 @@ class ExchangeManager:
             List of Position objects
         """
         try:
-            raw_positions = await self.exchange.fetch_positions(symbols)
+            # HyperLiquid requires user parameter for account-specific calls
+            params = {'user': settings.HYPERLIQUID_WALLET_KEY}
+            raw_positions = await self.exchange.fetch_positions(symbols, params=params)
             positions = []
             
             for pos in raw_positions:
@@ -231,7 +235,9 @@ class ExchangeManager:
             List of Order objects
         """
         try:
-            raw_orders = await self.exchange.fetch_open_orders(symbol)
+            # HyperLiquid requires user parameter for account-specific calls
+            params = {'user': settings.HYPERLIQUID_WALLET_KEY}
+            raw_orders = await self.exchange.fetch_open_orders(symbol, params=params)
             orders = []
             
             for order in raw_orders:
@@ -270,7 +276,9 @@ class ExchangeManager:
             List of Trade objects
         """
         try:
-            raw_trades = await self.exchange.fetch_my_trades(symbol, since, limit)
+            # HyperLiquid requires user parameter for account-specific calls  
+            params = {'user': settings.HYPERLIQUID_WALLET_KEY}
+            raw_trades = await self.exchange.fetch_my_trades(symbol, since, limit, params=params)
             trades = []
             
             for trade in raw_trades:

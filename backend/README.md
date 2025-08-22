@@ -37,7 +37,7 @@ Advanced crypto trading bot implementing a sophisticated 4-phase hedging strateg
    uv run python -m app.main
    ```
 
-The API will be available at `http://localhost:3000` with docs at `http://localhost:3000/docs`.
+The API will be available at `http://localhost:8000` with docs at `http://localhost:8000/docs`.
 
 ## =' Configuration
 
@@ -81,7 +81,7 @@ LOG_LEVEL=INFO
 
 ```bash
 cd backend
-uv run python -m app.main
+uv run uvicorn app.main:app --reload
 ```
 
 Expected output:
@@ -100,21 +100,21 @@ INFO:     Application startup complete.
 **Health Check:**
 
 ```bash
-curl http://localhost:3000/health
+curl http://localhost:8000/health
 # Expected: {"status":"healthy","app":"HyperTrader"}
 ```
 
 **Get Available Markets:**
 
 ```bash
-curl http://localhost:3000/api/v1/exchange/pairs
+curl http://localhost:8000/api/v1/exchange/pairs
 # Returns list of available trading pairs
 ```
 
 **Get Current Price:**
 
 ```bash
-curl "http://localhost:3000/api/v1/exchange/price/BTC%2FUSDC"
+curl "http://localhost:8000/api/v1/exchange/price/BTC%2FUSDC"
 # Returns current BTC price
 ```
 
@@ -123,7 +123,7 @@ curl "http://localhost:3000/api/v1/exchange/price/BTC%2FUSDC"
 **Create a new trading plan:**
 
 ```bash
-curl -X POST "http://localhost:3000/api/v1/trade/start" \
+curl -X POST "http://localhost:8000/api/v1/trade/start" \
   -H "Content-Type: application/json" \
   -d '{
     "symbol": "BTC/USDC",
@@ -145,12 +145,12 @@ This will:
 
 ```bash
 # WebSocket endpoint for real-time trading data
-# ws://localhost:3000/ws/BTC%2FUSDC
+# ws://localhost:8000/ws/BTC%2FUSDC
 
 # Note: WebSocket connections require a WebSocket client
 # You can use tools like wscat for testing:
 # npm install -g wscat
-# wscat -c "ws://localhost:3000/ws/BTC%2FUSDC"
+# wscat -c "ws://localhost:8000/ws/BTC%2FUSDC"
 ```
 
 ### 5. Check Trading State
@@ -158,7 +158,7 @@ This will:
 **Get current state:**
 
 ```bash
-curl "http://localhost:3000/api/v1/trade/state/BTC%2FUSDC"
+curl "http://localhost:8000/api/v1/trade/state/BTC%2FUSDC"
 ```
 
 Returns comprehensive state including:
@@ -173,45 +173,45 @@ Returns comprehensive state including:
 **Check all open positions:**
 
 ```bash
-curl "http://localhost:3000/api/v1/exchange/positions"
+curl "http://localhost:8000/api/v1/exchange/positions"
 ```
 
 **Check position for specific symbol:**
 
 ```bash
-curl "http://localhost:3000/api/v1/exchange/positions/BTC%2FUSDC"
+curl "http://localhost:8000/api/v1/exchange/positions/BTC%2FUSDC"
 ```
 
 **Get comprehensive position summary:**
 
 ```bash
-curl "http://localhost:3000/api/v1/exchange/position-summary"
+curl "http://localhost:8000/api/v1/exchange/position-summary"
 ```
 
 **View recent trades:**
 
 ```bash
 # Last 24 hours, up to 50 trades
-curl "http://localhost:3000/api/v1/exchange/trades"
+curl "http://localhost:8000/api/v1/exchange/trades"
 
 # Last 6 hours for specific symbol
-curl "http://localhost:3000/api/v1/exchange/trades?symbol=BTC%2FUSDC&hours_back=6&limit=20"
+curl "http://localhost:8000/api/v1/exchange/trades?symbol=BTC%2FUSDC&hours_back=6&limit=20"
 ```
 
 **Check open orders:**
 
 ```bash
 # All open orders
-curl "http://localhost:3000/api/v1/exchange/open-orders"
+curl "http://localhost:8000/api/v1/exchange/open-orders"
 
 # Open orders for specific symbol
-curl "http://localhost:3000/api/v1/exchange/open-orders?symbol=BTC%2FUSDC"
+curl "http://localhost:8000/api/v1/exchange/open-orders?symbol=BTC%2FUSDC"
 ```
 
 **View account balances:**
 
 ```bash
-curl "http://localhost:3000/api/v1/exchange/balances"
+curl "http://localhost:8000/api/v1/exchange/balances"
 ```
 
 ## >� 4-Phase Strategy Testing
@@ -319,7 +319,7 @@ FROM trading_plans;
 
 ### API Documentation
 
-Visit `http://localhost:3000/docs` for interactive API documentation with:
+Visit `http://localhost:8000/docs` for interactive API documentation with:
 
 - All endpoints documented
 - Request/response examples
@@ -432,7 +432,7 @@ uv run python -m app.main
 
 # Test each curl command in the README
 # Example:
-curl "http://localhost:3000/api/v1/exchange/positions"
+curl "http://localhost:8000/api/v1/exchange/positions"
 ```
 
 ### Markdown Formatting:
