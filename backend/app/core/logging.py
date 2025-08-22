@@ -166,8 +166,15 @@ def setup_standard_logging_intercept():
     logging.root.setLevel(logging.DEBUG)
     
     # Intercept specific loggers that might be used by dependencies
-    for logger_name in ["uvicorn", "fastapi", "sqlalchemy", "ccxt"]:
+    for logger_name in ["uvicorn", "fastapi", "sqlalchemy"]:
         logging_logger = logging.getLogger(logger_name)
         logging_logger.handlers = []
         logging_logger.addHandler(InterceptHandler())
         logging_logger.propagate = False
+    
+    # Set CCXT to INFO level to prevent massive DEBUG output while keeping errors
+    ccxt_logger = logging.getLogger("ccxt")
+    ccxt_logger.setLevel(logging.INFO)
+    ccxt_logger.handlers = []
+    ccxt_logger.addHandler(InterceptHandler())
+    ccxt_logger.propagate = False

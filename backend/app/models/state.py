@@ -47,6 +47,20 @@ class SystemState(BaseModel):
     # Constants
     MIN_TRADE_VALUE: Decimal = Field(default=Decimal("1.0"))
     UNIT_PERCENTAGE: Decimal = Field(default=Decimal("0.05"))
+    
+    def model_dump_json_safe(self) -> dict:
+        """
+        Convert SystemState to a JSON-serializable dictionary.
+        Converts all Decimal fields to strings for database storage.
+        """
+        data = self.model_dump()
+        
+        # Convert all Decimal values to strings
+        for key, value in data.items():
+            if isinstance(value, Decimal):
+                data[key] = str(value)
+                
+        return data
 
 
 class TradingPlanCreate(BaseModel):

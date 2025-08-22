@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test script to directly call HyperLiquid and see positions.
+Debug position field values.
 """
 import sys
 import asyncio
@@ -13,8 +13,8 @@ sys.path.insert(0, str(app_path))
 from app.core.config import settings
 import ccxt.async_support as ccxt
 
-async def test_positions():
-    """Test HyperLiquid positions directly."""
+async def debug_position_fields():
+    """Debug all position fields."""
     
     print(f"Wallet Address: {settings.HYPERLIQUID_WALLET_KEY}")
     print(f"Testnet: {settings.HYPERLIQUID_TESTNET}")
@@ -32,22 +32,15 @@ async def test_positions():
     try:
         # Test positions with user parameter
         params = {'user': settings.HYPERLIQUID_WALLET_KEY}
-        print(f"Fetching positions with params: {params}")
-        
         positions = await exchange.fetch_positions(params=params)
         print(f"Total positions returned: {len(positions)}")
         
-        for i, pos in enumerate(positions):
-            print(f"Position {i+1}:")
-            print(f"  Symbol: {pos.get('symbol')}")
-            print(f"  Size: {pos.get('size')}")
-            print(f"  Contracts: {pos.get('contracts')}")
-            print(f"  Side: {pos.get('side')}")
-            print(f"  Entry Price: {pos.get('entryPrice')}")
-            print(f"  Mark Price: {pos.get('markPrice')}")
-            print(f"  PNL: {pos.get('unrealizedPnl')}")
-            print("  ---")
-            
+        if positions:
+            pos = positions[0]  # Look at first position in detail
+            print(f"\nFirst position full data:")
+            for key, value in pos.items():
+                print(f"  {key}: {value} (type: {type(value).__name__})")
+                
     except Exception as e:
         print(f"Error: {e}")
         import traceback
@@ -57,4 +50,4 @@ async def test_positions():
         await exchange.close()
 
 if __name__ == "__main__":
-    asyncio.run(test_positions())
+    asyncio.run(debug_position_fields())

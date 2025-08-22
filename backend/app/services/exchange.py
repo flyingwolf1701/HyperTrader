@@ -197,23 +197,37 @@ class ExchangeManager:
             # HyperLiquid requires user parameter for account-specific calls
             params = {'user': settings.HYPERLIQUID_WALLET_KEY}
             raw_positions = await self.exchange.fetch_positions(symbols, params=params)
+            logger.info(f"Raw positions from HyperLiquid: {len(raw_positions)} total")
+            logger.info(f"First 3 positions: {raw_positions[:3] if raw_positions else 'None'}")
             positions = []
             
             for pos in raw_positions:
-                # Only include positions with non-zero size
-                if pos.get('contracts', 0) == 0 and pos.get('size', 0) == 0:
+                # Only include positions with non-zero size/contracts
+                contracts = pos.get('contracts', 0)
+                # HyperLiquid uses 'contracts' field, not 'size'
+                if not contracts or contracts == 0:
                     continue
+                
+                # Helper function to safely convert to Decimal
+                def safe_decimal(value, default=0):
+                    if value is None:
+                        return Decimal(str(default))
+                    try:
+                        return Decimal(str(value))
+                    except (InvalidOperation, ValueError):
+                        logger.warning(f"Could not convert {value} to Decimal, using {default}")
+                        return Decimal(str(default))
                     
                 position = Position(
                     symbol=pos['symbol'],
                     side=pos.get('side', 'unknown'),
-                    size=Decimal(str(pos.get('size', 0))),
-                    notional=Decimal(str(pos.get('notional', 0))),
-                    entry_price=Decimal(str(pos.get('entryPrice', 0))),
-                    mark_price=Decimal(str(pos.get('markPrice', 0))),
-                    pnl=Decimal(str(pos.get('unrealizedPnl', 0))),
-                    percentage=Decimal(str(pos.get('percentage', 0))) if pos.get('percentage') else None,
-                    contracts=Decimal(str(pos.get('contracts', 0))) if pos.get('contracts') else None
+                    size=safe_decimal(pos.get('size', 0)),
+                    notional=safe_decimal(pos.get('notional', 0)),
+                    entry_price=safe_decimal(pos.get('entryPrice', 0)),
+                    mark_price=safe_decimal(pos.get('markPrice', 0)),
+                    pnl=safe_decimal(pos.get('unrealizedPnl', 0)),
+                    percentage=safe_decimal(pos.get('percentage')) if pos.get('percentage') is not None else None,
+                    contracts=safe_decimal(pos.get('contracts')) if pos.get('contracts') is not None else None
                 )
                 positions.append(position)
                 

@@ -127,7 +127,7 @@ curl -X POST "http://localhost:8000/api/v1/trade/start" \
   -H "Content-Type: application/json" \
   -d '{
     "symbol": "BTC/USDC",
-    "position_size_usd": 100.0,
+    "position_size_usd": 1000.0,
     "leverage": 10
   }'
 ```

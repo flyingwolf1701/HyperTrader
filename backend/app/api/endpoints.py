@@ -5,9 +5,11 @@ from typing import List, Optional
 import logging
 from decimal import Decimal
 import json
+from datetime import datetime
 
 from app.db.session import get_db_session
 from app.models.state import SystemState, TradingPlanCreate, TradingPlanUpdate
+from app.core.config import settings
 from app.schemas import TradingPlan, UserFavorite
 from app.services.exchange import exchange_manager, MarketInfo
 
@@ -90,7 +92,7 @@ async def start_trading_plan(
         
         trading_plan = TradingPlan(
             symbol=symbol_to_use,
-            system_state=system_state.dict(),
+            system_state=system_state.model_dump_json_safe(),
             initial_margin=float(required_margin),
             leverage=plan_data.leverage,
             current_phase=system_state.current_phase
@@ -300,7 +302,11 @@ async def get_all_positions():
     Get all open positions across all symbols.
     """
     try:
+        logger.info("Fetching positions from exchange manager...")
+        logger.info(f"Wallet address: {settings.HYPERLIQUID_WALLET_KEY}")
+        logger.info(f"Testnet mode: {settings.HYPERLIQUID_TESTNET}")
         positions = await exchange_manager.fetch_positions()
+        logger.info(f"Exchange manager returned {len(positions)} positions")
         return {
             "positions": [
                 {
@@ -460,3 +466,388 @@ async def get_recent_trades(
     except Exception as e:
         logger.error(f"Error fetching trades: {e}", exc_info=True)
         raise HTTPException(status_code=503, detail=f"Service error: {str(e)}")
+
+@router.post("/sync/positions")
+async def sync_positions_to_database(db: AsyncSession = Depends(get_db_session)):
+    """
+    Sync existing HyperLiquid positions to database as trading plans.
+    Creates TradingPlan records for positions that don't exist in the database.
+    """
+    try:
+        logger.info("Starting position sync from HyperLiquid to database...")
+        
+        # Fetch raw positions from HyperLiquid to get leverage info
+        params = {'user': settings.HYPERLIQUID_WALLET_KEY}
+        raw_positions = await exchange_manager.exchange.fetch_positions(params=params)
+        logger.info(f"Found {len(raw_positions)} raw positions in HyperLiquid")
+        
+        # Filter to only non-zero positions
+        active_positions = []
+        for pos in raw_positions:
+            contracts = pos.get('contracts', 0)
+            if contracts and contracts != 0:
+                active_positions.append(pos)
+        
+        logger.info(f"Found {len(active_positions)} active positions")
+        
+        # Get existing trading plans from database
+        result = await db.execute(select(TradingPlan))
+        existing_plans = result.scalars().all()
+        existing_symbols = {plan.symbol for plan in existing_plans}
+        logger.info(f"Found {len(existing_symbols)} existing trading plans: {existing_symbols}")
+        
+        synced_count = 0
+        skipped_count = 0
+        
+        for pos in active_positions:
+            symbol = pos['symbol']
+            
+            if symbol in existing_symbols:
+                logger.info(f"Skipping {symbol} - already exists in database")
+                skipped_count += 1
+                continue
+                
+            logger.info(f"Creating new trading plan for {symbol}")
+            
+            # Get leverage from raw position data
+            leverage = pos.get('leverage', 1)
+            if isinstance(leverage, (int, float)):
+                leverage_val = int(leverage)
+            else:
+                leverage_val = 1
+                
+            # Calculate required margin from position data
+            notional = float(pos.get('notional', 0))
+            required_margin = notional / leverage_val if leverage_val > 0 else notional
+            
+            # Create SystemState object from position data
+            entry_price = float(pos.get('entryPrice', 0))
+            mark_price = float(pos.get('markPrice', 0)) if pos.get('markPrice') else entry_price
+            side = pos.get('side', 'long')
+            unrealized_pnl = float(pos.get('unrealizedPnl', 0))
+            
+            system_state = SystemState(
+                symbol=symbol,
+                is_active=True,
+                current_price=Decimal(str(mark_price)),
+                entry_price=Decimal(str(entry_price)),
+                unit_value=Decimal(str(required_margin * 0.05)),  # 5% units
+                current_unit=0,  # We'll set this based on the position
+                leverage=leverage_val,
+                required_margin=Decimal(str(required_margin)),
+                current_phase="advance",  # Default phase
+                
+                # Calculate allocations based on position
+                long_invested=Decimal(str(notional)) if side == 'long' else Decimal("0.0"),
+                long_cash=Decimal("0.0"),
+                hedge_long=Decimal(str(notional)) if side == 'long' else Decimal("0.0"),
+                hedge_short=Decimal(str(abs(notional))) if side == 'short' else Decimal("0.0"),
+                
+                # PNL from position
+                realized_pnl=Decimal("0.0"),  # We don't have historical realized PNL
+                unrealized_pnl=Decimal(str(unrealized_pnl)),
+            )
+            
+            # Create trading plan
+            trading_plan = TradingPlan(
+                symbol=symbol,
+                system_state=system_state.model_dump_json_safe(),
+                initial_margin=required_margin,
+                leverage=leverage_val,
+                current_phase="advance",
+                is_active="active",
+                notes=f"Synced from existing HyperLiquid position on {datetime.now().isoformat()}"
+            )
+            
+            db.add(trading_plan)
+            synced_count += 1
+            logger.info(f"Added {symbol} to database sync queue")
+        
+        # Commit all new trading plans
+        await db.commit()
+        
+        logger.info(f"Position sync complete: {synced_count} synced, {skipped_count} skipped")
+        
+        return {
+            "success": True,
+            "message": f"Synced {synced_count} positions to database",
+            "synced_count": synced_count,
+            "skipped_count": skipped_count,
+            "total_positions": len(active_positions)
+        }
+        
+    except Exception as e:
+        await db.rollback()
+        logger.error(f"Error syncing positions: {e}", exc_info=True)
+        raise HTTPException(status_code=503, detail=f"Sync error: {str(e)}")
+
+@router.post("/trading/run-logic/{symbol}")
+async def run_trading_logic_single_position(symbol: str, db: AsyncSession = Depends(get_db_session)):
+    """
+    Run trading logic on a single position with detailed logging.
+    """
+    try:
+        logger.info(f"Running trading logic for {symbol}...")
+        
+        # Get trading plan from database
+        result = await db.execute(
+            select(TradingPlan).where(TradingPlan.symbol == symbol, TradingPlan.is_active == "active")
+        )
+        trading_plan = result.scalar_one_or_none()
+        
+        if not trading_plan:
+            return {
+                "success": False,
+                "message": f"No active trading plan found for {symbol}",
+                "symbol": symbol
+            }
+        
+        # Get current price
+        try:
+            price_info = await exchange_manager.get_current_price(symbol)
+            current_price = price_info.price
+            logger.info(f"Current price for {symbol}: ${current_price}")
+        except Exception as e:
+            logger.error(f"Failed to get price for {symbol}: {e}")
+            return {
+                "success": False,
+                "message": f"Failed to get current price: {str(e)}",
+                "symbol": symbol
+            }
+        
+        # Load SystemState from database
+        system_state = SystemState(**trading_plan.system_state)
+        
+        logger.info(f"\n=== PROCESSING {symbol} ===")
+        logger.info(f"Current Price: ${current_price}")
+        logger.info(f"Entry Price: ${system_state.entry_price}")
+        logger.info(f"Current Phase: {system_state.current_phase}")
+        logger.info(f"Current Unit: {system_state.current_unit}")
+        logger.info(f"Peak Unit: {system_state.peak_unit}")
+        logger.info(f"Valley Unit: {system_state.valley_unit}")
+        logger.info(f"Long Invested: ${system_state.long_invested}")
+        logger.info(f"Long Cash: ${system_state.long_cash}")
+        logger.info(f"Hedge Long: ${system_state.hedge_long}")
+        logger.info(f"Hedge Short: ${system_state.hedge_short}")
+        logger.info(f"Unrealized PNL: ${system_state.unrealized_pnl}")
+        
+        # Calculate new unit before running logic
+        price_change = current_price - system_state.entry_price
+        new_unit = int(price_change / system_state.unit_value)
+        unit_changed = new_unit != system_state.current_unit
+        
+        if unit_changed:
+            logger.info(f"🔄 UNIT TICK: {symbol} unit changing from {system_state.current_unit} to {new_unit}")
+        else:
+            logger.info(f"📊 {symbol} unit unchanged at {system_state.current_unit}")
+        
+        # Run trading logic
+        from app.services.trading_logic import run_trading_logic_for_state
+        updated_state = await run_trading_logic_for_state(system_state, current_price)
+        
+        # Log final state after logic execution
+        logger.info(f"✅ POST-LOGIC STATE for {symbol}:")
+        logger.info(f"   Phase: {updated_state.current_phase}")
+        logger.info(f"   Unit: {updated_state.current_unit}")
+        logger.info(f"   Peak: {updated_state.peak_unit} @ ${updated_state.peak_price}")
+        logger.info(f"   Valley: {updated_state.valley_unit} @ ${updated_state.valley_price}")
+        logger.info(f"   Long/Invested: ${updated_state.long_invested}")
+        logger.info(f"   Long/Cash: ${updated_state.long_cash}")
+        logger.info(f"   Hedge/Long: ${updated_state.hedge_long}")
+        logger.info(f"   Hedge/Short: ${updated_state.hedge_short}")
+        logger.info(f"   Unrealized PNL: ${updated_state.unrealized_pnl}")
+        
+        # Update database with new state
+        trading_plan.system_state = updated_state.model_dump_json_safe()
+        trading_plan.current_phase = updated_state.current_phase
+        await db.commit()
+        
+        return {
+            "success": True,
+            "message": f"Processed trading logic for {symbol}",
+            "symbol": symbol,
+            "current_price": float(current_price),
+            "unit_changed": unit_changed,
+            "old_unit": system_state.current_unit,
+            "new_unit": updated_state.current_unit,
+            "phase": updated_state.current_phase,
+            "peak_unit": updated_state.peak_unit,
+            "valley_unit": updated_state.valley_unit,
+            "long_invested": float(updated_state.long_invested),
+            "long_cash": float(updated_state.long_cash),
+            "hedge_long": float(updated_state.hedge_long),
+            "hedge_short": float(updated_state.hedge_short),
+            "unrealized_pnl": float(updated_state.unrealized_pnl)
+        }
+        
+    except Exception as e:
+        await db.rollback()
+        logger.error(f"Error running trading logic for {symbol}: {e}", exc_info=True)
+        raise HTTPException(status_code=503, detail=f"Trading logic error: {str(e)}")
+
+@router.post("/trading/run-logic")
+async def run_trading_logic_all_positions_batch(db: AsyncSession = Depends(get_db_session)):
+    """
+    Run trading logic on all active positions with detailed logging.
+    Updates database with new states after applying trading logic.
+    """
+    try:
+        logger.info("Starting trading logic execution for all active positions...")
+        
+        # Get all active trading plans from database
+        result = await db.execute(
+            select(TradingPlan).where(TradingPlan.is_active == "active")
+        )
+        trading_plans = result.scalars().all()
+        logger.info(f"Found {len(trading_plans)} active trading plans")
+        
+        if not trading_plans:
+            return {
+                "success": True,
+                "message": "No active trading plans found",
+                "processed_count": 0,
+                "results": []
+            }
+        
+        # Get current prices for all symbols
+        symbols = [plan.symbol for plan in trading_plans]
+        current_prices = {}
+        
+        for symbol in symbols:
+            try:
+                price_info = await exchange_manager.get_current_price(symbol)
+                current_prices[symbol] = price_info.price
+                logger.info(f"Current price for {symbol}: ${price_info.price}")
+            except Exception as e:
+                logger.error(f"Failed to get price for {symbol}: {e}")
+                continue
+        
+        processed_count = 0
+        results = []
+        
+        # Process each trading plan
+        for plan in trading_plans:
+            symbol = plan.symbol
+            
+            if symbol not in current_prices:
+                logger.warning(f"Skipping {symbol} - no current price available")
+                continue
+                
+            try:
+                # Load SystemState from database
+                system_state = SystemState(**plan.system_state)
+                current_price = current_prices[symbol]
+                
+                logger.info(f"\n=== PROCESSING {symbol} ===")
+                logger.info(f"Current Price: ${current_price}")
+                logger.info(f"Entry Price: ${system_state.entry_price}")
+                logger.info(f"Current Phase: {system_state.current_phase}")
+                logger.info(f"Current Unit: {system_state.current_unit}")
+                logger.info(f"Peak Unit: {system_state.peak_unit}")
+                logger.info(f"Valley Unit: {system_state.valley_unit}")
+                logger.info(f"Long Invested: ${system_state.long_invested}")
+                logger.info(f"Long Cash: ${system_state.long_cash}")
+                logger.info(f"Hedge Long: ${system_state.hedge_long}")
+                logger.info(f"Hedge Short: ${system_state.hedge_short}")
+                logger.info(f"Unrealized PNL: ${system_state.unrealized_pnl}")
+                
+                # Calculate new unit before running logic
+                price_change = current_price - system_state.entry_price
+                new_unit = int(price_change / system_state.unit_value)
+                unit_changed = new_unit != system_state.current_unit
+                
+                if unit_changed:
+                    logger.info(f"🔄 UNIT TICK: {symbol} unit changing from {system_state.current_unit} to {new_unit}")
+                else:
+                    logger.info(f"📊 {symbol} unit unchanged at {system_state.current_unit}")
+                
+                # Run trading logic
+                from app.services.trading_logic import run_trading_logic_for_state
+                updated_state = await run_trading_logic_for_state(system_state, current_price)
+                
+                # Log final state after logic execution
+                logger.info(f"✅ POST-LOGIC STATE for {symbol}:")
+                logger.info(f"   Phase: {updated_state.current_phase}")
+                logger.info(f"   Unit: {updated_state.current_unit}")
+                logger.info(f"   Peak: {updated_state.peak_unit} @ ${updated_state.peak_price}")
+                logger.info(f"   Valley: {updated_state.valley_unit} @ ${updated_state.valley_price}")
+                logger.info(f"   Long/Invested: ${updated_state.long_invested}")
+                logger.info(f"   Long/Cash: ${updated_state.long_cash}")
+                logger.info(f"   Hedge/Long: ${updated_state.hedge_long}")
+                logger.info(f"   Hedge/Short: ${updated_state.hedge_short}")
+                logger.info(f"   Unrealized PNL: ${updated_state.unrealized_pnl}")
+                
+                # Update database with new state
+                plan.system_state = updated_state.model_dump_json_safe()
+                plan.current_phase = updated_state.current_phase
+                
+                processed_count += 1
+                
+                results.append({
+                    "symbol": symbol,
+                    "current_price": float(current_price),
+                    "unit_changed": unit_changed,
+                    "old_unit": system_state.current_unit,
+                    "new_unit": updated_state.current_unit,
+                    "phase": updated_state.current_phase,
+                    "peak_unit": updated_state.peak_unit,
+                    "valley_unit": updated_state.valley_unit,
+                    "long_invested": float(updated_state.long_invested),
+                    "long_cash": float(updated_state.long_cash),
+                    "hedge_long": float(updated_state.hedge_long),
+                    "hedge_short": float(updated_state.hedge_short),
+                    "unrealized_pnl": float(updated_state.unrealized_pnl)
+                })
+                
+            except Exception as e:
+                logger.error(f"Error processing {symbol}: {e}", exc_info=True)
+                results.append({
+                    "symbol": symbol,
+                    "error": str(e)
+                })
+        
+        # Commit all updates
+        await db.commit()
+        logger.info(f"Trading logic execution complete. Processed {processed_count} positions.")
+        
+        return {
+            "success": True,
+            "message": f"Processed {processed_count} trading positions",
+            "processed_count": processed_count,
+            "results": results
+        }
+        
+    except Exception as e:
+        await db.rollback()
+        logger.error(f"Error running trading logic: {e}", exc_info=True)
+        raise HTTPException(status_code=503, detail=f"Trading logic error: {str(e)}")
+
+@router.get("/trading/plans")
+async def get_all_trading_plans(db: AsyncSession = Depends(get_db_session)):
+    """
+    Get all trading plans from database for debugging.
+    """
+    try:
+        result = await db.execute(select(TradingPlan))
+        trading_plans = result.scalars().all()
+        
+        plans_data = []
+        for plan in trading_plans:
+            plans_data.append({
+                "id": plan.id,
+                "symbol": plan.symbol,
+                "is_active": plan.is_active,
+                "current_phase": plan.current_phase,
+                "leverage": plan.leverage,
+                "created_at": plan.created_at.isoformat() if plan.created_at else None,
+                "system_state_keys": list(plan.system_state.keys()) if plan.system_state else []
+            })
+        
+        return {
+            "total_plans": len(trading_plans),
+            "plans": plans_data
+        }
+        
+    except Exception as e:
+        logger.error(f"Error fetching trading plans: {e}", exc_info=True)
+        raise HTTPException(status_code=503, detail=f"Database error: {str(e)}")
