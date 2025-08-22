@@ -129,13 +129,12 @@ def cleanup_old_logs(days_to_keep: int = 7):
             logger.info(f"Cleaned up old log file: {log_file}")
 
 # Intercept standard logging messages and redirect to loguru
-class InterceptHandler:
+import logging
+
+class InterceptHandler(logging.Handler):
     """
     Intercept standard logging messages and redirect them to loguru.
     """
-    def __init__(self, level=0):
-        self.level = level
-    
     def emit(self, record):
         # Get corresponding Loguru level if it exists
         try:
