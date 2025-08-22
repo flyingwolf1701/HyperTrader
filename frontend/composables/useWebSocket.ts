@@ -1,49 +1,73 @@
 // frontend/composables/useWebSocket.ts
 
-import { ref } from 'vue'
-import { useSystemState } from './useSystemState'
-import type { SystemState } from '~/types'
+export const useWebSocket = () => {
+  const { updateSystemState, updateCurrentPrice, setConnectionStatus } = useSystemState()
+  
+  // Reactive state
+  const ws = ref<WebSocket | null>(null)
+  const connectionState = ref<'disconnected' | 'connecting' | 'connected' | 'error'>('disconnected')
+  const error = ref<string | null>(null)
+  const reconnectAttempts = ref(0)
+  const maxReconnectAttempts = 5
+  const reconnectDelay = ref(1000) // Start with 1 second
 
-const ws = ref<WebSocket | null>(null)
-const isConnected = ref(false)
-
-export function useWebSocket() {
-  const { setSystemState } = useSystemState()
-
-  const connect = () => {
-    if (process.server) return; // Don't run on server
-    if (ws.value) return; // Already connected or connecting
-
-    const wsUrl = `ws://${window.location.host}/ws/123`
-    console.log(`[useWebSocket] Attempting to connect to: ${wsUrl}`)
-    
-    const newWs = new WebSocket(wsUrl)
-
-    newWs.onopen = () => {
-      isConnected.value = true
-      console.log('[useWebSocket] Connection established.')
+  // Connection management
+  const connect = async (symbol: string) => {
+    if (ws.value?.readyState === WebSocket.OPEN) {
+      console.log('WebSocket already connected')
+      return
     }
 
-    newWs.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data) as SystemState
-        setSystemState(data)
-      } catch (error) {
-        console.error('[useWebSocket] Failed to parse message:', error)
+    try {
+      connectionState.value = 'connecting'
+      error.value = null
+      
+      // Connect to WebSocket endpoint
+      const wsUrl = `ws://localhost:3001/ws/${symbol}`
+      ws.value = new WebSocket(wsUrl)
+
+      ws.value.onopen = () => {
+        console.log(`WebSocket connected to ${symbol}`)
+        connectionState.value = 'connected'
+        setConnectionStatus(true)
+        reconnectAttempts.value = 0
+        reconnectDelay.value = 1000
+        error.value = null
       }
-    }
 
-    newWs.onerror = (error) => {
-      console.error('[useWebSocket] WebSocket Error:', error)
-    }
+      ws.value.onmessage = (event) => {
+        try {
+          const message: WebSocketMessage = JSON.parse(event.data)
+          handleMessage(message)
+        } catch (e) {
+          console.error('Failed to parse WebSocket message:', e)
+        }
+      }
 
-    newWs.onclose = (event) => {
-      ws.value = null
-      isConnected.value = false
-      console.log(`[useWebSocket] Connection closed. Code: ${event.code}`)
-    }
+      ws.value.onclose = (event) => {
+        console.log('WebSocket connection closed:', event.code, event.reason)
+        connectionState.value = 'disconnected'
+        setConnectionStatus(false)
+        
+        // Attempt to reconnect if not intentionally closed
+        if (event.code !== 1000 && reconnectAttempts.value < maxReconnectAttempts) {
+          scheduleReconnect(symbol)
+        }
+      }
 
-    ws.value = newWs
+      ws.value.onerror = (event) => {
+        console.error('WebSocket error:', event)
+        connectionState.value = 'error'
+        error.value = 'WebSocket connection error'
+        setConnectionStatus(false)
+      }
+
+    } catch (e) {
+      console.error('Failed to create WebSocket connection:', e)
+      connectionState.value = 'error'
+      error.value = 'Failed to establish connection'
+      setConnectionStatus(false)
+    }
   }
 
   const disconnect = () => {

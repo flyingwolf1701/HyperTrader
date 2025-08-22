@@ -8,7 +8,7 @@ import type {
 } from '~/types'
 
 export const useApi = () => {
-  const baseURL = 'http://localhost:3000/api/v1'
+  const baseURL = 'http://localhost:3001/api/v1'
   
   // Generic request wrapper with error handling
   const apiRequest = async <T>(url: string, options: RequestInit = {}): Promise<T> => {
