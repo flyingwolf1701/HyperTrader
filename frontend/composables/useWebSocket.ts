@@ -1,4 +1,4 @@
-import type { WebSocketMessage, WebSocketSystemStateUpdate, WebSocketPriceUpdate } from '~/types'
+// frontend/composables/useWebSocket.ts
 
 export const useWebSocket = () => {
   const { updateSystemState, updateCurrentPrice, setConnectionStatus } = useSystemState()
@@ -72,96 +72,9 @@ export const useWebSocket = () => {
 
   const disconnect = () => {
     if (ws.value) {
-      ws.value.close(1000, 'User requested disconnect')
-      ws.value = null
-    }
-    connectionState.value = 'disconnected'
-    setConnectionStatus(false)
-    reconnectAttempts.value = 0
-  }
-
-  const scheduleReconnect = (symbol: string) => {
-    reconnectAttempts.value++
-    
-    if (reconnectAttempts.value > maxReconnectAttempts) {
-      console.log('Max reconnect attempts reached')
-      error.value = 'Connection lost and max reconnect attempts exceeded'
-      return
-    }
-
-    console.log(`Scheduling reconnect attempt ${reconnectAttempts.value} in ${reconnectDelay.value}ms`)
-    
-    setTimeout(() => {
-      connect(symbol)
-    }, reconnectDelay.value)
-    
-    // Exponential backoff with max delay of 30 seconds
-    reconnectDelay.value = Math.min(reconnectDelay.value * 2, 30000)
-  }
-
-  const handleMessage = (message: WebSocketMessage) => {
-    switch (message.type) {
-      case 'system_state_update':
-        handleSystemStateUpdate(message as WebSocketSystemStateUpdate)
-        break
-        
-      case 'price_update':
-        handlePriceUpdate(message as WebSocketPriceUpdate)
-        break
-        
-      case 'error':
-        console.error('WebSocket error message:', message.data)
-        error.value = message.data.message || 'Unknown error'
-        break
-        
-      case 'connection_status':
-        console.log('Connection status:', message.data)
-        break
-        
-      default:
-        console.log('Unknown message type:', message.type)
+      ws.value.close()
     }
   }
 
-  const handleSystemStateUpdate = (message: WebSocketSystemStateUpdate) => {
-    const { system_state, current_price } = message.data
-    
-    updateSystemState(system_state)
-    if (current_price !== null && current_price !== undefined) {
-      updateCurrentPrice(current_price)
-    }
-  }
-
-  const handlePriceUpdate = (message: WebSocketPriceUpdate) => {
-    const { price } = message.data
-    updateCurrentPrice(price)
-  }
-
-  // Cleanup on unmount
-  const cleanup = () => {
-    disconnect()
-  }
-
-  // Auto cleanup when component unmounts
-  onUnmounted(() => {
-    cleanup()
-  })
-
-  return {
-    // State
-    connectionState: readonly(connectionState),
-    error: readonly(error),
-    reconnectAttempts: readonly(reconnectAttempts),
-    
-    // Methods
-    connect,
-    disconnect,
-    cleanup,
-    
-    // Computed
-    isConnected: computed(() => connectionState.value === 'connected'),
-    isConnecting: computed(() => connectionState.value === 'connecting'),
-    isDisconnected: computed(() => connectionState.value === 'disconnected'),
-    hasError: computed(() => connectionState.value === 'error' || error.value !== null)
-  }
+  return { isConnected, connect, disconnect }
 }

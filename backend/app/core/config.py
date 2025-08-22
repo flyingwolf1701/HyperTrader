@@ -1,3 +1,5 @@
+# backend/app/core/config.py
+
 from pydantic_settings import BaseSettings
 from pydantic import Field, validator
 from typing import List, Optional
@@ -31,7 +33,8 @@ class Settings(BaseSettings):
     WS_HEARTBEAT_INTERVAL: int = 30
     WS_RECONNECT_ATTEMPTS: int = 5
     
-    # Trading Configuration
+    # --- Trading Configuration ---
+    SYMBOL: str = "ETH" # <-- THIS LINE WAS ADDED
     DEFAULT_LEVERAGE: int = 1
     MAX_POSITIONS: int = 20
     PORTFOLIO_CASH_RESERVE_PERCENT: Decimal = Decimal("10")
@@ -58,42 +61,35 @@ class Settings(BaseSettings):
     @validator('ALLOWED_ORIGINS')
     def parse_allowed_origins(cls, v):
         if isinstance(v, str):
-            # Handle string format from .env like '["url1", "url2"]'
             import ast
             try:
                 return ast.literal_eval(v)
             except:
-                return [v]  # Single URL as string
+                return [v]
         return v
     
     @validator('DATABASE_URL')
     def validate_database_url(cls, v):
         if not v:
             raise ValueError("DATABASE_URL is required")
-        # Convert postgres:// to postgresql+asyncpg:// for async support
         if v.startswith("postgresql://"):
             v = v.replace("postgresql://", "postgresql+asyncpg://", 1)
-            
-        # Handle SSL parameters for asyncpg
         if "sslmode=" in v:
             if "sslmode=require" in v:
                 v = v.replace("sslmode=require", "ssl=require")
             elif "sslmode=prefer" in v:
                 v = v.replace("sslmode=prefer", "ssl=prefer")
-        
-        # Handle channel_binding parameter (not supported by asyncpg)
         if "&channel_binding=require" in v:
             v = v.replace("&channel_binding=require", "")
         if "?channel_binding=require" in v:
             v = v.replace("?channel_binding=require", "")
-        
         return v
     
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
         case_sensitive = True
-        extra = "ignore"  # Ignore extra fields in .env
+        extra = "ignore"
 
 
 # Create global settings instance
