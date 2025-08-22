@@ -292,3 +292,171 @@ async def get_account_balances():
     except Exception as e:
         logger.error(f"Error getting account balances: {e}", exc_info=True)
         raise HTTPException(status_code=503, detail=f"Service error: {str(e)}")
+
+# Position and Trade Endpoints
+@router.get("/exchange/positions")
+async def get_all_positions():
+    """
+    Get all open positions across all symbols.
+    """
+    try:
+        positions = await exchange_manager.fetch_positions()
+        return {
+            "positions": [
+                {
+                    "symbol": pos.symbol,
+                    "side": pos.side,
+                    "size": float(pos.size),
+                    "notional": float(pos.notional),
+                    "entry_price": float(pos.entry_price),
+                    "mark_price": float(pos.mark_price),
+                    "pnl": float(pos.pnl),
+                    "percentage": float(pos.percentage) if pos.percentage else None,
+                    "contracts": float(pos.contracts) if pos.contracts else None
+                }
+                for pos in positions
+            ]
+        }
+    except Exception as e:
+        logger.error(f"Error fetching positions: {e}", exc_info=True)
+        raise HTTPException(status_code=503, detail=f"Service error: {str(e)}")
+
+@router.get("/exchange/positions/{symbol}")
+async def get_position_for_symbol(symbol: str):
+    """
+    Get position information for a specific symbol.
+    """
+    try:
+        # Format symbol if needed
+        symbol_to_use = symbol
+        if "/" in symbol_to_use and ":" not in symbol_to_use:
+            parts = symbol_to_use.split("/")
+            if len(parts) == 2 and parts[1] == "USDC":
+                symbol_to_use = f"{parts[0]}/USDC:USDC"
+        
+        positions = await exchange_manager.fetch_positions([symbol_to_use])
+        
+        if not positions:
+            return {
+                "symbol": symbol_to_use,
+                "position": None,
+                "message": "No open position found for this symbol"
+            }
+        
+        # Should only be one position for the symbol
+        pos = positions[0]
+        return {
+            "symbol": symbol_to_use,
+            "position": {
+                "side": pos.side,
+                "size": float(pos.size),
+                "notional": float(pos.notional),
+                "entry_price": float(pos.entry_price),
+                "mark_price": float(pos.mark_price),
+                "pnl": float(pos.pnl),
+                "percentage": float(pos.percentage) if pos.percentage else None,
+                "contracts": float(pos.contracts) if pos.contracts else None
+            }
+        }
+    except Exception as e:
+        logger.error(f"Error fetching position for {symbol}: {e}", exc_info=True)
+        raise HTTPException(status_code=503, detail=f"Service error: {str(e)}")
+
+@router.get("/exchange/position-summary")
+async def get_position_summary():
+    """
+    Get a comprehensive summary of all positions with totals and metrics.
+    """
+    try:
+        summary = await exchange_manager.get_position_summary()
+        return summary
+    except Exception as e:
+        logger.error(f"Error generating position summary: {e}", exc_info=True)
+        raise HTTPException(status_code=503, detail=f"Service error: {str(e)}")
+
+@router.get("/exchange/open-orders")
+async def get_open_orders(symbol: Optional[str] = None):
+    """
+    Get all open orders, optionally filtered by symbol.
+    """
+    try:
+        # Format symbol if provided
+        symbol_to_use = None
+        if symbol:
+            symbol_to_use = symbol
+            if "/" in symbol_to_use and ":" not in symbol_to_use:
+                parts = symbol_to_use.split("/")
+                if len(parts) == 2 and parts[1] == "USDC":
+                    symbol_to_use = f"{parts[0]}/USDC:USDC"
+        
+        orders = await exchange_manager.fetch_open_orders(symbol_to_use)
+        return {
+            "open_orders": [
+                {
+                    "id": order.id,
+                    "symbol": order.symbol,
+                    "type": order.type,
+                    "side": order.side,
+                    "amount": float(order.amount),
+                    "price": float(order.price) if order.price else None,
+                    "filled": float(order.filled),
+                    "remaining": float(order.remaining),
+                    "status": order.status,
+                    "timestamp": order.timestamp,
+                    "datetime": order.datetime
+                }
+                for order in orders
+            ]
+        }
+    except Exception as e:
+        logger.error(f"Error fetching open orders: {e}", exc_info=True)
+        raise HTTPException(status_code=503, detail=f"Service error: {str(e)}")
+
+@router.get("/exchange/trades")
+async def get_recent_trades(
+    symbol: Optional[str] = None,
+    limit: Optional[int] = 50,
+    hours_back: Optional[int] = 24
+):
+    """
+    Get recent trades (fills) for the account.
+    
+    Args:
+        symbol: Optional symbol to filter trades
+        limit: Maximum number of trades to return (default: 50)
+        hours_back: How many hours back to fetch trades (default: 24)
+    """
+    try:
+        # Format symbol if provided
+        symbol_to_use = None
+        if symbol:
+            symbol_to_use = symbol
+            if "/" in symbol_to_use and ":" not in symbol_to_use:
+                parts = symbol_to_use.split("/")
+                if len(parts) == 2 and parts[1] == "USDC":
+                    symbol_to_use = f"{parts[0]}/USDC:USDC"
+        
+        # Calculate timestamp for hours_back
+        import time
+        since = int((time.time() - (hours_back * 3600)) * 1000) if hours_back else None
+        
+        trades = await exchange_manager.fetch_my_trades(symbol_to_use, since, limit)
+        return {
+            "trades": [
+                {
+                    "id": trade.id,
+                    "symbol": trade.symbol,
+                    "side": trade.side,
+                    "amount": float(trade.amount),
+                    "price": float(trade.price),
+                    "cost": float(trade.cost),
+                    "fee": float(trade.fee) if trade.fee else None,
+                    "timestamp": trade.timestamp,
+                    "datetime": trade.datetime
+                }
+                for trade in trades
+            ]
+        }
+    except Exception as e:
+        logger.error(f"Error fetching trades: {e}", exc_info=True)
+        raise HTTPException(status_code=503, detail=f"Service error: {str(e)}")

@@ -133,6 +133,9 @@ class InterceptHandler:
     """
     Intercept standard logging messages and redirect them to loguru.
     """
+    def __init__(self, level=0):
+        self.level = level
+    
     def emit(self, record):
         # Get corresponding Loguru level if it exists
         try:
