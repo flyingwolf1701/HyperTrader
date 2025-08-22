@@ -32,19 +32,31 @@ class MarketDataManager:
                     await websocket.send(json.dumps(subscription_message))
                     print(f"Subscribed to l2Book for {self.symbol}")
 
-                    # Process incoming messages
-                    async for message in websocket:
-                        data = json.loads(message)
-                        if data.get("channel") == "l2Book":
-                            # Extract the best bid and ask to find the mid-price
-                            levels = data.get("data", {}).get("levels", [])
-                            if len(levels) == 2 and levels[0] and levels[1]:
-                                best_bid = float(levels[0][0]["px"])
-                                best_ask = float(levels[1][0]["px"])
-                                mid_price = (best_bid + best_ask) / 2.0
-                                
-                                # When a new price is derived, call the trading logic
-                                await on_price_update(mid_price)
+                    # Process incoming messages  
+                    try:
+                        async for message in websocket:
+                            if not self._is_running:
+                                break
+                            try:
+                                data = json.loads(message)
+                                if data.get("channel") == "l2Book":
+                                    # Extract the best bid and ask to find the mid-price
+                                    levels = data.get("data", {}).get("levels", [])
+                                    if len(levels) == 2 and levels[0] and levels[1]:
+                                        best_bid = float(levels[0][0]["px"])
+                                        best_ask = float(levels[1][0]["px"])
+                                        mid_price = (best_bid + best_ask) / 2.0
+                                        
+                                        # When a new price is derived, call the trading logic
+                                        await on_price_update(mid_price)
+                            except Exception as e:
+                                print(f"Error processing message: {e}")
+                                await asyncio.sleep(0.1)
+                    except websockets.ConnectionClosed:
+                        print("WebSocket connection closed, will reconnect...")
+                    except Exception as e:
+                        print(f"WebSocket error: {e}")
+                        await asyncio.sleep(1)
 
             except (websockets.ConnectionClosed, websockets.InvalidURI, ConnectionRefusedError) as e:
                 print(f"WebSocket connection error: {e}. Reconnecting in 5 seconds...")

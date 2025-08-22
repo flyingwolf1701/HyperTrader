@@ -11,6 +11,8 @@ from app.db.session import init_db, close_db
 from app.api import endpoints, websockets
 from app.services.exchange import exchange_manager
 from app.services.market_data import market_data_manager
+# Import models to register them with SQLAlchemy
+from app.schemas import TradingPlan, UserFavorite, TradeHistory
 
 logging.basicConfig(level=getattr(logging, settings.LOG_LEVEL.upper()))
 logger = logging.getLogger(__name__)

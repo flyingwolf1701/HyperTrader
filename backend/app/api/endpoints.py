@@ -8,7 +8,7 @@ import json
 
 from app.db.session import get_db_session
 from app.models.state import SystemState, TradingPlanCreate, TradingPlanUpdate
-from app.schemas import TradingPlan, UserFavorite
+from app.schemas import TradingPlan, UserFavorite, TradeHistory
 from app.services.exchange import exchange_manager, MarketInfo
 from app.services.trading_logic import trading_logic
 
@@ -42,14 +42,14 @@ async def start_trading_plan(
                 detail=f"Unable to get current price for {plan_data.symbol}"
             )
         
-        # Calculate position size and place initial order
-        total_position_value = plan_data.initial_margin * plan_data.leverage
-        position_size = total_position_value / current_price
+        # Calculate margin and position size from USD position value
+        initial_margin = plan_data.position_size / plan_data.leverage
+        position_size = plan_data.position_size / current_price
         
         # Round to reasonable precision for HyperLiquid (6 decimal places)
         position_size_rounded = round(float(position_size), 6)
         
-        logger.info(f"Order calculation: margin=${plan_data.initial_margin}, leverage={plan_data.leverage}, price=${current_price}, position_size={position_size}, rounded={position_size_rounded}")
+        logger.info(f"Order calculation: position_size=${plan_data.position_size}, margin=${initial_margin}, leverage={plan_data.leverage}, price=${current_price}, token_amount={position_size_rounded}")
         
         # Place initial buy order
         order_result = await exchange_manager.place_order(
@@ -67,17 +67,17 @@ async def start_trading_plan(
         
         # Use actual fill price and cost
         entry_price = order_result.average_price or current_price
-        actual_cost = order_result.cost or total_position_value
+        actual_cost = order_result.cost or plan_data.position_size
         
-        # Calculate unit value (5% of margin with leverage factor)
-        unit_value = (plan_data.initial_margin * Decimal("0.05")) / plan_data.leverage
+        # Calculate unit value (1% of margin with leverage factor for testnet)
+        unit_value = (initial_margin * Decimal("0.01")) / plan_data.leverage
         
         # Create SystemState
         system_state = SystemState(
             symbol=plan_data.symbol,
             entry_price=entry_price,
             unit_value=unit_value,
-            initial_margin=plan_data.initial_margin,
+            initial_margin=initial_margin,
             leverage=plan_data.leverage,
             # Split initial margin 50/50 between allocations
             long_invested=actual_cost / 2,
@@ -90,7 +90,7 @@ async def start_trading_plan(
         trading_plan = TradingPlan(
             symbol=plan_data.symbol,
             system_state=system_state.dict(),
-            initial_margin=plan_data.initial_margin,
+            initial_margin=initial_margin,
             leverage=plan_data.leverage,
             current_phase=system_state.current_phase
         )
@@ -99,14 +99,40 @@ async def start_trading_plan(
         await db.commit()
         await db.refresh(trading_plan)
         
+        # Update the system state with the trading plan ID
+        system_state.trading_plan_id = trading_plan.id
+        trading_plan.system_state = system_state.dict()
+        await db.commit()
+        
+        # Save the initial trade to database
+        initial_trade = TradeHistory(
+            trading_plan_id=trading_plan.id,
+            symbol=plan_data.symbol,
+            order_id=order_result.order_id,
+            order_type="market",
+            side="buy",
+            amount=Decimal(str(position_size_rounded)),
+            price=Decimal(str(current_price)),
+            average_price=order_result.average_price,
+            cost=order_result.cost,
+            success=order_result.success,
+            reduce_only=False,
+            current_unit=0,
+            current_phase="advance"
+        )
+        db.add(initial_trade)
+        await db.commit()
+        
         logger.info(f"Started new trading plan for {plan_data.symbol} with ID {trading_plan.id}")
+        logger.info(f"📊 Initial trade saved to database: {order_result.order_id}")
         
         return {
             "success": True,
             "plan_id": trading_plan.id,
             "symbol": plan_data.symbol,
             "entry_price": float(entry_price),
-            "initial_margin": float(plan_data.initial_margin),
+            "position_size": float(plan_data.position_size),
+            "initial_margin": float(initial_margin),
             "order_id": order_result.order_id,
             "system_state": system_state.dict()
         }

@@ -2,7 +2,7 @@
 
 Advanced crypto trading bot implementing a sophisticated 4-phase hedging strategy on HyperLiquid DEX. This system automatically manages long/hedge allocations based on price movements, providing downside protection while capturing upside gains.
 
-## =€ Quick Start
+## =ï¿½ Quick Start
 
 ### Prerequisites
 
@@ -70,7 +70,7 @@ LOG_LEVEL=INFO
    - Create an API wallet (for trading only, no withdrawal risk)
    - Copy the credentials to your `.env`
 
-## <¯ Testing the System
+## <ï¿½ Testing the System
 
 ### 1. Start the Backend
 
@@ -111,19 +111,72 @@ curl "http://localhost:3000/api/v1/exchange/price/BTC%2FUSDC"
 
 ### 3. Start a Trading Plan
 
+#### Option A: Using the CLI Tool (Recommended)
+
+**Install CLI dependencies:**
+```bash
+pip install aiohttp  # For CLI tool
+```
+
+**Create a new trading plan:**
+```bash
+# Create $1000 ETH position with 10x leverage ($100 margin required)
+python trade_cli.py create ETH 1000 --leverage 10
+
+# Create $500 BTC position with 5x leverage ($100 margin required)  
+python trade_cli.py create BTC 500 --leverage 5
+
+# This will:
+# - Calculate margin required (position_size / leverage)
+# - Place initial buy order on testnet for USD position value
+# - Create trading plan in database
+# - Set up automatic price monitoring
+# - Save initial trade to database
+```
+
+**Monitor your trading plan in real-time:**
+```bash
+# Watch live trading activity
+python trade_cli.py monitor ETH --interval 3
+
+# Output shows:
+# ðŸ“Š ETH Monitor [ADVANCE] | Price: $3420.50 | Unit: 0 | Long: $500.00 | Hedge: $500.00/$0.00
+```
+
+**Check trading plan status:**
+```bash
+python trade_cli.py status ETH
+
+# Shows complete trading state:
+# ðŸ“ˆ Trading Plan Status for ETH
+#    Phase: ADVANCE
+#    Current Unit: 0
+#    Entry Price: $3420.50
+#    Long Invested: $500.00
+#    Hedge Long: $500.00
+```
+
+**CLI Help:**
+```bash
+python trade_cli.py help
+```
+
+#### Option B: Using Direct API Calls
+
 **Create a new trading plan:**
 ```bash
 curl -X POST "http://localhost:3000/api/v1/trade/start" \
   -H "Content-Type: application/json" \
   -d '{
-    "symbol": "BTC/USDC",
-    "initial_margin": 100.0,
-    "leverage": 1
+    "symbol": "ETH/USDC",
+    "position_size": 1000.0,
+    "leverage": 10
   }'
 ```
 
 This will:
-- Place initial buy order on testnet
+- Calculate margin required ($1000 / 10 = $100)
+- Place initial buy order for $1000 worth of ETH on testnet
 - Create SystemState with 50/50 allocation split  
 - Start tracking price movements
 - Return trading plan ID
@@ -160,7 +213,7 @@ Returns comprehensive state including:
 - Allocation percentages
 - Unrealized P&L
 
-## >ê 4-Phase Strategy Testing
+## >ï¿½ 4-Phase Strategy Testing
 
 ### Understanding the Phases
 
@@ -201,7 +254,7 @@ Returns comprehensive state including:
 2. Verify portfolio value recalculation
 3. Check fresh unit/phase initialization
 
-## =Ê Monitoring & Debugging
+## =ï¿½ Monitoring & Debugging
 
 ### Logs
 
@@ -232,7 +285,7 @@ Visit `http://localhost:3000/docs` for interactive API documentation with:
 - Request/response examples
 - Try-it-now functionality
 
-##   Important Testnet Notes
+## ï¿½ Important Testnet Notes
 
 1. **Always Verify Testnet Mode:**
    - Ensure `HYPERLIQUID_TESTNET=true` in `.env`
@@ -280,14 +333,14 @@ LOG_LEVEL=DEBUG
 
 This provides verbose output for all operations.
 
-## =€ Next Steps
+## =ï¿½ Next Steps
 
 1. **Test Strategy Performance:** Run multiple scenarios with different market conditions
 2. **Monitor Allocation Changes:** Track how system responds to price movements  
 3. **Verify Reset Mechanism:** Test portfolio growth and unit scaling
 4. **Prepare for Mainnet:** When ready, set up dedicated HyperLiquid account
 
-## =È Production Readiness
+## =ï¿½ Production Readiness
 
 Before moving to mainnet:
 - [ ] Set up dedicated HyperLiquid account
@@ -298,4 +351,4 @@ Before moving to mainnet:
 
 ---
 
-**  Remember: This is testnet - no real money at risk!** Use this environment to fully understand and test the 4-phase strategy before any mainnet deployment.
+**ï¿½ Remember: This is testnet - no real money at risk!** Use this environment to fully understand and test the 4-phase strategy before any mainnet deployment.

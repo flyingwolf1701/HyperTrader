@@ -29,6 +29,7 @@ class OrderResult(BaseModel):
     success: bool
     order_id: Optional[str] = None
     cost: Optional[Decimal] = None
+    average_price: Optional[Decimal] = None
     error_message: Optional[str] = None
 
 class ExchangeManager:

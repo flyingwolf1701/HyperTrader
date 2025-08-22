@@ -16,6 +16,7 @@ class SystemState(BaseModel):
     Represents the complete state of the trading system for a single symbol.
     """
     symbol: str = "ETH"
+    trading_plan_id: Optional[int] = None
     is_active: bool = False
     current_price: Decimal = Field(default=Decimal("0.0"))
 
@@ -46,7 +47,7 @@ class SystemState(BaseModel):
     
     # Constants
     MIN_TRADE_VALUE: Decimal = Field(default=Decimal("1.0"))
-    UNIT_PERCENTAGE: Decimal = Field(default=Decimal("0.05"))
+    UNIT_PERCENTAGE: Decimal = Field(default=Decimal("0.01"))
 
     def get_total_portfolio_value(self) -> Decimal:
         return self.long_invested + self.long_cash + self.hedge_long + self.hedge_short
@@ -76,8 +77,7 @@ system_state = SystemState()
 class TradingPlanBase(BaseModel):
     """Base model for a trading plan, used for creation and updates."""
     symbol: str = Field(..., description="The trading symbol, e.g., 'ETH'")
-    entry_price: Decimal = Field(..., description="The initial entry price for the strategy")
-    initial_portfolio_value: Decimal = Field(..., description="The starting capital in USD")
+    position_size: Decimal = Field(..., description="The USD value of the position to trade")
     leverage: int = Field(default=10, gt=0, description="The leverage to be used")
 
 class TradingPlanCreate(TradingPlanBase):
