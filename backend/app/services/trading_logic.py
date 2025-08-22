@@ -1,10 +1,9 @@
-import logging
 from decimal import Decimal
+from loguru import logger
 
 from app.models.state import SystemState, PhaseType
 from app.services.exchange import exchange_manager
-
-logger = logging.getLogger(__name__)
+from app.core.logging import get_trade_logger
 
 class TradingLogic:
     """
@@ -13,6 +12,7 @@ class TradingLogic:
 
     def __init__(self, state: SystemState):
         self.state = state
+        self.trade_logger = get_trade_logger(state.symbol)
 
     async def run(self, current_price: Decimal) -> SystemState:
         """
@@ -27,7 +27,7 @@ class TradingLogic:
 
         # Only run phase logic if the unit has changed
         if self.state.current_unit != previous_unit:
-            logger.info(f"[{self.state.symbol}] Unit changed from {previous_unit} to {self.state.current_unit}. Price: ${current_price}")
+            self.trade_logger.info(f"TRADE: Unit changed from {previous_unit} to {self.state.current_unit}. Price: ${current_price}")
             
             if self.state.current_phase == "advance":
                 await self._handle_advance_phase()
@@ -48,17 +48,22 @@ class TradingLogic:
     def _transition_to(self, new_phase: PhaseType):
         """Handles state transitions."""
         if self.state.current_phase != new_phase:
-            logger.info(f"[{self.state.symbol}] Transitioning from {self.state.current_phase} to {new_phase}")
+            self.trade_logger.info(f"TRADE: Phase transition from {self.state.current_phase} to {new_phase}")
             self.state.current_phase = new_phase
 
     async def _adjust_position(self, side: str, amount_usd: Decimal, reduce_only: bool = False):
         """Helper function to place orders and update state."""
         if amount_usd < self.state.MIN_TRADE_VALUE:
-            logger.info(f"[{self.state.symbol}] Trade amount ${amount_usd} is below minimum. Skipping.")
+            self.trade_logger.info(f"TRADE: Trade amount ${amount_usd} is below minimum. Skipping.")
             return
 
         amount_in_coins = amount_usd / self.state.current_price
         amount_rounded = round(float(amount_in_coins), 6)
+
+        self.trade_logger.info(
+            f"TRADE: Placing {side} order - Amount: ${amount_usd:.2f} "
+            f"({amount_rounded} coins), Reduce-only: {reduce_only}, Phase: {self.state.current_phase}"
+        )
 
         order_result = await exchange_manager.place_order(
             symbol=self.state.symbol,
@@ -70,11 +75,17 @@ class TradingLogic:
         )
 
         if order_result.success:
-            logger.info(f"[{self.state.symbol}] Successfully placed {side} order for ${amount_usd:.2f}.")
-            # Here you would update the state's invested/cash values based on the fill.
-            # This part needs to be implemented for full accuracy.
+            self.trade_logger.info(
+                f"TRADE: Successfully placed {side} order for ${amount_usd:.2f}. "
+                f"Order ID: {getattr(order_result, 'order_id', 'N/A')}"
+            )
+            # TODO: Update the state's invested/cash values based on the fill
+            # This part needs to be implemented for full accuracy
         else:
-            logger.error(f"[{self.state.symbol}] Failed to place {side} order for ${amount_usd:.2f}: {order_result.error_message}")
+            self.trade_logger.error(
+                f"TRADE: Failed to place {side} order for ${amount_usd:.2f}: "
+                f"{order_result.error_message}"
+            )
 
 
     async def _handle_advance_phase(self):
@@ -82,7 +93,7 @@ class TradingLogic:
         if self.state.peak_unit is None or self.state.current_unit > self.state.peak_unit:
             self.state.peak_unit = self.state.current_unit
             self.state.peak_price = self.state.current_price
-            logger.info(f"[{self.state.symbol}] New peak in ADVANCE: Unit {self.state.peak_unit} at ${self.state.peak_price}")
+            self.trade_logger.info(f"TRADE: New peak in ADVANCE: Unit {self.state.peak_unit} at ${self.state.peak_price}")
 
         if self.state.current_unit < self.state.peak_unit:
             self._transition_to("retracement")
@@ -111,7 +122,7 @@ class TradingLogic:
         if self.state.valley_unit is None or self.state.current_unit < self.state.valley_unit:
             self.state.valley_unit = self.state.current_unit
             self.state.valley_price = self.state.current_price
-            logger.info(f"[{self.state.symbol}] New valley in DECLINE: Unit {self.state.valley_unit} at ${self.state.valley_price}")
+            self.trade_logger.info(f"TRADE: New valley in DECLINE: Unit {self.state.valley_unit} at ${self.state.valley_price}")
 
         if self.state.current_unit > self.state.valley_unit:
             self._transition_to("recovery")

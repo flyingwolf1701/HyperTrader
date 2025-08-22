@@ -1,13 +1,11 @@
 import asyncio
-import logging
 from decimal import Decimal, InvalidOperation
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel
 import ccxt.async_support as ccxt
+from loguru import logger
 
 from app.core.config import settings
-
-logger = logging.getLogger(__name__)
 
 class MarketInfo(BaseModel):
     symbol: str

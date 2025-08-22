@@ -1,17 +1,18 @@
-import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from loguru import logger
 
 from app.core.config import settings
+from app.core.logging import configure_logging, setup_standard_logging_intercept
 from app.db.session import init_db, close_db_connection
 from app.api import endpoints, websockets
 from app.services.exchange import exchange_manager
 from app.services.market_data import market_data_manager
 
-# Configure logging
-logging.basicConfig(level=settings.LOG_LEVEL)
-logger = logging.getLogger(__name__)
+# Configure loguru logging
+configure_logging()
+setup_standard_logging_intercept()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
