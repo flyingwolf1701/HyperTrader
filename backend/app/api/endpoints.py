@@ -10,7 +10,6 @@ from app.db.session import get_db_session
 from app.models.state import SystemState, TradingPlanCreate, TradingPlanUpdate
 from app.schemas import TradingPlan, UserFavorite
 from app.services.exchange import exchange_manager, MarketInfo
-from app.services.trading_logic import trading_logic
 
 logger = logging.getLogger(__name__)
 
@@ -24,73 +23,75 @@ async def start_trading_plan(
     db: AsyncSession = Depends(get_db_session)
 ):
     """
-    Start a new trading plan by placing initial order and creating SystemState
+    Start a new trading plan based on a desired position size in USD.
     """
     try:
-        # Validate market is available
-        if not exchange_manager.is_market_available(plan_data.symbol):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Market {plan_data.symbol} is not available"
-            )
+        # --- Symbol Formatting ---
+        symbol_to_use = plan_data.symbol
+        if "/" in symbol_to_use and ":" not in symbol_to_use:
+            parts = symbol_to_use.split("/")
+            if len(parts) == 2 and parts[1] == "USDC":
+                symbol_to_use = f"{parts[0]}/USDC:USDC"
+        logger.info(f"Received trade request for {plan_data.symbol}, using formatted symbol {symbol_to_use}")
+
+        # --- Validation ---
+        if not exchange_manager.is_market_available(symbol_to_use):
+            raise HTTPException(status_code=400, detail=f"Market {symbol_to_use} is not available")
         
-        # Get current price
-        current_price = await exchange_manager.get_current_price(plan_data.symbol)
+        current_price = await exchange_manager.get_current_price(symbol_to_use)
         if current_price is None:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=f"Unable to get current price for {plan_data.symbol}"
-            )
+            raise HTTPException(status_code=503, detail=f"Unable to get current price for {symbol_to_use}")
         
-        # Calculate position size and place initial order
-        total_position_value = plan_data.initial_margin * plan_data.leverage
-        position_size = total_position_value / current_price
+        # --- Logic: Calculate based on position_size_usd ---
+        total_position_value = plan_data.position_size_usd
+        amount_in_coins = total_position_value / current_price
+        required_margin = total_position_value / plan_data.leverage
+        amount_rounded = round(float(amount_in_coins), 6)
         
-        # Round to reasonable precision for HyperLiquid (6 decimal places)
-        position_size_rounded = round(float(position_size), 6)
-        
-        logger.info(f"Order calculation: margin=${plan_data.initial_margin}, leverage={plan_data.leverage}, price=${current_price}, position_size={position_size}, rounded={position_size_rounded}")
-        
-        # Place initial buy order
+        logger.info(f"Order calc: position_size=${total_position_value}, leverage={plan_data.leverage}, price=${current_price}, amount_coins={amount_rounded}, required_margin=${required_margin:.2f}")
+
+        # --- FIX: Set Leverage Before Placing the Order ---
+        try:
+            await exchange_manager.exchange.set_leverage(plan_data.leverage, symbol_to_use)
+            logger.info(f"Successfully set leverage to {plan_data.leverage} for {symbol_to_use}")
+        except Exception as e:
+            logger.error(f"Failed to set leverage for {symbol_to_use}: {e}", exc_info=True)
+            raise HTTPException(status_code=503, detail=f"Failed to set leverage: {str(e)}")
+        # --- END FIX ---
+
+        # --- Place Order ---
         order_result = await exchange_manager.place_order(
-            symbol=plan_data.symbol,
+            symbol=symbol_to_use,
             order_type="market",
             side="buy",
-            amount=position_size_rounded
+            amount=amount_rounded,
+            price=current_price 
         )
         
         if not order_result.success:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=f"Failed to place initial order: {order_result.error_message}"
-            )
+            raise HTTPException(status_code=503, detail=f"Failed to place initial order: {order_result.error_message}")
         
-        # Use actual fill price and cost
+        # --- Create State ---
         entry_price = order_result.average_price or current_price
         actual_cost = order_result.cost or total_position_value
+        unit_value = (required_margin * Decimal("0.05")) / plan_data.leverage
         
-        # Calculate unit value (5% of margin with leverage factor)
-        unit_value = (plan_data.initial_margin * Decimal("0.05")) / plan_data.leverage
-        
-        # Create SystemState
         system_state = SystemState(
-            symbol=plan_data.symbol,
+            symbol=symbol_to_use,
             entry_price=entry_price,
             unit_value=unit_value,
-            initial_margin=plan_data.initial_margin,
+            required_margin=required_margin,
             leverage=plan_data.leverage,
-            # Split initial margin 50/50 between allocations
             long_invested=actual_cost / 2,
             long_cash=Decimal("0"),
             hedge_long=actual_cost / 2,
             hedge_short=Decimal("0")
         )
         
-        # Save to database
         trading_plan = TradingPlan(
-            symbol=plan_data.symbol,
+            symbol=symbol_to_use,
             system_state=system_state.dict(),
-            initial_margin=plan_data.initial_margin,
+            initial_margin=float(required_margin),
             leverage=plan_data.leverage,
             current_phase=system_state.current_phase
         )
@@ -99,26 +100,29 @@ async def start_trading_plan(
         await db.commit()
         await db.refresh(trading_plan)
         
-        logger.info(f"Started new trading plan for {plan_data.symbol} with ID {trading_plan.id}")
+        logger.info(f"Started new trading plan for {symbol_to_use} with ID {trading_plan.id}")
         
+        system_state_dict = system_state.dict()
+        for key, value in system_state_dict.items():
+            if isinstance(value, Decimal):
+                system_state_dict[key] = float(value)
+
         return {
             "success": True,
             "plan_id": trading_plan.id,
-            "symbol": plan_data.symbol,
+            "symbol": symbol_to_use,
             "entry_price": float(entry_price),
-            "initial_margin": float(plan_data.initial_margin),
+            "position_size_usd": float(total_position_value),
+            "required_margin": float(required_margin),
             "order_id": order_result.order_id,
-            "system_state": system_state.dict()
+            "system_state": system_state_dict
         }
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error starting trading plan: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Internal error: {str(e)}"
-        )
+        logger.error(f"Error starting trading plan: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
 
 
 @router.get("/trade/state/{symbol}", response_model=dict)
@@ -128,10 +132,15 @@ async def get_trading_state(
 ):
     """Get current trading state for a symbol"""
     try:
-        # Query for active trading plan
+        symbol_to_use = symbol
+        if "/" in symbol_to_use and ":" not in symbol_to_use:
+            parts = symbol_to_use.split("/")
+            if len(parts) == 2 and parts[1] == "USDC":
+                symbol_to_use = f"{parts[0]}/USDC:USDC"
+
         result = await db.execute(
             select(TradingPlan).where(
-                TradingPlan.symbol == symbol,
+                TradingPlan.symbol == symbol_to_use,
                 TradingPlan.is_active == "active"
             ).order_by(TradingPlan.created_at.desc())
         )
@@ -140,26 +149,28 @@ async def get_trading_state(
         if not trading_plan:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"No active trading plan found for {symbol}"
+                detail=f"No active trading plan found for {symbol_to_use}"
             )
         
-        # Parse system state
         system_state = SystemState(**trading_plan.system_state)
         
-        # Get current market price
-        current_price = await exchange_manager.get_current_price(symbol)
+        current_price = await exchange_manager.get_current_price(symbol_to_use)
         
-        # Calculate unrealized PnL
         if current_price:
-            # Simple PnL calculation - this could be more sophisticated
             price_change = current_price - system_state.entry_price
             position_value = system_state.long_invested + system_state.hedge_long
-            unrealized_pnl = (price_change / system_state.entry_price) * position_value
-            system_state.unrealized_pnl = unrealized_pnl
+            if system_state.entry_price > 0:
+                unrealized_pnl = (price_change / system_state.entry_price) * position_value
+                system_state.unrealized_pnl = unrealized_pnl
         
+        system_state_dict = system_state.dict()
+        for key, value in system_state_dict.items():
+            if isinstance(value, Decimal):
+                system_state_dict[key] = float(value)
+
         return {
             "plan_id": trading_plan.id,
-            "system_state": system_state.dict(),
+            "system_state": system_state_dict,
             "current_price": float(current_price) if current_price else None,
             "created_at": trading_plan.created_at.isoformat(),
             "updated_at": trading_plan.updated_at.isoformat()
@@ -168,7 +179,7 @@ async def get_trading_state(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error getting trading state for {symbol}: {e}")
+        logger.error(f"Error getting trading state for {symbol}: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Internal error: {str(e)}"
@@ -181,12 +192,17 @@ async def update_trading_state(
     update_data: TradingPlanUpdate,
     db: AsyncSession = Depends(get_db_session)
 ):
-    """Update trading state (used by WebSocket handler)"""
+    """Update trading state (used by the internal WebSocket/trading logic handler)"""
     try:
-        # Get current trading plan
+        symbol_to_use = symbol
+        if "/" in symbol_to_use and ":" not in symbol_to_use:
+            parts = symbol_to_use.split("/")
+            if len(parts) == 2 and parts[1] == "USDC":
+                symbol_to_use = f"{parts[0]}/USDC:USDC"
+
         result = await db.execute(
             select(TradingPlan).where(
-                TradingPlan.symbol == symbol,
+                TradingPlan.symbol == symbol_to_use,
                 TradingPlan.is_active == "active"
             ).order_by(TradingPlan.created_at.desc())
         )
@@ -195,17 +211,19 @@ async def update_trading_state(
         if not trading_plan:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"No active trading plan found for {symbol}"
+                detail=f"No active trading plan found for {symbol_to_use}"
             )
         
-        # Update system state
         system_state_dict = trading_plan.system_state.copy()
         
-        for field, value in update_data.dict(exclude_unset=True).items():
+        update_fields = update_data.dict(exclude_unset=True)
+        for field, value in update_fields.items():
             if value is not None:
-                system_state_dict[field] = value
+                if isinstance(value, (int, float, Decimal)):
+                    system_state_dict[field] = str(value)
+                else:
+                    system_state_dict[field] = value
         
-        # Update database record
         await db.execute(
             update(TradingPlan)
             .where(TradingPlan.id == trading_plan.id)
@@ -216,249 +234,61 @@ async def update_trading_state(
         )
         await db.commit()
         
-        return {"success": True, "updated_fields": list(update_data.dict(exclude_unset=True).keys())}
+        return {"success": True, "updated_fields": list(update_fields.keys())}
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error updating trading state for {symbol}: {e}")
+        logger.error(f"Error updating trading state for {symbol}: {e}", exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Internal error: {str(e)}"
         )
 
 
-# Exchange Endpoints
+# Exchange Info Endpoints
 @router.get("/exchange/pairs", response_model=List[dict])
 async def get_exchange_pairs():
-    """Get all available trading pairs from the exchange"""
     try:
         markets = await exchange_manager.fetch_markets()
-        
         pairs = []
         for market in markets:
-            if market.active:  # Only return active markets
+            if market.active:
                 pairs.append({
-                    "symbol": market.symbol,
-                    "base": market.base,
-                    "quote": market.quote,
+                    "symbol": market.symbol, "base": market.base, "quote": market.quote,
                     "min_amount": float(market.min_amount) if market.min_amount else None,
                     "max_amount": float(market.max_amount) if market.max_amount else None,
                     "min_price": float(market.min_price) if market.min_price else None,
                     "max_price": float(market.max_price) if market.max_price else None,
                 })
-        
         return pairs
-        
     except Exception as e:
-        logger.error(f"Error fetching exchange pairs: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Unable to fetch market data: {str(e)}"
-        )
-
+        logger.error(f"Error fetching exchange pairs: {e}", exc_info=True)
+        raise HTTPException(status_code=503, detail=f"Unable to fetch market data: {str(e)}")
 
 @router.get("/exchange/price/{symbol}")
 async def get_current_price(symbol: str):
-    """Get current price for a symbol"""
     try:
-        # Convert symbol format for HyperLiquid if needed
-        # API accepts BTC/USDC but HyperLiquid needs BTC/USDC:USDC
-        hyperliquid_symbol = symbol
-        if "/" in symbol and ":" not in symbol:
-            parts = symbol.split("/")
+        symbol_to_use = symbol
+        if "/" in symbol_to_use and ":" not in symbol_to_use:
+            parts = symbol_to_use.split("/")
             if len(parts) == 2 and parts[1] == "USDC":
-                # For HyperLiquid, USDC pairs need settlement currency
-                hyperliquid_symbol = f"{parts[0]}/USDC:USDC"
-            
-        logger.info(f"Getting price for symbol: {symbol} (converted to: {hyperliquid_symbol})")
-        price = await exchange_manager.get_current_price(hyperliquid_symbol)
-        
+                symbol_to_use = f"{parts[0]}/USDC:USDC"
+        price = await exchange_manager.get_current_price(symbol_to_use)
         if price is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Unable to get price for {symbol}"
-            )
-        
-        return {
-            "symbol": symbol,
-            "price": float(price),
-            "timestamp": None  # Could add timestamp from ticker data
-        }
-        
+            raise HTTPException(status_code=404, detail=f"Unable to get price for {symbol_to_use}")
+        return {"symbol": symbol_to_use, "price": float(price)}
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error getting price for {symbol}: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Service error: {str(e)}"
-        )
-
+        logger.error(f"Error getting price for {symbol}: {e}", exc_info=True)
+        raise HTTPException(status_code=503, detail=f"Service error: {str(e)}")
 
 @router.get("/exchange/balances")
 async def get_account_balances():
-    """Get all account balances"""
     try:
         balances = await exchange_manager.fetch_all_balances()
-        
-        return {
-            "balances": balances,
-            "timestamp": None
-        }
-        
+        return { "balances": balances }
     except Exception as e:
-        logger.error(f"Error getting account balances: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f"Service error: {str(e)}"
-        )
-
-
-# User Favorites Endpoints
-@router.get("/user/favorites", response_model=List[dict])
-async def get_user_favorites(
-    user_id: str = "default_user",
-    db: AsyncSession = Depends(get_db_session)
-):
-    """Get user's favorite trading pairs"""
-    try:
-        result = await db.execute(
-            select(UserFavorite)
-            .where(
-                UserFavorite.user_id == user_id,
-                UserFavorite.is_active == True
-            )
-            .order_by(UserFavorite.sort_order.asc(), UserFavorite.created_at.asc())
-        )
-        favorites = result.scalars().all()
-        
-        favorites_list = []
-        for fav in favorites:
-            # Get current price if possible
-            current_price = await exchange_manager.get_current_price(fav.symbol)
-            
-            favorites_list.append({
-                "id": fav.id,
-                "symbol": fav.symbol,
-                "base_asset": fav.base_asset,
-                "quote_asset": fav.quote_asset,
-                "exchange": fav.exchange,
-                "sort_order": fav.sort_order,
-                "notes": fav.notes,
-                "tags": fav.tags.split(",") if fav.tags else [],
-                "current_price": float(current_price) if current_price else None,
-                "created_at": fav.created_at.isoformat()
-            })
-        
-        return favorites_list
-        
-    except Exception as e:
-        logger.error(f"Error getting user favorites: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Internal error: {str(e)}"
-        )
-
-
-@router.post("/user/favorites", response_model=dict)
-async def add_user_favorite(
-    symbol: str,
-    user_id: str = "default_user",
-    notes: Optional[str] = None,
-    tags: Optional[List[str]] = None,
-    db: AsyncSession = Depends(get_db_session)
-):
-    """Add a trading pair to user favorites"""
-    try:
-        # Check if symbol exists and is valid
-        market = exchange_manager.get_market_info(symbol)
-        if not market:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid trading pair: {symbol}"
-            )
-        
-        # Check if already favorited
-        existing = await db.execute(
-            select(UserFavorite).where(
-                UserFavorite.user_id == user_id,
-                UserFavorite.symbol == symbol
-            )
-        )
-        if existing.scalar_one_or_none():
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Symbol {symbol} is already in favorites"
-            )
-        
-        # Create favorite
-        favorite = UserFavorite(
-            user_id=user_id,
-            symbol=symbol,
-            base_asset=market.base,
-            quote_asset=market.quote,
-            notes=notes,
-            tags=",".join(tags) if tags else None
-        )
-        
-        db.add(favorite)
-        await db.commit()
-        await db.refresh(favorite)
-        
-        return {
-            "success": True,
-            "id": favorite.id,
-            "symbol": symbol,
-            "message": f"Added {symbol} to favorites"
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error adding favorite {symbol}: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Internal error: {str(e)}"
-        )
-
-
-@router.delete("/user/favorites/{favorite_id}")
-async def remove_user_favorite(
-    favorite_id: int,
-    user_id: str = "default_user",
-    db: AsyncSession = Depends(get_db_session)
-):
-    """Remove a trading pair from user favorites"""
-    try:
-        # Find and delete favorite
-        result = await db.execute(
-            select(UserFavorite).where(
-                UserFavorite.id == favorite_id,
-                UserFavorite.user_id == user_id
-            )
-        )
-        favorite = result.scalar_one_or_none()
-        
-        if not favorite:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Favorite not found"
-            )
-        
-        await db.delete(favorite)
-        await db.commit()
-        
-        return {
-            "success": True,
-            "message": f"Removed {favorite.symbol} from favorites"
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error removing favorite {favorite_id}: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Internal error: {str(e)}"
-        )
+        logger.error(f"Error getting account balances: {e}", exc_info=True)
+        raise HTTPException(status_code=503, detail=f"Service error: {str(e)}")

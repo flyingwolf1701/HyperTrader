@@ -1,76 +1,53 @@
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
-from sqlalchemy.orm import DeclarativeBase
 import logging
-
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
+from sqlalchemy.orm import sessionmaker
 from app.core.config import settings
+from app.db.base import Base
 
 logger = logging.getLogger(__name__)
 
-# SQLAlchemy 2.0 declarative base
-class Base(DeclarativeBase):
-    pass
+# --- FIX: Pass SSL arguments separately for the asyncpg driver ---
+engine = create_async_engine(
+    settings.DATABASE_URL,
+    echo=True,
+    future=True,
+    connect_args={"ssl": "require"} # This is the correct way to pass sslmode
+)
+# --- END FIX ---
 
-# Global async engine and session maker
-engine = None
-async_session_maker = None
-
+# Create a configured "AsyncSession" class
+AsyncSessionLocal = sessionmaker(
+    bind=engine,
+    class_=AsyncSession,
+    expire_on_commit=False,
+    autocommit=False,
+    autoflush=False,
+)
 
 async def init_db():
-    """Initialize the database connection."""
-    global engine, async_session_maker
-    
-    try:
-        # Create async engine
-        engine = create_async_engine(
-            settings.DATABASE_URL,
-            echo=settings.DEBUG,  # Log SQL queries in debug mode
-            pool_pre_ping=True,   # Verify connections before use
-            pool_recycle=3600     # Recycle connections every hour
-        )
-        
-        # Create async session maker
-        async_session_maker = async_sessionmaker(
-            engine,
-            class_=AsyncSession,
-            expire_on_commit=False
-        )
-        
-        logger.info(f"Database connection initialized successfully")
-        
-        # Create tables if they don't exist
-        async with engine.begin() as conn:
+    """Initialize the database and create tables if they don't exist."""
+    async with engine.begin() as conn:
+        try:
             await conn.run_sync(Base.metadata.create_all)
-        
-        logger.info("Database tables created/verified")
-        
-    except Exception as e:
-        logger.error(f"Failed to initialize database: {e}")
-        raise
-
-
-async def close_db():
-    """Close the database connection."""
-    global engine
-    
-    if engine:
-        await engine.dispose()
-        logger.info("Database connection closed")
-
+            logger.info("Database tables created/verified")
+        except Exception as e:
+            logger.error(f"Error creating database tables: {e}")
+            raise
 
 async def get_db_session() -> AsyncSession:
-    """
-    Dependency function to get a database session.
-    Use this in FastAPI endpoints with Depends(get_db_session).
-    """
-    if not async_session_maker:
-        raise RuntimeError("Database not initialized. Call init_db() first.")
-    
-    async with async_session_maker() as session:
+    """FastAPI dependency to get a database session for a single request."""
+    async with AsyncSessionLocal() as session:
         try:
             yield session
-            await session.commit()
         except Exception:
             await session.rollback()
             raise
         finally:
             await session.close()
+
+async def close_db_connection():
+    """
+    Closes the database connection pool. This is called during application shutdown.
+    """
+    logger.info("Closing database connection pool.")
+    await engine.dispose()

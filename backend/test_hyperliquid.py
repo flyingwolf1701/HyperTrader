@@ -9,8 +9,8 @@ async def test_hyperliquid_connection():
     
     # Load environment variables from .env
     load_dotenv('.env')
-    api_key = os.getenv('HYPERLIQUID_API_KEY')
-    private_key = os.getenv('HYPERLIQUID_SECRET_KEY')
+    api_key = os.getenv('HYPERLIQUID_WALLET_KEY')
+    private_key = os.getenv('HYPERLIQUID_PRIVATE_KEY')
     
     if not api_key or not private_key:
         print("ERROR: Missing API credentials in .env file")

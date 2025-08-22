@@ -1,55 +1,95 @@
-# backend/app/api/websockets.py
-
+import asyncio
 import logging
-from typing import List
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from app.models.state import system_state
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select, update
+from decimal import Decimal
+
+from app.db.session import get_db_session
+from app.models.state import SystemState
+from app.schemas import TradingPlan
+from app.services.exchange import exchange_manager
+# Import the new function from trading_logic
+from app.services.trading_logic import run_trading_logic_for_state
 
 logger = logging.getLogger(__name__)
 
-class ConnectionManager:
-    """Manages active WebSocket connections."""
-    def __init__(self):
-        self.active_connections: List[WebSocket] = []
-
-    async def connect(self, websocket: WebSocket):
-        """Accepts a new WebSocket connection and adds it to the list."""
-        await websocket.accept()
-        self.active_connections.append(websocket)
-        logger.info(f"New client connected. Total clients: {len(self.active_connections)}")
-
-    def disconnect(self, websocket: WebSocket):
-        """Removes a WebSocket connection from the list."""
-        self.active_connections.remove(websocket)
-        logger.info(f"Client disconnected. Total clients: {len(self.active_connections)}")
-
-    async def broadcast(self, message: str):
-        """Sends a message to all connected clients."""
-        for connection in self.active_connections:
-            await connection.send_text(message)
-
-# Create a single manager instance to be used across the application
-websocket_manager = ConnectionManager()
 router = APIRouter()
 
-@router.websocket("/ws/{client_id}")
-async def websocket_endpoint(websocket: WebSocket, client_id: int):
-    """
-    Handles WebSocket connections from frontend clients.
-    """
-    await websocket_manager.connect(websocket)
-    
-    # Send the current system state immediately upon connection
-    try:
-        await websocket.send_text(system_state.model_dump_json())
-    except Exception as e:
-        logger.error(f"Error sending initial state to client {client_id}: {e}")
+@router.websocket("/ws/{symbol}")
+async def websocket_endpoint(
+    websocket: WebSocket,
+    symbol: str,
+    db: AsyncSession = Depends(get_db_session)
+):
+    await websocket.accept()
+    logger.info(f"WebSocket connection established for {symbol}")
 
     try:
-        # Keep the connection alive and listen for messages
+        # 1. Fetch the initial trading plan state from the database
+        result = await db.execute(
+            select(TradingPlan).where(
+                TradingPlan.symbol == symbol,
+                TradingPlan.is_active == "active"
+            ).order_by(TradingPlan.created_at.desc())
+        )
+        trading_plan = result.scalar_one_or_none()
+
+        if not trading_plan:
+            await websocket.send_json({"error": f"No active trading plan for {symbol}"})
+            await websocket.close()
+            return
+
+        # 2. Deserialize the database JSON into our Pydantic SystemState model
+        system_state = SystemState(**trading_plan.system_state)
+
+        # 3. Start the main trading loop
         while True:
-            # This loop keeps the connection open.
-            # You could add logic here to handle messages from the client if needed.
-            await websocket.receive_text()
+            # Get the latest price from the exchange
+            current_price = await exchange_manager.get_current_price(symbol)
+            if current_price is None:
+                logger.warning(f"Could not retrieve price for {symbol}, skipping cycle.")
+                await asyncio.sleep(5) # Wait before retrying
+                continue
+
+            # 4. Run the trading logic with the current state and price
+            # This returns the updated state object
+            system_state = await run_trading_logic_for_state(system_state, current_price)
+
+            # 5. Send the updated state to the client
+            # Convert Decimal to string for JSON serialization
+            state_dict = system_state.dict()
+            for key, value in state_dict.items():
+                if isinstance(value, Decimal):
+                    state_dict[key] = str(value)
+
+            await websocket.send_json({
+                "type": "state_update",
+                "data": state_dict
+            })
+
+            # 6. Persist the updated state back to the database
+            await db.execute(
+                update(TradingPlan)
+                .where(TradingPlan.id == trading_plan.id)
+                .values(
+                    system_state=system_state.dict(),
+                    current_phase=system_state.current_phase
+                )
+            )
+            await db.commit()
+
+            # Wait for the next cycle
+            await asyncio.sleep(10) # Adjust interval as needed
+
     except WebSocketDisconnect:
-        websocket_manager.disconnect(websocket)
+        logger.info(f"WebSocket for {symbol} disconnected.")
+    except Exception as e:
+        logger.error(f"Error in WebSocket for {symbol}: {e}", exc_info=True)
+        # Try to send an error message before closing
+        try:
+            await websocket.send_json({"error": "An internal error occurred."})
+        except Exception:
+            pass # Connection might already be closed
+        await websocket.close(code=1011, reason="Internal Server Error")
+
