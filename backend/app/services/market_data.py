@@ -1,10 +1,8 @@
 import asyncio
-import logging
 from decimal import Decimal
+from loguru import logger
 
 from app.services.exchange import exchange_manager
-
-logger = logging.getLogger(__name__)
 
 class MarketDataManager:
     """

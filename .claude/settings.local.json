@@ -12,7 +12,9 @@
       "Bash(timeout:*)",
       "Bash(bun add:*)",
       "Bash(cp:*)",
-      "Bash(bun run:*)"
+      "Bash(bun run:*)",
+      "WebFetch(domain:docs.ccxt.com)",
+      "Bash(uvicorn:*)"
     ],
     "deny": [],
     "ask": []

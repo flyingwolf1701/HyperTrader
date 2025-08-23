@@ -37,7 +37,7 @@ Advanced crypto trading bot implementing a sophisticated 4-phase hedging strateg
    uv run python -m app.main
    ```
 
-The API will be available at `http://localhost:3000` with docs at `http://localhost:3000/docs`.
+The API will be available at `http://localhost:8000` with docs at `http://localhost:8000/docs`.
 
 ## =' Configuration
 
@@ -81,7 +81,7 @@ LOG_LEVEL=INFO
 
 ```bash
 cd backend
-uv run python -m app.main
+uv run uvicorn app.main:app --reload
 ```
 
 Expected output:
@@ -100,21 +100,21 @@ INFO:     Application startup complete.
 **Health Check:**
 
 ```bash
-curl http://localhost:3000/health
+curl http://localhost:8000/health
 # Expected: {"status":"healthy","app":"HyperTrader"}
 ```
 
 **Get Available Markets:**
 
 ```bash
-curl http://localhost:3000/api/v1/exchange/pairs
+curl http://localhost:8000/api/v1/exchange/pairs
 # Returns list of available trading pairs
 ```
 
 **Get Current Price:**
 
 ```bash
-curl "http://localhost:3000/api/v1/exchange/price/BTC%2FUSDC"
+curl "http://localhost:8000/api/v1/exchange/price/BTC%2FUSDC"
 # Returns current BTC price
 ```
 
@@ -123,11 +123,11 @@ curl "http://localhost:3000/api/v1/exchange/price/BTC%2FUSDC"
 **Create a new trading plan:**
 
 ```bash
-curl -X POST "http://localhost:3000/api/v1/trade/start" \
+curl -X POST "http://localhost:8000/api/v1/trade/start" \
   -H "Content-Type: application/json" \
   -d '{
     "symbol": "BTC/USDC",
-    "initial_margin": 100.0,
+    "position_size_usd": 1000.0,
     "leverage": 10
   }'
 ```
@@ -143,22 +143,14 @@ This will:
 
 **WebSocket Connection:**
 
-```javascript
-// Connect to live trading data
-const ws = new WebSocket("ws://localhost:3000/ws/BTC%2FUSDC");
+```bash
+# WebSocket endpoint for real-time trading data
+# ws://localhost:8000/ws/BTC%2FUSDC
 
-// Start trading loop
-ws.send(
-  JSON.stringify({
-    type: "start_trading",
-  })
-);
-
-// Listen for updates
-ws.onmessage = (event) => {
-  const data = JSON.parse(event.data);
-  console.log(data);
-};
+# Note: WebSocket connections require a WebSocket client
+# You can use tools like wscat for testing:
+# npm install -g wscat
+# wscat -c "ws://localhost:8000/ws/BTC%2FUSDC"
 ```
 
 ### 5. Check Trading State
@@ -166,7 +158,7 @@ ws.onmessage = (event) => {
 **Get current state:**
 
 ```bash
-curl "http://localhost:3000/api/v1/trade/state/BTC%2FUSDC"
+curl "http://localhost:8000/api/v1/trade/state/BTC%2FUSDC"
 ```
 
 Returns comprehensive state including:
@@ -175,6 +167,52 @@ Returns comprehensive state including:
 - Unit positions and tracking
 - Allocation percentages
 - Unrealized P&L
+
+### 6. Monitor Live Positions & Trades
+
+**Check all open positions:**
+
+```bash
+curl "http://localhost:8000/api/v1/exchange/positions"
+```
+
+**Check position for specific symbol:**
+
+```bash
+curl "http://localhost:8000/api/v1/exchange/positions/BTC%2FUSDC"
+```
+
+**Get comprehensive position summary:**
+
+```bash
+curl "http://localhost:8000/api/v1/exchange/position-summary"
+```
+
+**View recent trades:**
+
+```bash
+# Last 24 hours, up to 50 trades
+curl "http://localhost:8000/api/v1/exchange/trades"
+
+# Last 6 hours for specific symbol
+curl "http://localhost:8000/api/v1/exchange/trades?symbol=BTC%2FUSDC&hours_back=6&limit=20"
+```
+
+**Check open orders:**
+
+```bash
+# All open orders
+curl "http://localhost:8000/api/v1/exchange/open-orders"
+
+# Open orders for specific symbol
+curl "http://localhost:8000/api/v1/exchange/open-orders?symbol=BTC%2FUSDC"
+```
+
+**View account balances:**
+
+```bash
+curl "http://localhost:8000/api/v1/exchange/balances"
+```
 
 ## >� 4-Phase Strategy Testing
 
@@ -226,15 +264,46 @@ Returns comprehensive state including:
 
 ## =� Monitoring & Debugging
 
-### Logs
+### Enhanced Logging System
 
+The application now uses **Loguru** for advanced logging with automatic file rotation and structured logging:
+
+**Log Files:**
 ```bash
-# Watch live logs
+# Main application log (all events)
 tail -f logs/hypertrader.log
 
-# Debug specific component
-grep "trading_logic" logs/hypertrader.log
+# Trade-specific events only
+tail -f logs/trading.log
+
+# WebSocket price feed events
+tail -f logs/websocket.log
+
+# Errors only for quick troubleshooting
+tail -f logs/errors.log
 ```
+
+**Search Trading Events:**
+```bash
+# Find all trade executions
+grep "TRADE:" logs/trading.log
+
+# Find specific symbol activity
+grep "BTC/USDC" logs/trading.log
+
+# Find phase transitions
+grep "Phase transition" logs/trading.log
+
+# Find order placement attempts
+grep "Placing.*order" logs/trading.log
+```
+
+**Log Features:**
+- **Auto-rotation**: Files rotate when they reach size limits (10-50MB)
+- **Compression**: Old logs are automatically compressed
+- **Retention**: Logs kept for 3-30 days depending on type
+- **Symbol context**: Trade logs include symbol information
+- **Async logging**: Non-blocking performance
 
 ### Database Queries
 
@@ -250,7 +319,7 @@ FROM trading_plans;
 
 ### API Documentation
 
-Visit `http://localhost:3000/docs` for interactive API documentation with:
+Visit `http://localhost:8000/docs` for interactive API documentation with:
 
 - All endpoints documented
 - Request/response examples
@@ -334,3 +403,42 @@ Before moving to mainnet:
 ---
 
 **� Remember: This is testnet - no real money at risk!** Use this environment to fully understand and test the 4-phase strategy before any mainnet deployment.
+
+## 📚 **README Maintenance Instructions**
+
+**⚠️ Important**: When making changes to the API, always update this README file to keep documentation current.
+
+### When to Update This File:
+
+1. **New API Endpoints**: Add curl examples to the appropriate sections
+2. **Modified Request/Response Formats**: Update existing curl commands
+3. **New Environment Variables**: Add to the Configuration section
+4. **New Log Files or Debugging Tools**: Update the Monitoring & Debugging section
+5. **Changed Installation Steps**: Update Prerequisites or Installation sections
+
+### How to Update:
+
+1. **Test all curl commands** after making API changes
+2. **Use the correct port** (currently 3000, may change)
+3. **Include realistic example data** in curl commands
+4. **Add new sections** in logical order (before troubleshooting)
+5. **Keep examples simple** but functional
+
+### Testing Your Updates:
+
+```bash
+# Start the server
+uv run python -m app.main
+
+# Test each curl command in the README
+# Example:
+curl "http://localhost:8000/api/v1/exchange/positions"
+```
+
+### Markdown Formatting:
+
+- Use **bold** for important terms
+- Use `code blocks` for commands and code
+- Use **bash** code blocks for shell commands
+- Keep sections organized with proper headers
+- Focus on curl commands and backend API examples

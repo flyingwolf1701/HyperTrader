@@ -26,6 +26,7 @@ class TradingPlan(Base):
     # Additional metadata for querying and management
     initial_margin = Column(DECIMAL(precision=20, scale=8), nullable=False)
     leverage = Column(Integer, nullable=False, default=1)
+    unit_size = Column(DECIMAL(precision=20, scale=8), nullable=False)  # User-defined price movement per unit
     current_phase = Column(String(20), nullable=False, default="advance", index=True)
     
     # Timestamps

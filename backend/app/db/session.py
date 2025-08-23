@@ -1,10 +1,8 @@
-import logging
+from loguru import logger
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 from app.core.config import settings
 from app.db.base import Base
-
-logger = logging.getLogger(__name__)
 
 # --- FIX: Pass SSL arguments separately for the asyncpg driver ---
 engine = create_async_engine(

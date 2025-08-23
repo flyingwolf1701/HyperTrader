@@ -156,6 +156,10 @@ export default defineNuxtConfig({
    ```bash
    cd ../backend && uv run python -m app.main
    ```
+   ~OR~
+   ```bash
+   cd ../backend && uv run uvicorn app.main:app --reload
+   ```
 
 2. **Navigate to Create Trade**
    - Go to "New Trade" in the navigation
