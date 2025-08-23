@@ -5,8 +5,8 @@ from loguru import logger
 
 from app.core.config import settings
 from app.core.logging import configure_logging, setup_standard_logging_intercept
-from app.db.session import init_db, close_db_connection
-from app.api import endpoints, websockets
+# from app.db.session import init_db, close_db_connection  # COMMENTED OUT FOR TESTING
+from app.api import simple as endpoints, websockets
 from app.services.exchange import exchange_manager
 from app.services.market_data import market_data_manager
 
@@ -22,8 +22,8 @@ async def lifespan(app: FastAPI):
     logger.info("--- Starting HyperTrader Backend ---")
     
     # Initialize database
-    await init_db()
-    logger.info("Database connection initialized.")
+    # await init_db()  # COMMENTED OUT FOR TESTING
+    # logger.info("Database connection initialized.")
     
     # Initialize exchange manager
     await exchange_manager.initialize()
@@ -34,13 +34,16 @@ async def lifespan(app: FastAPI):
     await market_data_manager.start_monitoring()
     logger.info("Market data manager started.")
     
+    # Simple approach - no trading plans needed
+    logger.info("Simple API ready - query exchange directly for positions")
+    
     yield  # Application is now running
     
     # --- Shutdown Events ---
     logger.info("--- Shutting Down HyperTrader Backend ---")
     await market_data_manager.stop_monitoring()
     await exchange_manager.close()
-    await close_db_connection()
+    # await close_db_connection()  # COMMENTED OUT FOR TESTING
     logger.info("Shutdown complete.")
 
 

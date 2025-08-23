@@ -1,17 +1,20 @@
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, insert, update, delete, func
-from typing import List, Optional
+# from sqlalchemy.ext.asyncio import AsyncSession  # COMMENTED OUT FOR TESTING
+# from sqlalchemy import select, insert, update, delete, func  # COMMENTED OUT FOR TESTING
+from typing import List, Optional, Dict
 import logging
 from decimal import Decimal
 import json
 from datetime import datetime
 
-from app.db.session import get_db_session
+# from app.db.session import get_db_session  # COMMENTED OUT FOR TESTING
 from app.models.state import SystemState, TradingPlanCreate, TradingPlanUpdate
 from app.core.config import settings
-from app.schemas import TradingPlan, UserFavorite
+# from app.schemas import TradingPlan, UserFavorite  # COMMENTED OUT FOR TESTING
 from app.services.exchange import exchange_manager, MarketInfo
+
+# In-memory storage for testing (replace database)
+in_memory_trading_plans: Dict[str, dict] = {}
 
 logger = logging.getLogger(__name__)
 
@@ -21,8 +24,8 @@ router = APIRouter()
 # Trading Plan Endpoints
 @router.post("/trade/start", response_model=dict)
 async def start_trading_plan(
-    plan_data: TradingPlanCreate,
-    db: AsyncSession = Depends(get_db_session)
+    plan_data: TradingPlanCreate
+    # db: AsyncSession = Depends(get_db_session)  # COMMENTED OUT FOR TESTING
 ):
     """
     Start a new trading plan based on a desired position size in USD.
@@ -86,26 +89,32 @@ async def start_trading_plan(
             unit_value=unit_value,
             required_margin=required_margin,
             leverage=plan_data.leverage,
-            long_invested=actual_cost / 2,
+            # ADVANCE phase: Single long position, no allocation split yet
+            long_invested=actual_cost,  # All the initial position
             long_cash=Decimal("0"),
-            hedge_long=actual_cost / 2,
+            hedge_long=Decimal("0"),  # No hedge position until retracement
             hedge_short=Decimal("0")
         )
         
-        trading_plan = TradingPlan(
-            symbol=symbol_to_use,
-            system_state=system_state.model_dump_json_safe(),
-            initial_margin=float(required_margin),
-            leverage=plan_data.leverage,
-            unit_size=float(plan_data.unit_size),
-            current_phase=system_state.current_phase
-        )
+        # Store in memory instead of database
+        plan_id = f"{symbol_to_use}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         
-        db.add(trading_plan)
-        await db.commit()
-        await db.refresh(trading_plan)
+        trading_plan_data = {
+            "id": plan_id,
+            "symbol": symbol_to_use,
+            "system_state": system_state.model_dump_json_safe(),
+            "initial_margin": float(required_margin),
+            "leverage": plan_data.leverage,
+            "unit_size": float(plan_data.unit_size),
+            "current_phase": system_state.current_phase,
+            "created_at": datetime.now().isoformat(),
+            "is_active": "active"
+        }
         
-        logger.info(f"Started new trading plan for {symbol_to_use} with ID {trading_plan.id}")
+        # Store in memory
+        in_memory_trading_plans[symbol_to_use] = trading_plan_data
+        
+        logger.info(f"Started new trading plan for {symbol_to_use} with ID {plan_id}")
         
         system_state_dict = system_state.dict()
         for key, value in system_state_dict.items():
@@ -114,7 +123,7 @@ async def start_trading_plan(
 
         return {
             "success": True,
-            "plan_id": trading_plan.id,
+            "plan_id": plan_id,
             "symbol": symbol_to_use,
             "entry_price": float(entry_price),
             "position_size_usd": float(total_position_value),
@@ -132,8 +141,8 @@ async def start_trading_plan(
 
 @router.get("/trade/state/{symbol}", response_model=dict)
 async def get_trading_state(
-    symbol: str,
-    db: AsyncSession = Depends(get_db_session)
+    symbol: str
+    # db: AsyncSession = Depends(get_db_session)  # COMMENTED OUT FOR TESTING
 ):
     """Get current trading state for a symbol"""
     try:
@@ -143,21 +152,18 @@ async def get_trading_state(
             if len(parts) == 2 and parts[1] == "USDC":
                 symbol_to_use = f"{parts[0]}/USDC:USDC"
 
-        result = await db.execute(
-            select(TradingPlan).where(
-                TradingPlan.symbol == symbol_to_use,
-                TradingPlan.is_active == "active"
-            ).order_by(TradingPlan.created_at.desc())
-        )
-        trading_plan = result.scalar_one_or_none()
+        # Use in-memory storage instead of database
+        trading_plan_data = in_memory_trading_plans.get(symbol_to_use)
         
-        if not trading_plan:
+        if not trading_plan_data:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"No active trading plan found for {symbol_to_use}"
             )
         
-        system_state = SystemState(**trading_plan.system_state)
+        # Parse system state from JSON
+        system_state_data = json.loads(trading_plan_data["system_state"])
+        system_state = SystemState(**system_state_data)
         
         current_price = await exchange_manager.get_current_price(symbol_to_use)
         
@@ -194,8 +200,8 @@ async def get_trading_state(
 @router.put("/trade/state/{symbol}", response_model=dict)
 async def update_trading_state(
     symbol: str,
-    update_data: TradingPlanUpdate,
-    db: AsyncSession = Depends(get_db_session)
+    update_data: TradingPlanUpdate
+    # db: AsyncSession = Depends(get_db_session)  # COMMENTED OUT FOR TESTING
 ):
     """Update trading state (used by the internal WebSocket/trading logic handler)"""
     try:
@@ -205,12 +211,13 @@ async def update_trading_state(
             if len(parts) == 2 and parts[1] == "USDC":
                 symbol_to_use = f"{parts[0]}/USDC:USDC"
 
-        result = await db.execute(
-            select(TradingPlan).where(
-                TradingPlan.symbol == symbol_to_use,
-                TradingPlan.is_active == "active"
-            ).order_by(TradingPlan.created_at.desc())
-        )
+        # Use in-memory storage instead of database
+        # result = await db.execute(
+        #     select(TradingPlan).where(
+        #         TradingPlan.symbol == symbol_to_use,
+        #         TradingPlan.is_active == "active"
+        #     ).order_by(TradingPlan.created_at.desc())
+        # )
         trading_plan = result.scalar_one_or_none()
         
         if not trading_plan:

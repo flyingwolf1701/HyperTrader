@@ -126,17 +126,24 @@ curl "http://localhost:8000/api/v1/exchange/price/BTC%2FUSDC"
 curl -X POST "http://localhost:8000/api/v1/trade/start" \
   -H "Content-Type: application/json" \
   -d '{
-    "symbol": "BTC/USDC",
-    "position_size_usd": 1000.0,
-    "leverage": 10
+    "symbol": "ETH/USDC",
+    "position_size_usd": 5000.0,
+    "leverage": 25,
+    "unit_size": 5.0
   }'
 ```
+
+**Parameters:**
+- `symbol`: Trading pair (e.g., "ETH/USDC", "BTC/USDC")
+- `position_size_usd`: Total position size in USD
+- `leverage`: Leverage multiplier (1-50)
+- `unit_size`: Price movement per unit (e.g., 50.0 means each unit = $50 price move)
 
 This will:
 
 - Place initial buy order on testnet
-- Create SystemState with 50/50 allocation split
-- Start tracking price movements
+- Create SystemState with single long position (ADVANCE phase)
+- Start tracking price movements using your defined unit_size
 - Return trading plan ID
 
 ### 4. Monitor Real-Time Trading
@@ -220,27 +227,27 @@ curl "http://localhost:8000/api/v1/exchange/balances"
 
 **ADVANCE Phase:**
 
-- Both allocations 100% long
-- Building positions during uptrends
+- Single unified long position
 - Tracking peak prices
+- First 12% chunk sold immediately on decline
 
 **RETRACEMENT Phase:**
 
-- Hedge scales down immediately on unit drops
-- Long waits for 2-unit confirmation
-- 25% scaling per unit movement
+- 12% of position sold per unit down from peak
+- Early sales convert to cash
+- Deep retracements open short positions
 
 **DECLINE Phase:**
 
-- Long allocation 100% cash (protection)
-- Hedge allocation 100% short (profit from decline)
-- Positions held to compound gains
+- All long positions sold (100% defensive)
+- Holding cash and/or short positions
+- Tracking valley formation
 
 **RECOVERY Phase:**
 
-- Systematic re-entry from valleys
-- Hedge unwinds shorts immediately
-- Long re-enters with confirmation
+- 25% of defensive positions bought back per unit up
+- Shorts covered first, then cash deployed to long
+- Systematic re-entry until fully invested
 
 ### Test Scenarios
 

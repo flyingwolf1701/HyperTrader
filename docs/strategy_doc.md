@@ -1,23 +1,23 @@
-# Advanced Hedging Strategy v4.1.14
+
+# Advanced Hedging Strategy v4.2.0
 
 ## Core Philosophy
 
 This is a bull market thesis strategy designed to profit in both directions while maintaining a long-term upward bias. The system uses automated execution to capture gains during retracements and amplify returns during recoveries, remaining profitable even during significant drawdowns.
 
-The strategy features a critical peak/valley reset mechanism and uses WebSocket-driven price monitoring with CCXT exchange integration for real-time execution.
+The strategy features a simplified scaling system using fixed percentage chunks and uses WebSocket-driven price monitoring with CCXT exchange integration for real-time execution.
 
 ## Portfolio Architecture
 
-### Two Independent Allocation Systems
+### Simplified Position Management
 
-*   **Long Allocation:** Patient capital that waits for optimal entries.
-    *   Requires 2-unit confirmation before scaling positions.
-    *   Focuses on longer-term trend reversals.
-    *   Starts at 50% of total margin but diverges based on performance.
-*   **Hedge Allocation:** Active protection capital that responds immediately.
-    *   Immediate 1-unit response to price movements.
-    *   Provides downside protection and profits from corrections.
-    *   Starts at 50% of total margin but diverges based on performance.
+The strategy starts with a **single long position** during the advance phase. Position splitting only occurs during retracements:
+
+*   **ADVANCE Phase:** Single unified long position tracking peaks
+*   **RETRACEMENT Phase:** Position splits into cash and shorts using 12% scaling chunks  
+*   **RECOVERY Phase:** Cash and shorts are systematically bought back using 25% scaling
+
+This approach eliminates the complexity of managing two separate allocation systems from the start.
 
 ### Unit-Based Tracking System
 
@@ -33,138 +33,130 @@ The strategy features a critical peak/valley reset mechanism and uses WebSocket-
 *   `peakUnit`: The highest unit reached during an `ADVANCE` phase.
 *   `valleyUnit`: The lowest unit reached during a `DECLINE` phase.
 *   `longInvested`: Dollar amount in long positions.
-*   `longCash`: Dollar amount held as cash.
-*   `hedgeLong`: Dollar amount in hedge long positions.
-*   `hedgeShort`: Dollar amount in hedge short positions.
+*   `longCash`: Dollar amount held as cash (from retracement sales).
+*   `hedgeShort`: Dollar amount in short positions (opened during deep retracements).
 
-## Critical Peak/Valley Reset Mechanism
+## Peak/Valley Tracking System
 
 ### Peak Tracking Rules
 
-*   `peakUnit` is set to `null` when `longInvested` is 0 (no long positions to track peaks from).
-*   When `longInvested > 0`, `peakUnit` is updated to `currentUnit` whenever a new high is made.
-*   The `entryPrice` is updated when `peakUnit` resets, establishing a new reference price.
+*   `peakUnit` is updated to `currentUnit` whenever a new high is made during ADVANCE phase
+*   Peaks are tracked continuously while holding long positions
+*   The `entryPrice` is updated when system resets, establishing a new reference price
 
 ### Valley Tracking Rules
 
-*   `valleyUnit` is set to `null` when `hedgeShort` is 0 (no short positions to track valleys from).
-*   When `hedgeShort > 0`, `valleyUnit` is updated to `currentUnit` whenever a new low is made.
+*   `valleyUnit` is updated to `currentUnit` whenever a new low is made during DECLINE phase  
+*   Valleys are tracked when short positions exist or cash is held from retracement sales
 
 ### System Reset Trigger
 
-A full system reset only occurs when **BOTH** of these conditions are met:
+A full system reset occurs when the position returns to a unified long state:
 1.  `hedgeShort` = $0 (no short positions)
-2.  `longCash` = $0 (no cash positions)
+2.  `longCash` = $0 (no cash positions)  
+3.  All funds are back in `longInvested`
 
 ### Reset Process
 
-*   Split the total portfolio value 50/50 between the Long and Hedge allocations.
+*   Consolidate all funds into a single long position
 *   Reset all tracking variables:
     *   `currentUnit = 0`
-    *   `peakUnit = 0`
+    *   `peakUnit = 0`  
     *   `valleyUnit = null`
-*   Reset `entryPrice` to the current market price.
+*   Reset `entryPrice` to the current market price
 
 ## Four-Phase Trading System
 
 ### ADVANCE Phase
 
-*   **Characteristics:** Both allocations are 100% long, tracking new peaks.
-*   **Trigger:** When both allocations are fully long.
-*   **Action:** Hold positions and track peak progression.
+*   **Characteristics:** Single unified long position tracking new peaks
+*   **Trigger:** When all funds are consolidated in long positions (no cash or shorts)
+*   **Action:** Hold long position and track peak progression
+*   **On First Decline:** Immediately sell first 12% chunk and transition to RETRACEMENT
 
 ### RETRACEMENT Phase
 
-*   **Characteristics:** The price has declined from a peak, and confirmation rules are active. The hedge allocation scales immediately, while the long allocation waits for confirmation.
-*   **Trigger:** Any decline from an established peak.
+*   **Characteristics:** Position systematically scaled down using 12% chunks
+*   **Trigger:** Any decline from an established peak
 *   **Actions:**
-    *   **Hedge:** Immediately scales its position by 25% for each unit of movement.
-    *   **Long:** Waits for a 2-unit confirmation before scaling by 25% per confirmed unit.
+    *   **Each Unit Down:** Sell 12% of total position value
+    *   **Early Retracement:** Convert long position to cash
+    *   **Deep Retracement:** Start opening short positions when long is exhausted
+*   **Transition:** Move to DECLINE when all long positions are sold
 
 ### DECLINE Phase
 
-*   **Characteristics:** The long allocation is fully in cash for protection, and the hedge allocation is fully short to profit from the decline.
-*   **Trigger:** The long allocation reaches 0% invested.
-*   **Action:** Hold positions, allowing short positions to compound gains during major corrections.
+*   **Characteristics:** All long positions sold, holding cash and/or short positions
+*   **Trigger:** Long position reaches $0 (fully in cash/shorts)
+*   **Action:** Hold defensive positions, track valley formation
+*   **Valley Tracking:** Update `valleyUnit` on each new low
 
 ### RECOVERY Phase
 
-*   **Characteristics:** The price is recovering from a valley, triggering a systematic re-entry. The hedge allocation unwinds its shorts immediately, while the long allocation re-enters after confirmation.
-*   **Trigger:** Any recovery from an established valley.
+*   **Characteristics:** Systematic re-entry using 25% of available funds per unit
+*   **Trigger:** Any uptick from an established valley
 *   **Actions:**
-    *   **Hedge:** Immediately unwinds shorts and scales back into a long position.
-    *   **Long:** Waits for a 2-unit confirmation before systematically re-entering.
-
-## Choppy Trading Detection & Management
-
-### Automatic Detection
-
-Choppy trading rules are triggered when either allocation is partially invested:
-*   **Long allocation:** `0% < longInvested < 100%`
-*   **Hedge allocation:** `0% < hedgeLong < 100%` AND `hedgeShort > 0%`
-
-### Choppy Trading Rules
-
-*   **No Confirmation Delays:** 1-unit movements trigger immediate 25% position changes for both allocations.
-*   **Faster Response:** Protects against rapid oscillations.
-*   **Tighter Trading:** Minimizes exposure during uncertain periods.
+    *   **Each Unit Up:** Buy back 25% of available cash/shorts
+    *   **Priority:** Cover short positions first, then buy long with cash
+    *   **25% Scaling:** Works well with multiple "buckets" of defensive positions
+*   **Transition:** Return to ADVANCE when fully re-invested
 
 ## Position Scaling Matrix
 
-### Long Allocation Scaling (Confirmation Required)
+### RETRACEMENT Scaling (12% Chunks)
 
-| Units from Peak | Long Position | Action     | Trigger                        |
-| :-------------- | :------------ | :--------- | :----------------------------- |
-| 0 units         | 100% Long     | Hold       | Peak tracking                  |
-| -1 unit         | 100% Long     | **WAIT**   | No action (needs confirmation) |
-| -2 units        | 75% Long      | Sell 25%   | Confirmed decline              |
-| -3 units        | 50% Long      | Sell 25%   | Continued decline              |
-| -4 units        | 25% Long      | Sell 25%   | Significant decline            |
-| -5 units        | 0% Long       | Sell 25%   | Full cash (DECLINE phase)      |
+| Units from Peak | Long Position | Cash Position | Short Position | Action                    |
+| :-------------- | :------------ | :------------ | :------------- | :------------------------ |
+| 0 units         | 100%          | 0%            | 0%             | Hold (ADVANCE)            |
+| -1 unit         | 88%           | 12%           | 0%             | Sell 12% → Cash           |
+| -2 units        | 76%           | 24%           | 0%             | Sell 12% → Cash           |
+| -3 units        | 64%           | 36%           | 0%             | Sell 12% → Cash           |
+| -4 units        | 52%           | 48%           | 0%             | Sell 12% → Cash           |
+| -5 units        | 40%           | 60%           | 0%             | Sell 12% → Cash           |
+| -6 units        | 28%           | 72%           | 0%             | Sell 12% → Cash           |
+| -7 units        | 16%           | 84%           | 0%             | Sell 12% → Cash           |
+| -8 units        | 4%            | 96%           | 0%             | Sell 12% → Cash           |
+| -9 units        | 0%            | 88%           | 12%            | Sell remaining → Short    |
+| -10+ units      | 0%            | Variable      | Variable       | DECLINE phase             |
 
-### Hedge Allocation Scaling (Immediate Response)
+### RECOVERY Scaling (25% of Available Funds)
 
-| Units from Peak | Hedge Long | Hedge Short | Action              | Phase         |
-| :-------------- | :--------- | :---------- | :------------------ | :------------ |
-| 0 units         | 100% Long  | 0% Short    | Hold                | ADVANCE       |
-| -1 unit         | 75% Long   | 25% Short   | Sell 25% → Short    | RETRACEMENT   |
-| -2 units        | 50% Long   | 50% Short   | Sell 25% → Short    | RETRACEMENT   |
-| -3 units        | 25% Long   | 75% Short   | Sell 25% → Short    | RETRACEMENT   |
-| -4 units        | 0% Long    | 100% Short  | Sell 25% → Short    | DECLINE       |
-
-### Recovery Scaling (From Valley)
-
-| Units from Valley | Long Position | Long Action | Hedge Position        | Hedge Action        | Phase               |
-| :---------------- | :------------ | :---------- | :-------------------- | :------------------ | :------------------ |
-| +1 unit           | 0% Long       | **WAIT**    | 25% Long / 75% Short  | Cover 25% → Long    | RECOVERY            |
-| +2 units          | 25% Long      | Buy 25%     | 50% Long / 50% Short  | Cover 25% → Long    | RECOVERY            |
-| +3 units          | 50% Long      | Buy 25%     | 75% Long / 25% Short  | Cover 25% → Long    | RECOVERY            |
-| +4 units          | 75% Long      | Buy 25%     | 100% Long / 0% Short  | Cover 25% → Long    | RECOVERY            |
-| +5 units          | 100% Long     | Buy 25%     | 100% Long / 0% Short  | Hold Long           | ADVANCE → **RESET** |
+| Units from Valley | Action                                     | Priority                     |
+| :---------------- | :----------------------------------------- | :--------------------------- |
+| +1 unit           | Buy 25% of (cash + shorts)                | Cover shorts first           |
+| +2 units          | Buy 25% of remaining (cash + shorts)      | Cover shorts first           |
+| +3 units          | Buy 25% of remaining (cash + shorts)      | Cover shorts first           |
+| +4 units          | Buy 25% of remaining (cash + shorts)      | Then buy long with cash      |
+| +N units          | Continue until fully re-invested          | Return to ADVANCE when done  |
 
 ## Technical Implementation
 
-*   **Real-Time Price Monitoring:** Continuous price feeds via WebSocket, real-time unit calculation, and automatic trigger detection.
-*   **CCXT Trading Integration:** Direct market order execution, position synchronization, and robust error handling.
-*   **State Management:** Automatic logic for peak/valley resets, allocation tracking, confirmation delays, and choppy market detection.
+*   **Real-Time Price Monitoring:** Continuous price feeds via WebSocket, real-time unit calculation, and automatic trigger detection
+*   **CCXT Trading Integration:** Direct market order execution with HyperLiquid, position synchronization, and robust error handling
+*   **State Management:** Simplified allocation tracking with automatic state updates after successful order execution
+*   **Position Synchronization:** Automatic reconciliation between internal state and actual exchange positions on startup
+
+## Key Simplifications in v4.2.0
+
+*   **Unified Starting Position:** Eliminates complex dual-allocation setup - starts with single long position
+*   **Fixed Percentage Chunks:** 12% retracement scaling and 25% recovery scaling for predictable behavior
+*   **Clear Phase Transitions:** Each phase has distinct characteristics and triggers
+*   **Automatic State Updates:** Order execution immediately updates internal allocation tracking
 
 ## Edge Case Handling
 
-*   **Gap Events:** If the price gaps, the system recalculates the position based on the new price reality rather than chasing missed trades.
-*   **Extreme Volatility:** Choppy trading rules activate automatically for tighter position management.
-*   **Partial Fills:** The system tracks actual fills vs. intended allocations and adjusts subsequent trades accordingly.
+*   **Gap Events:** System recalculates position based on new price reality rather than chasing missed trades
+*   **State Recovery:** Automatic synchronization with exchange positions on restart
+*   **Partial Fills:** System tracks actual fills vs. intended allocations and adjusts subsequent trades accordingly
 
 ## Performance Characteristics
 
-*   **Mathematical Advantages:** Aims to be profitable in both up and down trends, with adaptive scaling and systematic risk management.
-*   **Expected Outcomes:** Full participation in bull markets, profit from shorts in bear markets, minimized whipsaw in choppy markets, and systematic re-entry during recoveries.
-*   **Reset Benefits:** A system reset provides a fresh start, prevents anchoring to old price levels, and allows previous gains to become the new base capital.
+*   **Mathematical Advantages:** Profitable in both up and down trends with systematic scaling and risk management
+*   **Expected Outcomes:** Full participation in bull markets, defensive cash/short positions in bear markets, systematic re-entry during recoveries
+*   **Simplified Logic:** Reduced complexity while maintaining core strategy benefits
 
 ## Risk Management
 
-*   **Monitoring Systems:** Real-time alerts, system health checks, and a complete audit trail of all decisions and executions.
-
-## User Interface & Controls
-
-*   **Dashboard Elements:** Live display of the current phase, unit distance, allocation status, P&L, reset history, and trade log.
-*   **Manual Controls:** Emergency stop, thesis override, leverage adjustment, and a manual reset trigger.
+*   **Real-time Monitoring:** Complete audit trail of all decisions and executions with detailed logging
+*   **Position Limits:** 12% maximum position reduction per unit movement during retracements
+*   **Defensive Positioning:** Systematic conversion to cash and shorts during declining markets

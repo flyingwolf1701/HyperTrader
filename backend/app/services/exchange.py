@@ -147,23 +147,42 @@ class ExchangeManager:
                 symbol, order_type, side, amount, price_float, params
             )
             
-            logger.info(f"Successfully placed order for {amount} {symbol}. Processing response...")
+            logger.info(f"Successfully placed order for {amount} {symbol}. Order response: {order}")
+            logger.info(f"Order response type: {type(order)}")
             
             # --- FIX: Robustly handle the response from the exchange ---
             # This try-except block prevents the decimal.ConversionSyntax error.
             try:
-                avg_price_str = str(order.get("average", "0.0"))
-                cost_str = str(order.get("cost", "0.0"))
-                avg_price = Decimal(avg_price_str) if avg_price_str else Decimal("0.0")
-                cost = Decimal(cost_str) if cost_str else Decimal("0.0")
-            except (InvalidOperation, TypeError) as e:
-                logger.error(f"Could not parse order response values: {e}. Defaulting to 0.")
+                # Handle potential string parsing issues with status field
+                if isinstance(order, dict):
+                    avg_price_val = order.get("average", 0.0)
+                    cost_val = order.get("cost", 0.0)
+                    
+                    # Clean string values that might have escaped quotes
+                    if isinstance(avg_price_val, str):
+                        avg_price_val = avg_price_val.strip('"').strip("'")
+                    if isinstance(cost_val, str):
+                        cost_val = cost_val.strip('"').strip("'")
+                    
+                    avg_price = Decimal(str(avg_price_val)) if avg_price_val else Decimal("0.0")
+                    cost = Decimal(str(cost_val)) if cost_val else Decimal("0.0")
+                else:
+                    logger.error(f"Unexpected order response type: {type(order)}")
+                    avg_price = Decimal("0.0")
+                    cost = Decimal("0.0")
+            except (InvalidOperation, TypeError, AttributeError) as e:
+                logger.error(f"Could not parse order response values: {e}. Order response: {order}. Defaulting to 0.")
                 avg_price = Decimal("0.0")
                 cost = Decimal("0.0")
 
+            # Handle order_id safely
+            order_id = order.get("id") if isinstance(order, dict) else None
+            if isinstance(order_id, str):
+                order_id = order_id.strip('"').strip("'")
+            
             return OrderResult(
                 success=True,
-                order_id=order.get("id"),
+                order_id=order_id,
                 average_price=avg_price,
                 cost=cost,
             )

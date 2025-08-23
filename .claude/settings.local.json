@@ -14,9 +14,16 @@
       "Bash(cp:*)",
       "Bash(bun run:*)",
       "WebFetch(domain:docs.ccxt.com)",
-      "Bash(uvicorn:*)"
+      "Bash(uvicorn:*)",
+      "WebFetch(domain:app.hyperliquid-testnet.xyz)",
+      "WebFetch(domain:hyperliquid.gitbook.io)",
+      "WebSearch",
+      "Bash(pkill:*)"
     ],
     "deny": [],
-    "ask": []
+    "ask": [],
+    "additionalDirectories": [
+      "D:\\d\\Coding\\2025\\HyperTrader\\HyperTrader"
+    ]
   }
 }

@@ -189,7 +189,6 @@ class HyperliquidClient:
         stop_loss_price: float | None = None
     ) -> dict:
         """Place a market order with optional take profit and stop loss.
-        
         Args:
             symbol: Trading pair symbol
             side: "buy" or "sell"
@@ -197,76 +196,32 @@ class HyperliquidClient:
             reduce_only: If True, order will only reduce position size
             take_profit_price: Optional price level to take profit
             stop_loss_price: Optional price level to stop loss
-            
+
         Returns:
             Order execution details
         """
         try:
             formatted_amount = self._amount_to_precision(symbol, amount)
-            
-            price = float(self.markets[symbol]["info"]["midPx"])
-            formatted_price = self._price_to_precision(symbol, price)
-            
+
             params = {"reduceOnly": reduce_only}
-            
+
             if take_profit_price is not None:
-                formatted_tp_price = self._price_to_precision(symbol, take_profit_price)
-                params["takeProfitPrice"] = formatted_tp_price
-                
+                params["takeProfitPrice"] = self._price_to_precision(symbol, take_profit_price)
+
             if stop_loss_price is not None:
-                formatted_sl_price = self._price_to_precision(symbol, stop_loss_price)
-                params["stopLossPrice"] = formatted_sl_price
-            
-            order_info = {}
-            order_info_final = {}
-            
-            order_info["market_order"] = self.exchange.create_order(
+                params["stopLossPrice"] = self._price_to_precision(symbol, stop_loss_price)
+
+            # A single call handles the market order and attaching TP/SL triggers.
+            order = self.exchange.create_order(
                 symbol=symbol,
                 type="market",
                 side=side,
                 amount=formatted_amount,
-                price=formatted_price,
                 params=params
             )
-            order_info_final["market_order"] = order_info["market_order"]["info"]
-            
-            if take_profit_price is not None:
-                order_info["take_profit_order"] = self._place_take_profit_order(symbol, side, formatted_amount, formatted_price, take_profit_price)
-                order_info_final["take_profit_order"] = order_info["take_profit_order"]["info"]
-                
-            if stop_loss_price is not None:
-                order_info["stop_loss_order"] = self._place_stop_loss_order(symbol, side, formatted_amount, formatted_price, stop_loss_price)
-                order_info_final["stop_loss_order"] = order_info["stop_loss_order"]["info"]
-            
-            return order_info_final
+            return order
         except Exception as e:
             raise Exception(f"Failed to place market order: {str(e)}")
-
-    def _place_take_profit_order(self, symbol: str, side: str, amount: float, price: float, take_profit_price: float) -> dict:
-        """Internal method to place a take-profit order."""
-        tp_price = self._price_to_precision(symbol, take_profit_price)
-        close_side = "sell" if side == "buy" else "buy"
-        return self.exchange.create_order(
-                symbol=symbol,
-                type="market",
-                side=close_side,
-                amount=amount,
-                price=price,
-                params={"takeProfitPrice": tp_price, "reduceOnly": True},
-            )
-
-    def _place_stop_loss_order(self, symbol: str, side: str, amount: float, price: float, stop_loss_price: float) -> dict:
-        """Internal method to place a stop-loss order."""
-        sl_price = self._price_to_precision(symbol, stop_loss_price)
-        close_side = "sell" if side == "buy" else "buy"
-        return self.exchange.create_order(
-                symbol=symbol,
-                type="market",
-                side=close_side,
-                amount=amount,
-                price=price,
-                params={"stopLossPrice": sl_price, "reduceOnly": True},
-            )
 
 
 def my_print(message: str, verbose: bool):
@@ -464,22 +419,15 @@ if __name__ == "__main__":
                 my_print(f"Opening long position with TP at {tp_price} and SL at {sl_price}", verbose)
                 
                 # Open position with optional TP/SL
-                orders = client.place_market_order(
+                order = client.place_market_order(
                     params["symbol"], 
                     "buy", 
                     amount,
                     take_profit_price=tp_price,
                     stop_loss_price=sl_price
                 )
-                
-                if orders.get("market_order"):
-                    my_print(f"Long position opened: {orders['market_order']['resting']}", verbose)
-                    
-                    if orders.get("take_profit_order"):
-                        my_print(f"Long take profit order placed: {orders['take_profit_order']['resting']}", verbose)
-                    
-                    if orders.get("stop_loss_order"):
-                        my_print(f"Long stop loss order placed: {orders['stop_loss_order']['resting']}", verbose)
+                if order:
+                    my_print(f"Long position opened successfully. Order ID: {order.get('id')}", verbose)
             
             # Check short entry
             elif not ignore_shorts and check_short_entry_condition(current_candle, previous_candle):
@@ -502,22 +450,15 @@ if __name__ == "__main__":
                 my_print(f"Opening short position with TP at {tp_price} and SL at {sl_price}", verbose)
                 
                 # Open position with optional TP/SL
-                orders = client.place_market_order(
+                order = client.place_market_order(
                     params["symbol"], 
                     "sell", 
                     amount,
                     take_profit_price=tp_price,
                     stop_loss_price=sl_price
                 )
-                
-                if orders.get("market_order"):
-                    my_print(f"Short position opened: {orders['market_order']['resting']}", verbose)
-                    
-                    if orders.get("take_profit_order"):
-                        my_print(f"Short take profit order placed: {orders['take_profit_order']['resting']}", verbose)
-                    
-                    if orders.get("stop_loss_order"):
-                        my_print(f"Short stop loss order placed: {orders['stop_loss_order']['resting']}", verbose)
+                if order:
+                    my_print(f"Short position opened successfully. Order ID: {order.get('id')}", verbose)
 
     except Exception as e:
         my_print(f"Error in main loop: {e}", verbose)
