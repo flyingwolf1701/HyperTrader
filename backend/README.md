@@ -2,39 +2,41 @@
 
 Advanced crypto trading bot implementing a sophisticated 4-phase hedging strategy on HyperLiquid DEX. This system automatically manages long/hedge allocations based on price movements, providing downside protection while capturing upside gains.
 
-## =� Quick Start
+**🎉 CURRENT STATUS: Fully Working Trading System!**
+
+✅ **Order Placement**: Successfully tested on HyperLiquid testnet  
+✅ **4-Phase Strategy**: Complete implementation with unit-based tracking  
+✅ **Real-Time API**: Working endpoints for strategy management  
+✅ **State Management**: File-based persistence (no database required)  
+
+## =🚀 Quick Start
 
 ### Prerequisites
 
 - Python 3.13+
-- [uv](https://docs.astral.sh/uv/) package manager
-- PostgreSQL database (Neon recommended)
-- HyperLiquid testnet account
+- HyperLiquid testnet account with funds
+- **No database required** - uses file-based state management
 
 ### Installation
 
 1. **Clone and navigate to backend:**
-
    ```bash
    cd backend
    ```
 
 2. **Install dependencies:**
-
    ```bash
-   uv sync
+   pip install fastapi uvicorn ccxt[asyncio] loguru pydantic
    ```
 
 3. **Configure environment:**
-
    ```bash
-   cp .env.example .env
-   # Edit .env with your credentials
+   # Edit .env with your HyperLiquid testnet credentials
    ```
 
 4. **Start the server:**
    ```bash
-   uv run python -m app.main
+   python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
    ```
 
 The API will be available at `http://localhost:8000` with docs at `http://localhost:8000/docs`.
@@ -44,17 +46,17 @@ The API will be available at `http://localhost:8000` with docs at `http://localh
 ### Environment Variables (.env)
 
 ```env
-# Database Configuration
-DATABASE_URL=postgresql://your_db_connection_string
-
 # HyperLiquid API Configuration (Testnet)
-HYPERLIQUID_WALLET_KEY=your_HYPERLIQUID_WALLET_KEY_here
-HYPERLIQUID_PRIVATE_KEY=your_HYPERLIQUID_PRIVATE_KEY_here
-HYPERLIQUID_TESTNET=true  # KEEP TRUE FOR TESTING
+HYPERLIQUID_WALLET_KEY=0xaabba699809309a8b5de2272c903f746f9976275
+HYPERLIQUID_PRIVATE_KEY=0x110823f3cfe10b48cb55e2f20945b95846f8588ac6107574474e2484ef76ab4b
+HYPERLIQUID_TESTNET=true
+HYPERLIQUID_BASE_URL=https://api.hyperliquid-testnet.xyz
 
 # Application Settings
+ENVIRONMENT=development
 DEBUG=true
-API_PORT=3000
+API_HOST=0.0.0.0
+API_PORT=8000
 LOG_LEVEL=INFO
 ```
 
@@ -75,27 +77,26 @@ LOG_LEVEL=INFO
    - Create an API wallet (for trading only, no withdrawal risk)
    - Copy the credentials to your `.env`
 
-## <� Testing the System
+## 🧪 Testing the System
 
 ### 1. Start the Backend
 
 ```bash
 cd backend
-uv run uvicorn app.main:app --reload
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 Expected output:
 
 ```
-INFO:app.main:Starting HyperTrader backend...
-INFO:app.db.session:Database connection initialized
-INFO:app.services.exchange:Loaded 1279 markets
-INFO:app.services.exchange:ExchangeManager initialized successfully
-INFO:app.main:Exchange manager initialized
+INFO:app.main:--- Starting HyperTrader Backend ---
+INFO:app.services.exchange:ExchangeManager initialized with 50 markets.
+INFO:app.main:Exchange manager initialized.
+INFO:app.main:Simple API ready - query exchange directly for positions
 INFO:     Application startup complete.
 ```
 
-### 2. Test API Endpoints
+### 2. Test Basic API Endpoints
 
 **Health Check:**
 
@@ -107,214 +108,238 @@ curl http://localhost:8000/health
 **Get Available Markets:**
 
 ```bash
-curl http://localhost:8000/api/v1/exchange/pairs
-# Returns list of available trading pairs
+curl http://localhost:8000/api/v1/markets
+# Returns: {"pairs": ["PURR/USDC", "BTC/USDC", "TEST/USDC", ...]}
 ```
 
 **Get Current Price:**
 
 ```bash
-curl "http://localhost:8000/api/v1/exchange/price/BTC%2FUSDC"
-# Returns current BTC price
+curl "http://localhost:8000/api/v1/price/BTC%2FUSDC%3AUSDC"
+# Returns: {"symbol":"BTC/USDC:USDC","price":115986.0}
 ```
 
-### 3. Start a Trading Plan
-
-**Create a new trading plan:**
+**Check Account Balances:**
 
 ```bash
-curl -X POST "http://localhost:8000/api/v1/trade/start" \
+curl http://localhost:8000/api/v1/balances
+# Returns: {"success":true,"balances":{"USDC":1000.0}}
+```
+
+**Check Current Positions:**
+
+```bash
+curl http://localhost:8000/api/v1/positions
+# Returns current positions on exchange
+```
+
+### 3. Test Manual Trading
+
+**Place a Market Order:**
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/order" \
   -H "Content-Type: application/json" \
   -d '{
-    "symbol": "BTC/USDC",
-    "position_size_usd": 1000.0,
-    "leverage": 10
+    "symbol": "PURR/USDC:USDC",
+    "side": "buy",
+    "amount": 2,
+    "type": "market"
+  }'
+# Returns: {"success":true,"order_id":"37965840433","filled":"None","status":"None"}
+```
+
+**Place a Limit Order:**
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/order" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "symbol": "PURR/USDC:USDC",
+    "side": "buy",
+    "amount": 1,
+    "type": "limit",
+    "price": 5.0
   }'
 ```
 
-This will:
+### 4. Start the 4-Phase Trading Strategy
 
-- Place initial buy order on testnet
-- Create SystemState with 50/50 allocation split
-- Start tracking price movements
-- Return trading plan ID
-
-### 4. Monitor Real-Time Trading
-
-**WebSocket Connection:**
+**Start a new strategy:**
 
 ```bash
-# WebSocket endpoint for real-time trading data
-# ws://localhost:8000/ws/BTC%2FUSDC
-
-# Note: WebSocket connections require a WebSocket client
-# You can use tools like wscat for testing:
-# npm install -g wscat
-# wscat -c "ws://localhost:8000/ws/BTC%2FUSDC"
+curl -X POST "http://localhost:8000/api/v1/strategy/start" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "symbol": "PURR/USDC:USDC",
+    "position_size_usd": 50.0,
+    "unit_size": 0.1,
+    "leverage": 1
+  }'
 ```
 
-### 5. Check Trading State
+**Parameters:**
+- `symbol`: Trading pair with futures format (e.g., "PURR/USDC:USDC", "BTC/USDC:USDC")
+- `position_size_usd`: Total position size in USD (minimum $50 recommended)
+- `unit_size`: Price movement per unit (e.g., 0.1 means each unit = $0.10 price move)
+- `leverage`: Leverage multiplier (1 recommended for testing)
 
-**Get current state:**
+**Update Strategy (Check Price & Execute Trades):**
 
 ```bash
-curl "http://localhost:8000/api/v1/trade/state/BTC%2FUSDC"
+curl -X POST "http://localhost:8000/api/v1/strategy/update"
 ```
 
-Returns comprehensive state including:
+This checks current price against entry price, calculates unit movement, and executes trades according to the 4-phase logic.
 
-- Current phase (advance/retracement/decline/recovery)
-- Unit positions and tracking
-- Allocation percentages
-- Unrealized P&L
+**Check Strategy Status:**
 
-### 6. Monitor Live Positions & Trades
+```bash
+curl "http://localhost:8000/api/v1/strategy/status"
+# Returns comprehensive strategy state including:
+# - Current phase (ADVANCE/RETRACEMENT/DECLINE/RECOVERY)
+# - Unit positions and tracking
+# - Position allocations (long_invested, long_cash, hedge_short)
+# - Current vs entry price
+```
+
+**Stop Strategy:**
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/strategy/stop"
+# Removes strategy state file and stops automated trading
+```
+
+### 5. Monitor Trading Activity
 
 **Check all open positions:**
 
 ```bash
-curl "http://localhost:8000/api/v1/exchange/positions"
-```
-
-**Check position for specific symbol:**
-
-```bash
-curl "http://localhost:8000/api/v1/exchange/positions/BTC%2FUSDC"
-```
-
-**Get comprehensive position summary:**
-
-```bash
-curl "http://localhost:8000/api/v1/exchange/position-summary"
-```
-
-**View recent trades:**
-
-```bash
-# Last 24 hours, up to 50 trades
-curl "http://localhost:8000/api/v1/exchange/trades"
-
-# Last 6 hours for specific symbol
-curl "http://localhost:8000/api/v1/exchange/trades?symbol=BTC%2FUSDC&hours_back=6&limit=20"
-```
-
-**Check open orders:**
-
-```bash
-# All open orders
-curl "http://localhost:8000/api/v1/exchange/open-orders"
-
-# Open orders for specific symbol
-curl "http://localhost:8000/api/v1/exchange/open-orders?symbol=BTC%2FUSDC"
+curl "http://localhost:8000/api/v1/positions"
+# Returns positions from the exchange directly
 ```
 
 **View account balances:**
 
 ```bash
-curl "http://localhost:8000/api/v1/exchange/balances"
+curl "http://localhost:8000/api/v1/balances"  
+# Returns current USDC and other token balances
 ```
 
-## >� 4-Phase Strategy Testing
+**Get current price for any symbol:**
+
+```bash
+curl "http://localhost:8000/api/v1/price/PURR%2FUSDC%3AUSDC"
+# Returns real-time price data
+```
+
+## 📊 4-Phase Strategy Testing
 
 ### Understanding the Phases
 
 **ADVANCE Phase:**
-
-- Both allocations 100% long
-- Building positions during uptrends
-- Tracking peak prices
+- Single unified long position tracking peaks
+- Updates `peak_unit` on new highs
+- Transitions to RETRACEMENT on first decline
 
 **RETRACEMENT Phase:**
-
-- Hedge scales down immediately on unit drops
-- Long waits for 2-unit confirmation
-- 25% scaling per unit movement
+- Sells 12% of total portfolio per unit decline
+- Converts long positions to cash progressively  
+- Transitions to DECLINE when long positions exhausted
 
 **DECLINE Phase:**
-
-- Long allocation 100% cash (protection)
-- Hedge allocation 100% short (profit from decline)
-- Positions held to compound gains
+- Holds defensive cash positions
+- Tracks valley formation (`valley_unit`)
+- Transitions to RECOVERY on first uptick
 
 **RECOVERY Phase:**
-
-- Systematic re-entry from valleys
-- Hedge unwinds shorts immediately
-- Long re-enters with confirmation
+- Buys back 25% of available cash per unit up
+- Systematic re-entry until fully invested
+- System resets to ADVANCE when all cash deployed
 
 ### Test Scenarios
 
-**Test 1: Basic Price Movement**
+**Test 1: Complete Strategy Cycle**
 
-1. Start trading plan with small amount (e.g., $10)
-2. Monitor phase transitions as price moves
-3. Verify allocations adjust correctly
-
-**Test 2: Peak Tracking**
-
-1. Watch for new highs setting peak_unit
-2. Verify retracement scaling when price drops
-3. Check confirmation delays for long allocation
-
-**Test 3: System Reset**
-
-1. Let strategy reach reset conditions (longCash=0, hedgeShort=0)
-2. Verify portfolio value recalculation
-3. Check fresh unit/phase initialization
-
-## =� Monitoring & Debugging
-
-### Enhanced Logging System
-
-The application now uses **Loguru** for advanced logging with automatic file rotation and structured logging:
-
-**Log Files:**
 ```bash
-# Main application log (all events)
-tail -f logs/hypertrader.log
+# 1. Start with ETH (volatile testnet token)
+curl -X POST "http://localhost:8000/api/v1/strategy/start" \
+  -d '{"symbol": "ETH/USDC:USDC", "position_size_usd": 5000.0, "unit_size": 0.5, "leverage":25}'
 
-# Trade-specific events only
-tail -f logs/trading.log
+# 2. Monitor current phase
+curl "http://localhost:8000/api/v1/strategy/status"
 
-# WebSocket price feed events
-tail -f logs/websocket.log
+# 3. Update strategy as price moves (run this repeatedly)
+curl -X POST "http://localhost:8000/api/v1/strategy/update"
 
-# Errors only for quick troubleshooting
-tail -f logs/errors.log
+# 4. Watch for phase transitions and order placement
 ```
 
-**Search Trading Events:**
+**Test 2: Manual Price Simulation**
+
+Since testnet prices may not move much, you can test the logic by:
+1. Starting strategy at current price
+2. Adjusting `unit_size` to be very small (e.g., 0.01)
+3. Natural price fluctuations will trigger unit changes
+4. Monitor state transitions in real-time
+
+**Expected Results:**
+- ✅ ADVANCE → RETRACEMENT: First sell order at 12% of position
+- ✅ Continued RETRACEMENT: Additional 12% sells on further declines  
+- ✅ RETRACEMENT → DECLINE: When long position exhausted
+- ✅ DECLINE → RECOVERY: First buy order at 25% of available cash
+- ✅ RECOVERY → ADVANCE: System reset when fully re-invested
+
+## 📊 Monitoring & Debugging
+
+### File-Based State Management
+
+The strategy state is saved to `strategy_state.json` in the backend directory:
+
 ```bash
-# Find all trade executions
-grep "TRADE:" logs/trading.log
+# View current strategy state
+cat strategy_state.json
 
-# Find specific symbol activity
-grep "BTC/USDC" logs/trading.log
-
-# Find phase transitions
-grep "Phase transition" logs/trading.log
-
-# Find order placement attempts
-grep "Placing.*order" logs/trading.log
+# Monitor strategy file changes
+watch -n 1 'cat strategy_state.json | python -m json.tool'
 ```
 
-**Log Features:**
-- **Auto-rotation**: Files rotate when they reach size limits (10-50MB)
-- **Compression**: Old logs are automatically compressed
-- **Retention**: Logs kept for 3-30 days depending on type
-- **Symbol context**: Trade logs include symbol information
-- **Async logging**: Non-blocking performance
+### Logging
 
-### Database Queries
+The application uses Python's built-in logging. Key events to monitor:
 
-```sql
--- View active trading plans
-SELECT symbol, current_phase, created_at FROM trading_plans WHERE is_active = 'active';
+**Important Log Messages:**
+```
+- "Unit change detected: X -> Y (Phase: Z)" - Strategy logic triggered
+- "RETRACEMENT: Sold $X at unit Y" - Scaling sell executed
+- "Order successful: {...}" - Trade completed
+- "New peak reached: X" - Peak tracking update  
+- "System reset - back to ADVANCE phase" - Full cycle completed
+```
 
--- Check system state details
-SELECT symbol, system_state->'current_unit' as unit,
-       system_state->'current_phase' as phase
-FROM trading_plans;
+**Monitor Logs:**
+```bash
+# Watch strategy activity in real-time
+python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+# Strategy logs appear in console output
+```
+
+**Strategy State Structure:**
+```json
+{
+  "symbol": "PURR/USDC:USDC",
+  "unit_size": 0.1,
+  "entry_price": 5.12,
+  "current_unit": 2,
+  "peak_unit": 5,
+  "valley_unit": null,
+  "phase": "RETRACEMENT",
+  "long_invested": 40.0,
+  "long_cash": 10.0,
+  "hedge_short": 0.0,
+  "last_price": 5.32,
+  "position_size_usd": 50.0
+}
 ```
 
 ### API Documentation
@@ -346,31 +371,26 @@ Visit `http://localhost:8000/docs` for interactive API documentation with:
    - All trades and states saved to database
    - Safe to restart server - state resumes automatically
 
-## =
-
-Troubleshooting
+## ⚠️ Troubleshooting
 
 ### Common Issues
 
 **"Failed to initialize exchange":**
+- Verify `HYPERLIQUID_TESTNET=true` in `.env`
+- Check `HYPERLIQUID_BASE_URL=https://api.hyperliquid-testnet.xyz`
+- Ensure testnet wallet has funds
 
-- Check API credentials in `.env`
-- Verify testnet access and funds
+**"No active strategy found":**
+- Start strategy first via `/strategy/start` endpoint
+- Check if `strategy_state.json` exists in backend directory
 
-**"Database connection failed":**
+**"Order must have minimum value of $10":**
+- Increase order size to meet minimum requirements
+- Use position_size_usd >= 50 for strategy testing
 
-- Verify DATABASE_URL is correct
-- Ensure database is accessible
-
-**"No active trading plan found":**
-
-- Create trading plan first via `/trade/start` endpoint
-- Check database for existing plans
-
-**WebSocket connection issues:**
-
-- Ensure trading plan exists for symbol
-- Check server logs for specific errors
+**"hyperliquid market orders require price":**
+- This is automatically handled by the API now
+- Market orders include automatic slippage calculation
 
 ### Debug Mode
 

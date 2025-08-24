@@ -170,8 +170,9 @@ class ExchangeManager:
             # --- END FIX ---
 
         except Exception as e:
-            logger.error(f"Failed to place order: {e}", exc_info=True)
-            return OrderResult(success=False, error_message=str(e))
+            error_msg = str(e)
+            logger.error(f"Failed to place order: {error_msg}", exc_info=True)
+            return OrderResult(success=False, error_message=error_msg)
 
     async def fetch_all_balances(self):
         try:
@@ -194,11 +195,10 @@ class ExchangeManager:
             List of Position objects
         """
         try:
-            # HyperLiquid requires user parameter for account-specific calls
-            params = {'user': settings.HYPERLIQUID_WALLET_KEY}
-            raw_positions = await self.exchange.fetch_positions(symbols, params=params)
+            # Try fetching positions without user param (uses authenticated wallet)
+            raw_positions = await self.exchange.fetch_positions(symbols)
             logger.info(f"Raw positions from HyperLiquid: {len(raw_positions)} total")
-            logger.info(f"First 3 positions: {raw_positions[:3] if raw_positions else 'None'}")
+            logger.info(f"Raw positions data: {raw_positions}")
             positions = []
             
             for pos in raw_positions:

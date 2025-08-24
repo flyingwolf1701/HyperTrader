@@ -14,7 +14,6 @@ class Settings(BaseSettings):
     HYPERLIQUID_PRIVATE_KEY: str = os.getenv("HYPERLIQUID_PRIVATE_KEY", "")
     HYPERLIQUID_TESTNET: bool = os.getenv("HYPERLIQUID_TESTNET", "True").lower() in ('true', '1', 't')
     
-    DATABASE_URL: str = os.getenv("DATABASE_URL", "postgresql+asyncpg://user:password@localhost/hypertrader")
     
     API_PORT: int = int(os.getenv("API_PORT", 8000))
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
