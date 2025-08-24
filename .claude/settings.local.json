@@ -18,7 +18,9 @@
       "WebFetch(domain:app.hyperliquid-testnet.xyz)",
       "WebFetch(domain:hyperliquid.gitbook.io)",
       "WebSearch",
-      "Bash(pkill:*)"
+      "Bash(pkill:*)",
+      "Bash(grep:*)",
+      "Bash(find:*)"
     ],
     "deny": [],
     "ask": [],
