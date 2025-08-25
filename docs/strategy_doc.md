@@ -1,203 +1,174 @@
-# Advanced Hedging Strategy v5.0.0 (Simplified Implementation)
+Advanced Hedging Strategy v6.0.0
+Core Philosophy
+This is a bull market thesis strategy engineered to capitalize on price movements in both directions while maintaining a long-term upward bias. The system leverages automated execution on the Hyperliquid platform to systematically take profits during price retracements and compound returns during recoveries. The core logic is designed to remain resilient and profitable even through significant market volatility and drawdowns.
 
-## Core Philosophy
+The strategy is centered around a dynamic four-phase system (Advance, Retracement, Decline, Recovery) and a crucial reset mechanism that re-calibrates the system after a full cycle, allowing profits to compound into the new base capital.
 
-This is a bull market thesis strategy designed to profit in both directions while maintaining a long-term upward bias. The system uses automated execution to capture gains during retracements and amplify returns during recoveries, remaining profitable even during significant drawdowns.
+Portfolio Architecture
+Unified Position Management
+For each asset, the strategy manages a single, unified position on Hyperliquid that is comprised of three components: a long position, a short position, and a cash position. The system recognizes that on Hyperliquid, multiple long or short orders for the same coin are consolidated into a single position with an averaged entry price.
 
-The strategy features a critical peak/valley reset mechanism and uses WebSocket-driven price monitoring with CCXT exchange integration for real-time execution.
+Leverage and Allocation
+Maximum Leverage: All orders are placed utilizing the maximum leverage available for the specific asset. This means the required margin is a fraction of the notional position size (e.g., a $1,000 position with 20x leverage requires $50 of margin).
 
-## Portfolio Architecture
+Position Allocation:
 
-### Unified Position Management (v5.0.0)
+initial_position_allocation: A fixed dollar amount representing the margin committed at the start of a new trade cycle.
 
-*   **Single Position Tracking:** The system manages one unified position that can range from fully long to partially short
-*   **File-Based State:** All strategy state is persisted in `strategy_state.json` - no database required
-*   **Cumulative Position Changes:** Each phase transition applies cumulative adjustments based on distance from peak/valley
-*   **Net Position:** Position can go negative (short) during extreme declines
+current_position_allocation: The real-time margin value of the position. This value fluctuates as the strategy executes and will ideally grow over time. It is reset to the current margin value during the RESET mechanism.
 
+Unit-Based Tracking System
+Unit Definition: A "unit" is a manually defined price movement (e.g., $0.50 for ETH) that serves as the fundamental trigger for all strategic actions. The unit_size gives the trader direct control over the strategy's sensitivity to market volatility.
 
+Execution: Trading actions are only triggered upon the completion of a full unit movement.
 
-### Unit-Based Tracking System
+Post-MVP Notes: For future versions, the unit_size could become dynamic. It could adjust based on the current trading phase or other market conditions, such as stochastic RSI or trading volume, to make the strategy more adaptive.
 
-*   **Unit Definition:** A "unit" is a fixed, manually-defined price movement that is set on a per-asset basis. This gives the trader direct control over the strategy's sensitivity to market volatility.
-*   **Control:** By adjusting the unit size, the strategy can be made more or less reactive. A smaller unit size makes the bot more sensitive to small price swings, while a larger unit size makes it less sensitive.
-*   **Example:** For an asset like ARB trading at `$0.60`, a unit might be manually set to `$0.0025`. Every time the price moves up or down by this amount, the `currentUnit` is incremented or decremented.
-*   **Execution:** Only whole unit movements trigger trading actions (e.g., no actions on 0.5 or 1.5 unit changes).
+Key Variables
+unit_size: The trader-defined price movement that constitutes one unit.
 
-### Key Variables
+entry_price: The average entry price of the position, as calculated and managed by Hyperliquid.
 
-*   `entry_price`: The initial price when strategy starts
-*   `current_unit`: The current price distance from the `entry_price`, measured in units
-*   `peak_unit`: The highest unit reached during an `ADVANCE` phase
-*   `valley_unit`: The lowest unit reached during a `DECLINE` phase  
-*   `current_long_position`: Net dollar position (positive = long, negative = short)
-*   `decline_portion`: Fixed amount per unit = `position_size_usd / 12`
-*   `position_size_usd`: Total capital allocated to strategy
-*   `leverage`: Leverage multiplier for position sizing
+current_unit: The current price distance from the entry_price, measured in units. Initialized at 0.
 
-## Critical Peak/Valley Reset Mechanism
+peak_unit: The highest unit reached during an ADVANCE phase. Initialized at 0 and updated as new highs are made.
 
-### Peak Tracking Rules
+valley_unit: The lowest unit reached during a DECLINE phase. Initialized at 0 and updated as new lows are made.
 
-*   `peak_unit` is continuously updated to the highest `current_unit` during ADVANCE phase
-*   Used to calculate distance for RETRACEMENT trades
+position_fragment: Calculated during the ADVANCE phase as 10% of the current total long position value. This variable defines the size of scaling actions during the RETRACEMENT phase.
 
-### Valley Tracking Rules
+hedge_fragment: Calculated during the DECLINE phase as 25% (1/4) of the current total short position value. This variable defines the size of scaling actions during the RECOVERY phase.
 
-*   `valley_unit` is continuously updated to the lowest `current_unit` during DECLINE phase
-*   Used to calculate distance for RECOVERY trades
+The Four-Phase Trading System
+1. ADVANCE Phase
+This is the initial state upon entering a trade, assuming a bullish outlook.
 
+Condition: The entire position is 100% long.
 
-### System Reset Trigger
+Actions:
 
-*   Occurs when returning to ADVANCE phase from RECOVERY
-*   `entry_price` updates to current price for new cycle
-*   `peak_unit` resets to current unit
-*   `valley_unit` resets to null
+As the price increases by one unit_size, current_unit and peak_unit are both incremented by +1.
 
+The system continuously recalculates position_fragment (10% of the growing position value) to prepare for a potential retracement.
 
-## Four-Phase Trading System (v5.0.0 Simplified)
+The system remains in the ADVANCE phase as long as the price continues to make new highs (i.e., current_unit continues to increase).
 
-### ADVANCE Phase
+2. RETRACEMENT Phase
+This phase is triggered when the price falls from its peak.
 
+Trigger: The price drops one unit from the established peak_unit.
 
-### RETRACEMENT Phase
+Logic: The system executes a series of pre-defined actions based on the number of units the price has fallen from the peak (current_unit - peak_unit).
 
-*   **Characteristics:** Price declining from peak, executing progressive sells and shorts
-*   **Trigger:** First decline from established peak
-*   **Actions:** 
-    *   Execute trades based on cumulative distance from peak
-    *   Position reduces progressively and can go negative (short)
-    *   Uses `decline_portion` (position_size/12) for scaling
+Units from Peak
 
+Action
 
-### DECLINE Phase
+Portfolio State (Approx.)
 
-*   **Characteristics:** Holding defensive cash/short positions
-*   **Trigger:** Long position exhausted (position ≤ 0)
-*   **Action:** Track valley formation, wait for recovery signal
+-1
 
-#### (OLD)
+• Sell 1 position_fragment of the long position.<br>• Open a new short position equal to 1 position_fragment.
 
+80% Long / 10% Short / 10% Cash
 
-### RECOVERY Phase
+-2
 
-*   **Characteristics:** Price recovering from valley, systematic re-entry
-*   **Trigger:** First uptick from established valley
-*   **Actions:**
-    *   Buy back 25% of available cash per unit up
-    *   Cover shorts and re-establish long positions
-    *   System resets to ADVANCE when fully invested
+• Sell 2 position_fragments of the long position.<br>• Add 1 position_fragment to the short position.
 
-## Position Scaling Logic (v5.0.0 - Cumulative)
+50% Long / 20% Short / 30% Cash
 
-### RETRACEMENT Scaling (From Peak)
+-3
 
-The position changes are **cumulative** - each tier adds to the previous reductions:
+• Sell 2 position_fragments of the long position.<br>• Add 1 position_fragment to the short position.
 
-```python
-decline_portion = position_size_usd / 12  # Fixed amount per scaling unit
+20% Long / 30% Short / 50% Cash
 
-# Calculate target position based on units from peak
-target_position = position_size_usd  # Start at full long
+-4
 
-if units_from_peak >= 1:
-    target_position -= 2 * decline_portion  # -$833 at $5000 size
-if units_from_peak >= 2:
-    target_position -= 3 * decline_portion  # Additional -$1250 (total -$2083)
-if units_from_peak >= 3:
-    target_position -= 3 * decline_portion  # Additional -$1250 (total -$3333)
-if units_from_peak >= 4:
-    target_position -= 3 * decline_portion  # Additional -$1250 (total -$4583)
-if units_from_peak >= 5:
-    target_position = -position_size_usd * 0.33  # Emergency: 33% short
-```
+• Sell 2 position_fragments of the long position.<br>• Add 1 position_fragment to the short position.
 
-## Position Scaling Matrix (v5.0.0)
+0% Long / 40% Short / 60% Cash
 
-### RETRACEMENT Position Targets (Cumulative from Peak)
+-5
 
-| Units from Peak | Target Position | Net Change | Cumulative Change | Phase |
-| :-------------- | :-------------- | :--------- | :---------------- | :------------ |
-| 0 units         | 100% ($5000)    | $0         | $0                | ADVANCE |
-| -1 unit         | 83% ($4167)     | -$833      | -$833             | RETRACEMENT |
-| -2 units        | 58% ($2917)     | -$1250     | -$2083            | RETRACEMENT |
-| -3 units        | 33% ($1667)     | -$1250     | -$3333            | RETRACEMENT |
-| -4 units        | 8% ($417)       | -$1250     | -$4583            | RETRACEMENT |
-| -5+ units       | -33% (-$1650)   | -$2067     | -$6650            | RETRACEMENT |
+• Sell the remaining long position.<br>• Add the value of this final sale to the short position.
 
-*Example based on $5000 position size*
+0% Long / ~50% Short / ~50% Cash
 
+-6 & below
 
+Enters the DECLINE phase.
 
+Holding Short and Cash
 
-### RECOVERY Scaling (From Valley)
+Reversals: If the price moves back up during this phase, the system executes the exact opposite of the last action. For example, moving from -3 units back to -2 units would involve buying back 2 position_fragments long and closing 1 position_fragment of the short position.
 
-| Units from Valley | Action | Amount | Target Position | Phase |
-| :---------------- | :----- | :----- | :-------------- | :-------- |
-| +1 unit           | Buy    | 25% of cash | Move toward long | RECOVERY |
-| +2 units          | Buy    | 25% of cash | Continue buying  | RECOVERY |
-| +3 units          | Buy    | 25% of cash | Continue buying  | RECOVERY |
-| +4 units          | Buy    | 25% of cash | Near full long   | RECOVERY |
-| Full long reached | Reset  | -           | 100% long        | ADVANCE |
+3. DECLINE Phase
+This phase is triggered after a significant retracement, where the position is now fully defensive and positioned to profit from a continued downtrend.
 
-## Technical Implementation (v5.0.0)
+Trigger: The system has completed the action for -5 units from the peak.
 
-### File-Based State Management
-*   **Storage:** All state persisted in `strategy_state.json`
-*   **No Database:** Simplified architecture without database dependencies
-*   **Atomic Updates:** State saved after each trade execution
+Condition: The portfolio is approximately 50% in a short position and 50% in cash.
 
-### Exchange Integration  
-*   **CCXT Library:** Direct integration with HyperLiquid via CCXT
-*   **Market Orders:** All trades executed as market orders with slippage protection
-*   **Position Tracking:** Real-time position synchronization with exchange
+Actions:
 
-### API Endpoints
-*   `/strategy/start` - Initialize new strategy with parameters
-*   `/strategy/update` - Check price and execute trades based on unit changes
-*   `/strategy/status` - Get current state and position information
-*   `/strategy/stop` - Stop strategy and remove state file
+As the price continues to fall, current_unit is decremented, and valley_unit is updated to match current_unit, tracking the new low.
 
-## Edge Case Handling
+The system holds the short position, allowing it to accumulate profit.
 
-*   **Gap Events:** If the price gaps, the system recalculates the position based on the new price reality rather than chasing missed trades.
-*   **Extreme Volatility:** Choppy trading rules activate automatically for tighter position management.
-*   **Partial Fills:** The system tracks actual fills vs. intended allocations and adjusts subsequent trades accordingly.
+If the price begins to recover (current_unit increments), the system calculates hedge_fragment (25% of the short position's current value) in preparation for the RECOVERY phase.
 
-## Key Improvements in v5.0.0
+4. RECOVERY Phase
+This phase is triggered when the price shows a confirmed sign of recovery from the valley.
 
-### Simplified Architecture
-*   **Database Removed:** File-based state management for reliability
-*   **Single Position:** Unified position tracking instead of dual allocations
-*   **Fixed Math:** Simple `position_size / 12` calculation for decline portions
+Trigger: current_unit - valley_unit equals +2.
 
-### Cumulative Scaling
-*   **Proper Accumulation:** Each tier adds to previous reductions
-*   **Short Positions:** System can go net short during extreme declines
-*   **Clear Targets:** Explicit position targets at each unit level
+Logic: The system begins to systematically close its profitable short position and redeploy capital back into a long position.
 
-### Immediate Execution
-*   **Phase Transition Trades:** Trades execute immediately on phase changes
-*   **No Waiting:** Removed confirmation delays for faster response
-*   **Unit-Based Triggers:** Clean integer unit movements trigger actions
+Units from Valley
 
-## Testing & Verification
+Action
 
-### Test Mode
-*   **Test Price Override:** Set `test_price` in state for manual testing
-*   **Simulated Scenarios:** Force price movements to test all phases
-*   **Exchange Verification:** Check actual positions match expected state
++2 to +4
 
-### Example Test Commands
-```bash
-# Start strategy
-curl -X POST "http://localhost:8000/api/v1/strategy/start" \
-  -d '{"symbol": "ETH/USDC:USDC", "position_size_usd": 5000, "unit_size": 0.5, "leverage": 25}'
+For each unit increase:<br>• Close 1 hedge_fragment of the short position.<br>• Use proceeds to buy 1 hedge_fragment long.<br>• Buy an additional 1 position_fragment long with cash reserves.
 
-# Update (check price and execute trades)
-curl -X POST "http://localhost:8000/api/v1/strategy/update"
++5
 
-# Check status
-curl "http://localhost:8000/api/v1/strategy/status"
-```
+• Close the remainder of the short position.<br>• Use all proceeds from the short closure to buy long.<br>• Buy an additional 1 position_fragment long with cash reserves.
+
++6
+
+The position is now fully long. The system triggers the RESET mechanism and re-enters the ADVANCE phase.
+
+Reversals: If the price falls during this phase, the system reverses the last action, providing a symmetrical response to market fluctuations.
+
+The RESET Mechanism
+The RESET is not a phase but a critical event that re-calibrates the entire strategy, locking in profits (or losses) from the previous cycle and preparing for the next.
+
+Trigger: The system's position becomes 100% long (typically after completing the RECOVERY phase).
+
+Process:
+
+All unit-tracking variables are reset: current_unit = 0, peak_unit = 0, valley_unit = 0.
+
+The current_position_allocation is updated to reflect the new total margin value of the fully long position. This new value becomes the baseline for the next cycle.
+
+The system immediately enters the ADVANCE phase, starting a new cycle from the current market price.
+
+Important Mathematical Clarification
+Understanding Position Fragment Accounting
+
+The position_fragment approach ensures no double-counting of capital:
+
+Starting Position: 100% long (10 fragments at 10% each)
+
+RETRACEMENT Phase Distribution:
+- Units -1 to -4: Total of 8 fragments (80%) are sold from the long position
+- Of these proceeds: 4 fragments (40%) go to short positions, 4 fragments (40%) held as cash
+- Unit -5: Final 2 fragments (20%) sold and added to short position
+
+End Result: 0% long, 50% short, 50% cash
+
+Key Insight: The shorts are funded BY the sale of longs, not in addition to them. We're redistributing 100% of our position, not creating leverage beyond our initial capital. The 10% fragment size (rather than 12.5% which would be 1/8) provides a buffer to absorb trading losses from price reversals during phase transitions.

@@ -204,7 +204,7 @@ class ExchangeManager:
             for pos in raw_positions:
                 # Only include positions with non-zero size/contracts
                 contracts = pos.get('contracts', 0)
-                # HyperLiquid uses 'contracts' field, not 'size'
+                # HyperLiquid uses 'contracts' field for size
                 if not contracts or contracts == 0:
                     continue
                 
@@ -218,16 +218,21 @@ class ExchangeManager:
                         logger.warning(f"Could not convert {value} to Decimal, using {default}")
                         return Decimal(str(default))
                     
+                # Calculate mark price from position value / size
+                notional = safe_decimal(pos.get('notional', 0))
+                size = safe_decimal(contracts)
+                mark_price = notional / size if size != 0 else Decimal('0')
+                
                 position = Position(
                     symbol=pos['symbol'],
                     side=pos.get('side', 'unknown'),
-                    size=safe_decimal(pos.get('size', 0)),
-                    notional=safe_decimal(pos.get('notional', 0)),
+                    size=size,  # Use contracts as size
+                    notional=notional,
                     entry_price=safe_decimal(pos.get('entryPrice', 0)),
-                    mark_price=safe_decimal(pos.get('markPrice', 0)),
+                    mark_price=mark_price,  # Calculated from notional/size
                     pnl=safe_decimal(pos.get('unrealizedPnl', 0)),
                     percentage=safe_decimal(pos.get('percentage')) if pos.get('percentage') is not None else None,
-                    contracts=safe_decimal(pos.get('contracts')) if pos.get('contracts') is not None else None
+                    contracts=safe_decimal(contracts)
                 )
                 positions.append(position)
                 

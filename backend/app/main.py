@@ -8,6 +8,8 @@ from app.core.logging import configure_logging, setup_standard_logging_intercept
 from app.api import endpoints
 from app.services.exchange import exchange_manager
 from app.services.market_data import market_data_manager
+from app.services.websocket import websocket_manager
+from app.services.unit_tracker import unit_tracker
 
 # Configure loguru logging
 configure_logging()
