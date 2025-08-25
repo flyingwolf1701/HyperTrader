@@ -48,6 +48,11 @@ class StrategyState:
         """Calculate 10% of current position value"""
         self.position_fragment = self.position_allocation * Decimal("0.10")
         return self.position_fragment
+    
+    def calculate_hedge_fragment(self, short_value: Decimal):
+        """Calculate 25% of short position value for RECOVERY phase"""
+        self.hedge_fragment = short_value * Decimal("0.25")
+        return self.hedge_fragment
 
 
 class StrategyManager:
@@ -374,11 +379,108 @@ class StrategyManager:
                 # -6 and below: Enter DECLINE phase
                 logger.info("Transitioning to DECLINE phase")
                 state.unit_tracker.phase = Phase.DECLINE
+                state.unit_tracker.valley_unit = state.unit_tracker.current_unit
                 logger.info("Position is now fully defensive (short + cash)")
-                # Stage 7 will handle DECLINE phase
+                await self.handle_decline_phase(symbol)
                 
         except Exception as e:
             logger.error(f"Error in RETRACEMENT phase: {e}")
+    
+    async def handle_decline_phase(self, symbol: str):
+        """
+        Handle DECLINE phase logic - Stage 7
+        
+        The portfolio is defensive (short + cash) and profits from continued decline
+        
+        Actions:
+        - Track valley unit as price continues to fall
+        - Hold short position to accumulate profits
+        - Calculate hedge_fragment when price begins to recover
+        - Transition to RECOVERY phase when price rises +2 from valley
+        """
+        if symbol not in self.strategies:
+            return
+        
+        state = self.strategies[symbol]
+        
+        # Get current position
+        position = self.exchange_client.get_position(symbol)
+        if not position:
+            logger.error("No position found in DECLINE phase")
+            return
+        
+        current_price = self.exchange_client.get_current_price(symbol)
+        
+        # Update valley if we've made a new low
+        if state.unit_tracker.current_unit < state.unit_tracker.valley_unit:
+            state.unit_tracker.valley_unit = state.unit_tracker.current_unit
+            logger.info(f"New valley unit: {state.unit_tracker.valley_unit}")
+        
+        # Calculate current short position value
+        short_value = Decimal(str(position["contracts"])) * current_price
+        
+        # Calculate hedge fragment (25% of short position value)
+        state.calculate_hedge_fragment(short_value)
+        
+        logger.info("=" * 60)
+        logger.info("DECLINE Phase Status")
+        logger.info("=" * 60)
+        logger.info(f"  Current Unit: {state.unit_tracker.current_unit}")
+        logger.info(f"  Valley Unit: {state.unit_tracker.valley_unit}")
+        logger.info(f"  Units from Valley: {state.unit_tracker.get_units_from_valley()}")
+        logger.info(f"  Short Position Value: ${short_value:.2f}")
+        logger.info(f"  Hedge Fragment: ${state.hedge_fragment:.2f}")
+        
+        # Calculate unrealized profit on short
+        if position["side"] == "short" and position.get("entryPrice"):
+            entry_price = Decimal(str(position["entryPrice"]))
+            short_profit = (entry_price - current_price) * Decimal(str(position["contracts"]))
+            logger.info(f"  Short Position P&L: ${short_profit:.2f}")
+        
+        # Check for phase transition to RECOVERY
+        units_from_valley = state.unit_tracker.get_units_from_valley()
+        
+        if units_from_valley >= 2:
+            logger.info("=" * 60)
+            logger.info(f"Price recovered {units_from_valley} units from valley")
+            logger.info("Transitioning to RECOVERY phase")
+            state.unit_tracker.phase = Phase.RECOVERY
+            # Stage 8 will implement RECOVERY phase
+            logger.info("Stage 8 will handle position scaling during recovery")
+        else:
+            logger.info(f"\nHolding defensive position...")
+            logger.info(f"Will transition to RECOVERY at +2 units from valley")
+            logger.info(f"Current: {units_from_valley} units from valley")
+    
+    async def monitor_price_change(self, symbol: str, new_price: Decimal):
+        """
+        Monitor price changes and trigger appropriate phase handlers
+        Called when WebSocket detects unit changes
+        """
+        if symbol not in self.strategies:
+            return
+        
+        state = self.strategies[symbol]
+        previous_unit = state.unit_tracker.current_unit
+        
+        # Update unit tracker with new price
+        unit_changed = state.unit_tracker.calculate_unit_change(new_price)
+        
+        if not unit_changed:
+            return
+        
+        logger.info(f"Unit changed: {previous_unit} -> {state.unit_tracker.current_unit}")
+        
+        # Handle based on current phase
+        if state.unit_tracker.phase == Phase.ADVANCE:
+            await self.handle_advance_phase(symbol)
+        elif state.unit_tracker.phase == Phase.RETRACEMENT:
+            await self.handle_retracement_phase(symbol)
+        elif state.unit_tracker.phase == Phase.DECLINE:
+            await self.handle_decline_phase(symbol)
+        elif state.unit_tracker.phase == Phase.RECOVERY:
+            # Stage 8 will implement this
+            logger.info("RECOVERY phase handler will be implemented in Stage 8")
     
     async def handle_reset_mechanism(self, symbol: str):
         """
