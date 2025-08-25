@@ -36,6 +36,9 @@ class StrategyState:
         self.reset_count = 0  # Number of resets completed
         self.pre_reset_value = position_size_usd  # Value before last reset
         
+        # Recovery tracking
+        self.last_recovery_unit = 0  # Track last processed recovery unit to avoid duplicates
+        
         # Entry tracking
         self.entry_price: Optional[Decimal] = None
         self.entry_time: Optional[datetime] = None
@@ -416,6 +419,9 @@ class StrategyManager:
             state.unit_tracker.valley_unit = state.unit_tracker.current_unit
             logger.info(f"New valley unit: {state.unit_tracker.valley_unit}")
         
+        # Reset recovery tracking for new decline cycle
+        state.last_recovery_unit = 0
+        
         # Calculate current short position value
         short_value = Decimal(str(position["contracts"])) * current_price
         
@@ -445,12 +451,166 @@ class StrategyManager:
             logger.info(f"Price recovered {units_from_valley} units from valley")
             logger.info("Transitioning to RECOVERY phase")
             state.unit_tracker.phase = Phase.RECOVERY
-            # Stage 8 will implement RECOVERY phase
-            logger.info("Stage 8 will handle position scaling during recovery")
+            await self.handle_recovery_phase(symbol)
         else:
             logger.info(f"\nHolding defensive position...")
             logger.info(f"Will transition to RECOVERY at +2 units from valley")
             logger.info(f"Current: {units_from_valley} units from valley")
+    
+    async def handle_recovery_phase(self, symbol: str):
+        """
+        Handle RECOVERY phase logic - Stage 8
+        
+        Systematically close short positions and redeploy capital into long positions
+        
+        Actions by units from valley:
+        +2 to +4: For each unit, close 1 hedge_fragment short, buy 1 hedge_fragment long + 1 position_fragment long
+        +5: Close remaining short, use all proceeds for long + 1 position_fragment long
+        +6: Position is 100% long, trigger RESET mechanism
+        
+        IMPORTANT: Each action executes ONCE per unit level to implement "buy low" strategy
+        """
+        if symbol not in self.strategies:
+            return
+        
+        state = self.strategies[symbol]
+        units_from_valley = state.unit_tracker.get_units_from_valley()
+        
+        # Check if we've already processed this recovery level
+        if units_from_valley <= state.last_recovery_unit:
+            logger.debug(f"Already processed recovery unit {units_from_valley}")
+            return
+        
+        # Update last processed unit
+        state.last_recovery_unit = units_from_valley
+        
+        logger.info("=" * 60)
+        logger.info(f"RECOVERY Phase - {units_from_valley} units from valley")
+        logger.info("=" * 60)
+        
+        try:
+            current_price = self.exchange_client.get_current_price(symbol)
+            position = self.exchange_client.get_position(symbol)
+            
+            if units_from_valley >= 2 and units_from_valley <= 4:
+                # +2 to +4: Progressive scaling
+                # For EACH unit: Close 1 hedge_fragment short, buy 1 hedge_fragment + 1 position_fragment long
+                logger.info(f"Action: Close hedge fragment short, buy long positions")
+                
+                if position and position["side"] == "short":
+                    # Calculate hedge fragment to close
+                    hedge_amount = state.hedge_fragment / current_price
+                    
+                    # Reduce short by 1 hedge fragment
+                    order = self.exchange_client.reduce_position(
+                        symbol=symbol,
+                        amount=hedge_amount,
+                        side="buy"  # Buy to close short
+                    )
+                    if order:
+                        logger.success(f"Closed {hedge_amount:.6f} ETH of short position")
+                    
+                    # Use proceeds to buy long (1 hedge fragment worth)
+                    order = self.exchange_client.open_long(
+                        symbol=symbol,
+                        position_size_usd=state.hedge_fragment,
+                        leverage=state.leverage
+                    )
+                    if order:
+                        logger.success(f"Bought long with hedge fragment: ${state.hedge_fragment:.2f}")
+                    
+                    # IMPORTANT: Buy 1 position_fragment long with cash reserves
+                    # This is the "buy low" component - we're buying at a discount from our original entry
+                    # We buy 1 fragment for THIS unit change (not cumulative)
+                    order = self.exchange_client.add_to_position(
+                        symbol=symbol,
+                        position_size_usd=state.position_fragment,
+                        side="buy"
+                    )
+                    if order:
+                        logger.success(f"Bought 1 position fragment at discount: ${state.position_fragment:.2f}")
+                        logger.info(f"This is the 'buy low' opportunity - acquiring at lower prices than original entry")
+                
+                # Estimate portfolio allocation
+                progress = (units_from_valley - 1) / 5  # From +2 to +6 is 5 steps
+                long_pct = int(progress * 100)
+                short_pct = int((1 - progress) * 50)  # Short goes from 50% to 0%
+                cash_pct = 100 - long_pct - short_pct
+                
+                logger.info(f"Portfolio: ~{long_pct}% Long / {short_pct}% Short / {cash_pct}% Cash")
+                
+            elif units_from_valley == 5:
+                # +5: Close all remaining short, convert to long
+                logger.info("Action: Close all short, convert to long")
+                
+                if position and position["side"] == "short":
+                    # Close entire short position
+                    order = self.exchange_client.close_position(symbol)
+                    if order:
+                        logger.success("Closed entire short position")
+                    
+                    # Calculate proceeds from short closure
+                    short_proceeds = Decimal(str(position["contracts"])) * current_price
+                    
+                    # Use all proceeds to buy long
+                    order = self.exchange_client.open_long(
+                        symbol=symbol,
+                        position_size_usd=short_proceeds,
+                        leverage=state.leverage
+                    )
+                    if order:
+                        logger.success(f"Converted short proceeds to long: ${short_proceeds:.2f}")
+                    
+                    # Buy additional long with cash (1 position fragment)
+                    order = self.exchange_client.add_to_position(
+                        symbol=symbol,
+                        position_size_usd=state.position_fragment,
+                        side="buy"
+                    )
+                    if order:
+                        logger.success(f"Bought additional long: ${state.position_fragment:.2f}")
+                
+                logger.info("Portfolio: ~90% Long / 0% Short / ~10% Cash")
+                
+            elif units_from_valley >= 6:
+                # +6: Position should be 100% long, trigger RESET
+                logger.info("Action: Final long purchase, then RESET")
+                
+                # Buy final position with remaining cash
+                # This would use any remaining cash reserves
+                final_cash = state.position_fragment  # Approximate remaining cash
+                
+                order = self.exchange_client.add_to_position(
+                    symbol=symbol,
+                    position_size_usd=final_cash,
+                    side="buy"
+                )
+                if order:
+                    logger.success(f"Final long purchase: ${final_cash:.2f}")
+                
+                logger.info("Portfolio: 100% Long / 0% Short / 0% Cash")
+                
+                # Trigger RESET mechanism
+                logger.info("\n" + "=" * 60)
+                logger.info("RECOVERY COMPLETE - Triggering RESET")
+                logger.info("=" * 60)
+                await self.handle_reset_mechanism(symbol)
+                
+            # Log current status
+            logger.info(f"\nRECOVERY Status:")
+            logger.info(f"  Current Unit: {state.unit_tracker.current_unit}")
+            logger.info(f"  Valley Unit: {state.unit_tracker.valley_unit}")
+            logger.info(f"  Units from Valley: {units_from_valley}")
+            
+            # Show position details
+            position = self.exchange_client.get_position(symbol)
+            if position:
+                logger.info(f"  Position Side: {position['side']}")
+                logger.info(f"  Position Size: {position['contracts']} ETH")
+                logger.info(f"  Unrealized PnL: ${position.get('unrealizedPnl', 0):.2f}")
+            
+        except Exception as e:
+            logger.error(f"Error in RECOVERY phase: {e}")
     
     async def monitor_price_change(self, symbol: str, new_price: Decimal):
         """
@@ -479,8 +639,7 @@ class StrategyManager:
         elif state.unit_tracker.phase == Phase.DECLINE:
             await self.handle_decline_phase(symbol)
         elif state.unit_tracker.phase == Phase.RECOVERY:
-            # Stage 8 will implement this
-            logger.info("RECOVERY phase handler will be implemented in Stage 8")
+            await self.handle_recovery_phase(symbol)
     
     async def handle_reset_mechanism(self, symbol: str):
         """
