@@ -187,9 +187,6 @@ class StrategyManager:
         
         state = self.strategies[symbol]
         
-        # This will be called when unit changes occur
-        # For now, it's a placeholder for Stage 5 (RETRACEMENT)
-        
         # Get current position value
         position = self.exchange_client.get_position(symbol)
         if position:
@@ -206,12 +203,178 @@ class StrategyManager:
             logger.info(f"  Position Value: ${state.position_allocation:.2f}")
             logger.info(f"  Position Fragment: ${state.position_fragment:.2f}")
             
-            # Check for phase transition (Stage 5)
+            # Check for phase transition to RETRACEMENT
             units_from_peak = state.unit_tracker.get_units_from_peak()
             if units_from_peak <= -1:
                 logger.warning(f"Price dropped {abs(units_from_peak)} unit(s) from peak")
-                logger.warning("RETRACEMENT phase would trigger here (Stage 5)")
-                # Stage 5 will implement actual retracement logic
+                logger.info("Transitioning to RETRACEMENT phase")
+                state.unit_tracker.phase = Phase.RETRACEMENT
+                await self.handle_retracement_phase(symbol)
+    
+    async def handle_retracement_phase(self, symbol: str):
+        """
+        Handle RETRACEMENT phase logic
+        Stage 5: Execute pre-defined actions based on units from peak
+        
+        Actions by units from peak:
+        -1: Sell 1 fragment long, Open 1 fragment short
+        -2: Sell 2 fragments long, Add 1 fragment short  
+        -3: Sell 2 fragments long, Add 1 fragment short
+        -4: Sell 2 fragments long, Add 1 fragment short
+        -5: Sell remaining long, Add proceeds to short
+        -6: Enter DECLINE phase
+        """
+        if symbol not in self.strategies:
+            return
+        
+        state = self.strategies[symbol]
+        units_from_peak = state.unit_tracker.get_units_from_peak()
+        
+        logger.info("=" * 60)
+        logger.info(f"RETRACEMENT Phase - {abs(units_from_peak)} units from peak")
+        logger.info("=" * 60)
+        
+        try:
+            current_price = self.exchange_client.get_current_price(symbol)
+            
+            if units_from_peak == -1:
+                # -1: Sell 1 fragment long, Open 1 fragment short
+                logger.info("Action: Sell 1 fragment long, Open 1 fragment short")
+                
+                # Calculate amounts
+                fragment_size = state.position_fragment / current_price
+                
+                # Reduce long by 1 fragment
+                order = self.exchange_client.reduce_position(
+                    symbol=symbol,
+                    amount=fragment_size,
+                    side="sell"
+                )
+                if order:
+                    logger.success(f"Reduced long by 1 fragment: {fragment_size:.6f} ETH")
+                
+                # Open short position with 1 fragment
+                order = self.exchange_client.open_short(
+                    symbol=symbol,
+                    position_size_usd=state.position_fragment,
+                    leverage=state.leverage
+                )
+                if order:
+                    logger.success(f"Opened short with 1 fragment: ${state.position_fragment:.2f}")
+                
+                logger.info("Portfolio: ~80% Long / 10% Short / 10% Cash")
+                
+            elif units_from_peak == -2:
+                # -2: Sell 2 fragments long, Add 1 fragment short
+                logger.info("Action: Sell 2 fragments long, Add 1 fragment short")
+                
+                # Calculate amounts
+                fragment_size = state.position_fragment / current_price
+                
+                # Reduce long by 2 fragments
+                order = self.exchange_client.reduce_position(
+                    symbol=symbol,
+                    amount=fragment_size * 2,
+                    side="sell"
+                )
+                if order:
+                    logger.success(f"Reduced long by 2 fragments: {fragment_size * 2:.6f} ETH")
+                
+                # Add to short position with 1 fragment
+                order = self.exchange_client.add_to_position(
+                    symbol=symbol,
+                    position_size_usd=state.position_fragment,
+                    side="sell"
+                )
+                if order:
+                    logger.success(f"Added to short with 1 fragment: ${state.position_fragment:.2f}")
+                
+                logger.info("Portfolio: ~50% Long / 20% Short / 30% Cash")
+                
+            elif units_from_peak == -3:
+                # -3: Sell 2 fragments long, Add 1 fragment short
+                logger.info("Action: Sell 2 fragments long, Add 1 fragment short")
+                
+                fragment_size = state.position_fragment / current_price
+                
+                # Reduce long by 2 fragments
+                order = self.exchange_client.reduce_position(
+                    symbol=symbol,
+                    amount=fragment_size * 2,
+                    side="sell"
+                )
+                if order:
+                    logger.success(f"Reduced long by 2 fragments: {fragment_size * 2:.6f} ETH")
+                
+                # Add to short position with 1 fragment
+                order = self.exchange_client.add_to_position(
+                    symbol=symbol,
+                    position_size_usd=state.position_fragment,
+                    side="sell"
+                )
+                if order:
+                    logger.success(f"Added to short with 1 fragment: ${state.position_fragment:.2f}")
+                
+                logger.info("Portfolio: ~20% Long / 30% Short / 50% Cash")
+                
+            elif units_from_peak == -4:
+                # -4: Sell 2 fragments long, Add 1 fragment short
+                logger.info("Action: Sell 2 fragments long, Add 1 fragment short")
+                
+                fragment_size = state.position_fragment / current_price
+                
+                # Reduce long by 2 fragments
+                order = self.exchange_client.reduce_position(
+                    symbol=symbol,
+                    amount=fragment_size * 2,
+                    side="sell"
+                )
+                if order:
+                    logger.success(f"Reduced long by 2 fragments: {fragment_size * 2:.6f} ETH")
+                
+                # Add to short position with 1 fragment
+                order = self.exchange_client.add_to_position(
+                    symbol=symbol,
+                    position_size_usd=state.position_fragment,
+                    side="sell"
+                )
+                if order:
+                    logger.success(f"Added to short with 1 fragment: ${state.position_fragment:.2f}")
+                
+                logger.info("Portfolio: ~0% Long / 40% Short / 60% Cash")
+                
+            elif units_from_peak == -5:
+                # -5: Sell remaining long, Add proceeds to short
+                logger.info("Action: Sell remaining long, Add proceeds to short")
+                
+                # Get current long position
+                position = self.exchange_client.get_position(symbol)
+                if position and position["side"] == "long":
+                    # Close entire long position
+                    order = self.exchange_client.close_position(symbol)
+                    if order:
+                        logger.success(f"Closed remaining long position")
+                    
+                    # Add the proceeds to short (approximately 2 fragments worth)
+                    order = self.exchange_client.add_to_position(
+                        symbol=symbol,
+                        position_size_usd=state.position_fragment * 2,
+                        side="sell"
+                    )
+                    if order:
+                        logger.success(f"Added remaining proceeds to short: ${state.position_fragment * 2:.2f}")
+                
+                logger.info("Portfolio: 0% Long / ~50% Short / ~50% Cash")
+                
+            elif units_from_peak <= -6:
+                # -6 and below: Enter DECLINE phase
+                logger.info("Transitioning to DECLINE phase")
+                state.unit_tracker.phase = Phase.DECLINE
+                logger.info("Position is now fully defensive (short + cash)")
+                # Stage 7 will handle DECLINE phase
+                
+        except Exception as e:
+            logger.error(f"Error in RETRACEMENT phase: {e}")
     
     async def get_strategy_status(self, symbol: str) -> Dict[str, Any]:
         """Get current status of a strategy"""

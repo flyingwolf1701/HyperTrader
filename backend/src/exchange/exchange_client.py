@@ -239,6 +239,70 @@ class HyperliquidExchangeClient:
             logger.error(f"Failed to place market order: {e}")
             raise
     
+    def reduce_position(self, symbol: str, amount: Decimal, side: str) -> Optional[Dict[str, Any]]:
+        """
+        Reduce an existing position by a specific amount
+        
+        Args:
+            symbol: Trading pair
+            amount: Amount to reduce (in base currency)
+            side: "buy" to reduce short, "sell" to reduce long
+        """
+        try:
+            logger.info(f"Reducing position for {symbol} by {amount:.6f}")
+            
+            # Place reduce-only order
+            order = self.place_market_order(
+                symbol=symbol,
+                side=side,
+                amount=float(amount),
+                reduce_only=True
+            )
+            
+            if order:
+                logger.success(f"Position reduced successfully")
+            
+            return order
+            
+        except Exception as e:
+            logger.error(f"Error reducing position: {e}")
+            return None
+    
+    def add_to_position(self, symbol: str, position_size_usd: Decimal, side: str) -> Optional[Dict[str, Any]]:
+        """
+        Add to an existing position
+        
+        Args:
+            symbol: Trading pair
+            position_size_usd: Size to add in USD
+            side: "buy" for long, "sell" for short
+        """
+        try:
+            current_price = self.get_current_price(symbol)
+            if not current_price:
+                logger.error("Could not get current price")
+                return None
+            
+            amount = position_size_usd / current_price
+            logger.info(f"Adding ${position_size_usd} to {side} position ({amount:.6f} {symbol.split('/')[0]})")
+            
+            # Place order to add to position
+            order = self.place_market_order(
+                symbol=symbol,
+                side=side,
+                amount=float(amount),
+                reduce_only=False
+            )
+            
+            if order:
+                logger.success(f"Added to position successfully")
+            
+            return order
+            
+        except Exception as e:
+            logger.error(f"Error adding to position: {e}")
+            return None
+    
     def close_position(self, symbol: str) -> Optional[Dict[str, Any]]:
         """
         Close an existing position.
