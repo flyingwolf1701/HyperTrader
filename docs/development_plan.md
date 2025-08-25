@@ -26,7 +26,7 @@
 
 1. Initialize the Python project environment using UV
 2. Install required packages: `websockets`, `asyncio`, `ccxt`
-3. Develop a script to connect to the Hyperliquid WebSocket endpoint (`wss://api.hyperliquid.xyz/ws`)
+3. Develop a script to connect to the Hyperliquid WebSocket endpoint (`wss://api.hyperliquid-testnet.xyz/ws`)
 4. Implement logic to subscribe to the `trades` or `l2Book` channel for the desired asset:
    ```json
    {"method": "subscribe", "subscription": {"type": "trades", "coin": "ETH"}}
