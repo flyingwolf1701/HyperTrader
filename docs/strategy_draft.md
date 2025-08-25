@@ -1,191 +1,128 @@
-With my system, I will be managing lots of crypto coins.
+# HyperTrader Strategy Specification
 
-For each Coin that I am in we can have a long position, a short position and a cash position. In hyperliquid we can't have multiple long positions for a single coin, when we buy more it just gets added to the current position and certain values are recalulated. Same for shorts.
+## Overview
 
-When I open a trade, I am generally assuming that that the price is going up, but of course, I could be wrong. I am also always going to be placing orders with a coins maximum leverage. So if I order $1000 usd of LINK with 10x leverage, my margin will be $100. If I purchase $1000 of XRP at 20x, my margin will actually be $50.
+This strategy manages multiple cryptocurrency positions using a dynamic allocation system that adjusts between long, short, and cash positions based on price movements. The strategy operates on Hyperliquid with maximum leverage for each coin.
 
-Going back to the LINK example my initial_position_allocation is $100 (this is a fixed number). But since my position_allocation is meant to grow, I would have another variable current_position_allocation which would also be $100. Like I said, this controls $1000 worth of LINK.
+## Position Management
 
-Each token has a long allocation and hedge allocation, which starts at 50/50. However, those percentages will fluxuate as the trade strategy works its magic.
+### Core Concepts
 
+- **Position Types**: Each coin can have a long position, short position, and cash position
+- **Leverage**: All trades use maximum available leverage for the coin
+- **Position Consolidation**: Multiple positions in the same direction are automatically consolidated by Hyperliquid
+- **Allocation Split**: Each token has a long allocation and hedge allocation starting at 50/50
 
+### Key Variables
 
-ENTER TRADE
+- `initial_position_allocation`: Fixed initial margin amount
+- `current_position_allocation`: Dynamic position size that grows over time
+- `unit_size`: Dollar amount of price movement the system monitors
+- `current_unit`: Current position relative to entry (starts at 0)
+- `peak_unit`: Highest unit reached during advance phase
+- `valley_unit`: Lowest unit reached during decline phase
+- `position_fragment`: 10% of current position value
 
-When I enter a trade with this strategy it will all be long. I will enter a unit_size which is a dollar amount of movement I am expecting the app to listen for. current_unit is set to 0, which is the entry price hyperliquid keeps track of this for me, if I add to my position at a lower price then my entry price would be the average of my two buys. We let hyperliquid manage that. We will also start by setting peak_unit and valley_unit to 0 as well.
+### Leverage Examples
 
-The app has a websocket connection to hyperliquid to listen to the current price of the coin.
+- **LINK**: $1000 position at 10x leverage = $100 margin
+- **XRP**: $1000 position at 20x leverage = $50 margin
 
+## Trading Phases
 
+### 1. Entry Phase
 
-ADVANCE Phase
+**Initial Setup:**
+- Enter with 100% long position
+- Set `current_unit = 0`, `peak_unit = 0`, `valley_unit = 0`
+- Establish WebSocket connection to Hyperliquid for real-time price data
+- Calculate initial `position_fragment` (10% of position value)
 
-Once we enter a trade we are in the advance phase
+### 2. Advance Phase
 
-Whenever the price goes up a unit size we increment current_unit +1. We also increment peak_unit +1. As long as the price is going up then all we are doing is incrementing those two variables (valley_unit remained 0), as well as calculating 10% of our position value (the position value is managed by hyperliquid) which will be a variable called position_fragment.
+**Trigger:** Price increases by one `unit_size`
 
+**Actions:**
+- Increment `current_unit += 1`
+- Increment `peak_unit += 1`
+- Recalculate `position_fragment`
+- Continue tracking upward movement
 
+### 3. Retracement Phase
 
-All of this is the advance phase.
+**Trigger:** Price decreases by one `unit_size` from advance phase
 
+**Unit Tracking:**
+- Decrement `current_unit -= 1`
+- Decrement `valley_unit -= 1`
 
+**Retracement Actions:**
 
-When the price drops a unit we enter the RETRACEMENT phase. For each of the these we would be decrementing the current_unit and valley_unit by 1.
+| Unit Difference (`current_unit - peak_unit`) | Actions |
+|---|---|
+| **-1** | • Sell 1 `position_fragment` <br> • Short 1 `position_fragment` |
+| **-2** | • Sell 2 `position_fragment` <br> • Short 1 `position_fragment` <br> • Remaining fragment stays in cash |
+| **-3** | • Sell 2 `position_fragment` <br> • Short 1 `position_fragment` <br> • Remaining fragment stays in cash |
+| **-4** | • Sell 2 `position_fragment` <br> • Short 1 `position_fragment` <br> • Remaining fragment stays in cash |
+| **-5** | • Sell remaining long position <br> • Save amount as `temp_cash_fragment` |
 
+**Recovery Actions (Price Moving Up):**
 
+| Unit Change | Actions |
+|---|---|
+| **-6 → -5** | • Buy long `temp_cash_fragment` |
+| **-5 → -4** | • Close short by 1 `position_fragment` <br> • Buy long 2 `position_fragment` |
+| **-4 → -3** | • Close short by 1 `position_fragment` <br> • Buy long 2 `position_fragment` |
+| **-3 → -2** | • Close short by 1 `position_fragment` <br> • Buy long 2 `position_fragment` |
+| **-2 → -1** | • Close remaining short (save as `temp_cash_fragment`) <br> • Buy long `temp_cash_fragment` |
 
-When current_unit - peak unit = -1
+### 4. Decline Phase
 
-* we sell 1 position_fragment value of our position and
+**Trigger:** `current_unit - valley_unit = 0` (after reaching unit -7)
 
-* short the coin by 1 position_fragment value
+**Position State:** 50% short, 50% cash
 
+**Actions:**
+- Monitor short position profits
+- When `current_unit - valley_unit = 1`:
+  - Calculate `hedge_fragment = short_position_value / 4`
+  - Recalculate if returning to this level
 
+### 5. Recovery Phase
 
-When current_unit - peak unit = -2
+**Trigger:** `current_unit - valley_unit = 2`
 
-* we sell 2 position_fragment's value of our position and
+**Unit 2-4 Actions:**
+- Close 1 `hedge_fragment` value of short
+- Buy 1 `hedge_fragment` value long
+- Buy 1 `position_fragment` value long
 
-* short the coin by 1 position_fragment value
+**Unit 5 Actions:**
+- Close remaining short (save as `temp_hedge_value`)
+- Buy `temp_hedge_value` long
+- Buy 1 `position_fragment` long
 
+**Unit 6:**
+- Trigger Reset Phase
 
+### 6. Reset Phase
 
-* the remaining position_fragment remains in cash
+**Conditions:** Fully long position, no short or cash positions
 
+**Actions:**
+- Reset all unit variables to 0
+- Update `current_position_allocation` to current margin
+- Return to Advance Phase
 
+## Risk Management
 
-When current_unit - peak unit = -3
+- Position fragmentation limits exposure during retracements
+- Short positions provide hedging during price declines
+- Cash positions preserve capital during volatile periods
+- Dynamic allocation adjusts to market conditions
 
-* we sell 2 position_fragment's value of our position and
+## Expected Outcomes
 
-* short the coin by 1 position_fragment value
-
-* the remaining position_fragment remains in cash
-
-
-
-When current_unit - peak unit = -4
-
-* we sell 2 position_fragment's value of our position and
-
-* short the coin by 1 position_fragment value.
-
-* the remaining position_fragment remains in cash
-
-
-
-When current_unit - peak unit = -5
-
-* we sell the remaining long position for market price
-
-* We will save a temp variable temp_cash_fragment which is how much that final amount was.
-
-
-
-At this point 50% of our position is a short and 50% is in cash. at unit -7 we enter the DECLINE phase (This description comes later).
-
-
-
-At any point during the retracement phase if the unit goes back up we will just do the Opposite of what we just did.
-
-
-
-Unit change from: -6 unit --> -5 unit
-
-* buy long temp_cash_fragment
-
-
-
-Unit change from: -5 unit --> -4 unit
-
-* we partially close the short position of the coin by 1 position_fragment value
-
-* we buy long 2 position_fragment's value at market price
-
-
-
-Unit change from: -4 unit --> -3 unit
-
-* we partially close the short position of the coin by 1 position_fragment value
-
-* we buy long 2 position_fragment's value at market price
-
-
-
-Unit change from: -3 unit --> -2 unit
-
-* we partially close the short position of the coin by 1 position_fragment value
-
-* we buy long 2 position_fragment's value at market price
-
-
-
-Unit change from: -2 unit --> -1 unit
-
-* we will close the rest of the short and save that amount in temp_cash_fragment
-
-* we will buy long temp_cash_fragment amount
-
-
-
-Lots of fluctuation can happen, where the price goes up and down. We will likely lose a little value in this phase. and that is ok.
-
-
-
-RESET Phase.
-
-Its not really a phase, but it is something that happens. We are fully long, and We have not short or cash position.
-
-* all unit variables are reset to 0
-
-* current_position_allocation is reset to whatever our current margin is (it could be less than the initial margin but hopefully it is more)
-
-* Advance Phase starts again
-
-
-
-DECLINE Phase
-
-At this point Roughly half of our position is in cash and half is in a short.
-
-We will be as long as current_unit - valley_unit = 0 we are in the decline phase and all we do is let the short position gain in profit. if current_unit - valley_unit = 1 then we will take the current value of the short position divide by 4 and save that number as variable hedge_fragment.
-
-If current_unit - valley_unit goes back to 0 we just continue, and if current_unit - valley_unit goes back to 1 then we just recalculate.
-
-
-
-RECOVERY phase:
-
-when current_unit - valley_unit = 2 we have entered the recovery phase
-
-
-
-Unit 2 - 4
-
-* Close 1 hedge_fragment value of short
-
-* Buy 1 hedge_fragment value at market price
-
-* Buy 1 position_fragment's value at market price
-
-
-
-Unit 5
-
-* Close remaining short and save amout as temp_hedge_value
-
-* Buy temp_hedge_value value at market price
-
-* Buy 1 position_fragment's value at market price
-
-
-
-At any point the unit can go up and down so we just do the opposite. We could lose some value in recovery phase, but that is ok.
-
-
-
-Unit 6
-
-RESET Phase and then Back to ADVANCE.
-
-Hopefully our current position size is larger because of the shorts.
+- Minor value loss during retracement and recovery phases is acceptable
+- Short positions during decline phases should increase overall position size
+- Strategy aims for net positive returns through complete cycles
