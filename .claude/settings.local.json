@@ -17,6 +17,9 @@
       "Bash(uvicorn:*)"
     ],
     "deny": [],
-    "ask": []
+    "ask": [],
+    "additionalDirectories": [
+      "D:\\d\\Coding\\2025\\HyperTrader\\HyperTrader"
+    ]
   }
 }

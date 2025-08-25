@@ -257,12 +257,15 @@ async def update_strategy():
         if not state:
             raise HTTPException(status_code=404, detail="No active strategy found")
         
-        # Get current price
-        current_price = await exchange_manager.get_current_price(state["symbol"])
-        if current_price is None:
-            raise HTTPException(status_code=503, detail=f"Unable to get current price for {state['symbol']}")
-        
-        current_price = float(current_price)
+        # Get current price - use state price if it's been manually set for testing
+        if "test_price" in state and state["test_price"] is not None:
+            current_price = float(state["test_price"])
+            logger.info(f"Using test price: ${current_price}")
+        else:
+            current_price = await exchange_manager.get_current_price(state["symbol"])
+            if current_price is None:
+                raise HTTPException(status_code=503, detail=f"Unable to get current price for {state['symbol']}")
+            current_price = float(current_price)
         entry_price = state["entry_price"]
         unit_size = state["unit_size"]
         
@@ -296,31 +299,33 @@ async def update_strategy():
                 # First decline from peak - transition to RETRACEMENT
                 state["phase"] = "RETRACEMENT"
                 logger.info("Phase transition: ADVANCE -> RETRACEMENT")
+                # Continue to RETRACEMENT logic immediately
         
-        elif state["phase"] == "RETRACEMENT":
-            if current_unit < old_unit:
+        if state["phase"] == "RETRACEMENT":
+            if current_unit <= old_unit or (old_unit >= state["peak_unit"] and current_unit < state["peak_unit"]):
                 # Price declining further - execute sell/short pattern based on distance from peak
                 units_from_peak = state["peak_unit"] - current_unit
                 decline_portion = state["decline_portion"]
                 
-                # Determine sell and short amounts based on unit distance
-                if units_from_peak == 1:
-                    # -1 unit: sell 1x, short 1x
-                    net_change = -2 * decline_portion  # net position decreases by 2x decline_portion
-                elif units_from_peak == 2:
-                    # -2 units: sell 2x more, short 1x more (total change from -1 to -2)
-                    net_change = -3 * decline_portion  # additional -3x from previous -2x = -5x total
-                elif units_from_peak == 3:
-                    # -3 units: sell 2x more, short 1x more (total change from -2 to -3)  
-                    net_change = -3 * decline_portion  # additional -3x from previous -5x = -8x total
-                elif units_from_peak == 4:
-                    # -4 units: sell 2x more, short 1x more (fully short)
-                    net_change = -3 * decline_portion  # additional -3x from previous -8x = -11x total
-                elif units_from_peak >= 5:
-                    # -5+ units: emergency sell remaining long
-                    net_change = -state["current_long_position"]  # sell everything remaining
-                else:
-                    net_change = 0
+                # Calculate what position we should be at based on units from peak
+                # This is CUMULATIVE - each tier adds to the previous
+                target_position = state["position_size_usd"]  # Start at full long
+                
+                if units_from_peak >= 1:
+                    target_position -= 2 * decline_portion  # -1 unit: reduce by 2x (sell 1x, short 1x)
+                if units_from_peak >= 2:
+                    target_position -= 3 * decline_portion  # -2 units: reduce by 3x MORE (cumulative: -5x)
+                if units_from_peak >= 3:
+                    target_position -= 3 * decline_portion  # -3 units: reduce by 3x MORE (cumulative: -8x)
+                if units_from_peak >= 4:
+                    target_position -= 3 * decline_portion  # -4 units: reduce by 3x MORE (cumulative: -11x)
+                if units_from_peak >= 5:
+                    target_position = -state["position_size_usd"] * 0.33  # Emergency: go to full short
+                
+                logger.info(f"Units from peak: {units_from_peak}, Target position: ${target_position:.2f}, Current position: ${state['current_long_position']:.2f}")
+                
+                # Calculate the net change needed
+                net_change = target_position - state["current_long_position"]
                     
                 if net_change != 0:
                     # Calculate actual trade amount
@@ -353,23 +358,22 @@ async def update_strategy():
                 units_from_peak = state["peak_unit"] - current_unit
                 decline_portion = state["decline_portion"]
                 
-                # Calculate how much to buy back based on current distance from peak
+                # Calculate what position we should be at based on units from peak
                 if units_from_peak >= 0:  # Still below peak
-                    # Determine the net position we should be at for this unit level
-                    target_position_change = 0
-                    if units_from_peak == 0:
-                        target_position_change = 0  # Back at peak, should be fully long
-                    elif units_from_peak == 1:
-                        target_position_change = -2 * decline_portion
-                    elif units_from_peak == 2:
-                        target_position_change = -5 * decline_portion  
-                    elif units_from_peak == 3:
-                        target_position_change = -8 * decline_portion
-                    elif units_from_peak >= 4:
-                        target_position_change = -11 * decline_portion
+                    target_position = state["position_size_usd"]  # Start at full long
                     
-                    expected_position = state["position_size_usd"] + target_position_change
-                    position_adjustment = expected_position - state["current_long_position"]
+                    if units_from_peak >= 1:
+                        target_position -= 2 * decline_portion
+                    if units_from_peak >= 2:
+                        target_position -= 3 * decline_portion
+                    if units_from_peak >= 3:
+                        target_position -= 3 * decline_portion
+                    if units_from_peak >= 4:
+                        target_position -= 3 * decline_portion
+                    if units_from_peak >= 5:
+                        target_position = -state["position_size_usd"] * 0.33
+                    
+                    position_adjustment = target_position - state["current_long_position"]
                     
                     if position_adjustment > 0:  # Need to buy back
                         trade_amount_usd = position_adjustment
@@ -384,7 +388,7 @@ async def update_strategy():
                         )
                         
                         if order_result.success:
-                            state["current_long_position"] = expected_position
+                            state["current_long_position"] = target_position
                             trades_executed.append(f"RETRACEMENT REVERSAL: Bought back ${trade_amount_usd:.2f} at unit {current_unit}")
                             logger.info(f"RETRACEMENT REVERSAL: Bought back ${trade_amount_usd:.2f} at unit {current_unit}")
                             
