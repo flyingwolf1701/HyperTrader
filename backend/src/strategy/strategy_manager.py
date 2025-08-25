@@ -12,6 +12,8 @@ from ..core.models import UnitTracker, Phase
 from ..core.websocket_client import HyperliquidWebSocketClient
 from ..exchange.exchange_client import HyperliquidExchangeClient
 from ..utils.config import settings
+from ..utils.trade_logger import TradeLogger
+from ..utils.notifications import NotificationManager
 
 
 class StrategyState:
@@ -70,6 +72,8 @@ class StrategyManager:
         self.exchange_client = HyperliquidExchangeClient(testnet=testnet)
         self.strategies: Dict[str, StrategyState] = {}
         self.is_running = False
+        self.trade_logger = TradeLogger()
+        self.notifier = NotificationManager()
         
     async def start_strategy(
         self,
@@ -129,12 +133,15 @@ class StrategyManager:
                 state.has_position = True
                 state.entry_time = datetime.now()
                 
-                # Get actual entry price from order
-                if "price" in order:
+                # Get actual entry price from order or current market price
+                if order.get("price") and order["price"] != 0:
                     state.entry_price = Decimal(str(order["price"]))
                 else:
                     # Fallback to current market price
                     state.entry_price = self.exchange_client.get_current_price(symbol)
+                    if not state.entry_price:
+                        logger.error("Could not determine entry price")
+                        return False
                 
                 # Set entry price in unit tracker
                 state.unit_tracker.entry_price = state.entry_price
@@ -142,10 +149,22 @@ class StrategyManager:
                 # Calculate initial position fragment (10% of position)
                 state.calculate_position_fragment()
                 
-                logger.success(f"✅ Position opened successfully")
+                logger.success(f"Position opened successfully")
                 logger.info(f"Entry Price: ${state.entry_price:.2f}")
                 logger.info(f"Order ID: {order.get('id', 'N/A')}")
                 logger.info(f"Position Fragment: ${state.position_fragment:.2f}")
+                
+                # Log trade
+                self.trade_logger.log_trade(
+                    symbol=symbol,
+                    side="buy",
+                    amount=order.get("amount", Decimal("0")),
+                    price=state.entry_price,
+                    order_type="market",
+                    phase="ADVANCE",
+                    reason="Initial entry",
+                    order_id=order.get("id")
+                )
                 
                 # Set phase to ADVANCE
                 state.unit_tracker.phase = Phase.ADVANCE
@@ -221,6 +240,29 @@ class StrategyManager:
                 logger.warning(f"Price dropped {abs(units_from_peak)} unit(s) from peak")
                 logger.info("Transitioning to RETRACEMENT phase")
                 state.unit_tracker.phase = Phase.RETRACEMENT
+                
+                # Log phase change event
+                self.trade_logger.log_event(
+                    event_type="PHASE_CHANGE",
+                    phase="RETRACEMENT",
+                    details={
+                        "from_phase": "ADVANCE",
+                        "peak_unit": state.unit_tracker.peak_unit,
+                        "current_unit": state.unit_tracker.current_unit,
+                        "position_value": state.position_allocation
+                    }
+                )
+                
+                # Send notification
+                current_price = self.exchange_client.get_current_price(symbol)
+                self.notifier.notify_phase_change(
+                    from_phase="ADVANCE",
+                    to_phase="RETRACEMENT",
+                    symbol=symbol,
+                    current_price=current_price,
+                    position_value=state.position_allocation
+                )
+                
                 await self.handle_retracement_phase(symbol)
     
     async def handle_retracement_phase(self, symbol: str):

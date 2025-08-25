@@ -1,6 +1,6 @@
-# HyperTrader Backend - Stage 1 & 2 Complete
+# HyperTrader Backend - Advanced Hedging Strategy v6.0.0
 
-WebSocket-based price tracking system with unit change detection for the HyperTrader automated trading strategy on Hyperliquid testnet.
+Automated cryptocurrency trading bot implementing a sophisticated four-phase hedging strategy on Hyperliquid.
 
 ## ✅ Completed: Stage 1 & 2
 

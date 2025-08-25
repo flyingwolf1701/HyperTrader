@@ -225,13 +225,14 @@ class HyperliquidExchangeClient:
             
             logger.info(f"Order placed successfully: {order['id']}")
             
+            # Safely convert values, handling None and missing fields
             return {
-                "id": order["id"],
-                "symbol": order["symbol"],
-                "side": order["side"],
-                "amount": Decimal(str(order["amount"])),
-                "price": Decimal(str(order.get("price", 0))),
-                "status": order["status"],
+                "id": order.get("id"),
+                "symbol": order.get("symbol"),
+                "side": order.get("side"),
+                "amount": Decimal(str(order.get("amount", 0))) if order.get("amount") is not None else Decimal("0"),
+                "price": Decimal(str(order.get("price", 0))) if order.get("price") is not None else Decimal("0"),
+                "status": order.get("status"),
                 "info": order.get("info", {})
             }
             
