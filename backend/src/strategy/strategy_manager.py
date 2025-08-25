@@ -32,6 +32,10 @@ class StrategyState:
         self.position_fragment = Decimal("0")  # 10% of position value
         self.hedge_fragment = Decimal("0")  # 25% of short position value
         
+        # RESET tracking
+        self.reset_count = 0  # Number of resets completed
+        self.pre_reset_value = position_size_usd  # Value before last reset
+        
         # Entry tracking
         self.entry_price: Optional[Decimal] = None
         self.entry_time: Optional[datetime] = None
@@ -376,6 +380,116 @@ class StrategyManager:
         except Exception as e:
             logger.error(f"Error in RETRACEMENT phase: {e}")
     
+    async def handle_reset_mechanism(self, symbol: str):
+        """
+        Handle RESET mechanism - Stage 6
+        Re-calibrates the strategy after completing a full cycle
+        
+        Trigger: Position becomes 100% long (after RECOVERY or manual reset)
+        
+        Process:
+        1. Reset all unit tracking variables
+        2. Update position allocation to current value (lock in profits/losses)
+        3. Enter ADVANCE phase with new baseline
+        """
+        if symbol not in self.strategies:
+            return
+        
+        state = self.strategies[symbol]
+        
+        logger.info("=" * 60)
+        logger.info("RESET MECHANISM TRIGGERED")
+        logger.info("=" * 60)
+        
+        try:
+            # Get current position value
+            position = self.exchange_client.get_position(symbol)
+            if not position:
+                logger.error("No position found for reset")
+                return
+            
+            current_price = self.exchange_client.get_current_price(symbol)
+            current_value = Decimal(str(position["contracts"])) * current_price
+            
+            # Calculate profit/loss from cycle
+            cycle_pnl = current_value - state.position_allocation
+            cycle_pnl_pct = (cycle_pnl / state.position_allocation) * Decimal("100")
+            
+            logger.info(f"Cycle Summary:")
+            logger.info(f"  Starting Value: ${state.position_allocation:.2f}")
+            logger.info(f"  Current Value: ${current_value:.2f}")
+            logger.info(f"  Cycle P&L: ${cycle_pnl:.2f} ({cycle_pnl_pct:.2f}%)")
+            logger.info(f"  Reset Count: {state.reset_count}")
+            
+            # Store pre-reset value
+            state.pre_reset_value = state.position_allocation
+            
+            # UPDATE POSITION ALLOCATION TO CURRENT VALUE
+            # This is the key - profits/losses are now locked into the new baseline
+            state.position_allocation = current_value
+            state.initial_position_allocation = current_value  # New baseline
+            
+            # RESET ALL UNIT TRACKING VARIABLES
+            state.unit_tracker.current_unit = 0
+            state.unit_tracker.peak_unit = 0
+            state.unit_tracker.valley_unit = 0
+            
+            # Update entry price to current price (new baseline)
+            state.entry_price = current_price
+            state.unit_tracker.entry_price = current_price
+            
+            # Recalculate fragments based on new position value
+            state.calculate_position_fragment()
+            
+            # Set phase to ADVANCE
+            state.unit_tracker.phase = Phase.ADVANCE
+            
+            # Increment reset counter
+            state.reset_count += 1
+            
+            logger.success("RESET Complete!")
+            logger.info(f"New Baseline:")
+            logger.info(f"  Position Value: ${state.position_allocation:.2f}")
+            logger.info(f"  Entry Price: ${state.entry_price:.2f}")
+            logger.info(f"  Position Fragment: ${state.position_fragment:.2f}")
+            logger.info(f"  Current Unit: {state.unit_tracker.current_unit}")
+            logger.info(f"  Phase: {state.unit_tracker.phase.value}")
+            logger.info(f"  Total Resets: {state.reset_count}")
+            
+            logger.info("\nStrategy re-calibrated and ready for next cycle")
+            logger.info("Entering ADVANCE phase with compounded position")
+            
+        except Exception as e:
+            logger.error(f"Error in RESET mechanism: {e}")
+    
+    async def trigger_reset_if_needed(self, symbol: str) -> bool:
+        """
+        Check if RESET should be triggered
+        
+        Trigger condition: Position is 100% long and we've completed a cycle
+        This typically happens after RECOVERY phase or can be manually triggered
+        """
+        if symbol not in self.strategies:
+            return False
+        
+        state = self.strategies[symbol]
+        
+        # Check if we're 100% long
+        position = self.exchange_client.get_position(symbol)
+        if not position or position["side"] != "long":
+            return False
+        
+        # Check if we've completed a cycle (been through other phases)
+        # RESET is triggered when returning to 100% long after RECOVERY
+        # or when manually requested
+        if state.reset_count > 0 or state.unit_tracker.valley_unit != 0:
+            # We've been through a cycle
+            logger.info("RESET conditions met: 100% long position after cycle")
+            await self.handle_reset_mechanism(symbol)
+            return True
+        
+        return False
+    
     async def get_strategy_status(self, symbol: str) -> Dict[str, Any]:
         """Get current status of a strategy"""
         if symbol not in self.strategies:
@@ -405,7 +519,9 @@ class StrategyManager:
                 "pnl": float(position["unrealizedPnl"]) if position else 0
             },
             "position_fragment": float(state.position_fragment),
-            "position_allocation": float(state.position_allocation)
+            "position_allocation": float(state.position_allocation),
+            "reset_count": state.reset_count,
+            "initial_allocation": float(state.initial_position_allocation)
         }
     
     async def stop_strategy(self, symbol: str, close_position: bool = True):
