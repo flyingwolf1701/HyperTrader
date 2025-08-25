@@ -5,10 +5,11 @@ from loguru import logger
 
 from app.core.config import settings
 from app.core.logging import configure_logging, setup_standard_logging_intercept
-from app.db.session import init_db, close_db_connection
-from app.api import endpoints, websockets
+from app.api import endpoints
 from app.services.exchange import exchange_manager
 from app.services.market_data import market_data_manager
+from backend.app.websocket import websocket_manager
+from app.services.unit_tracker import unit_tracker
 
 # Configure loguru logging
 configure_logging()
@@ -21,9 +22,6 @@ async def lifespan(app: FastAPI):
     """
     logger.info("--- Starting HyperTrader Backend ---")
     
-    # Initialize database
-    await init_db()
-    logger.info("Database connection initialized.")
     
     # Initialize exchange manager
     await exchange_manager.initialize()
@@ -40,7 +38,6 @@ async def lifespan(app: FastAPI):
     logger.info("--- Shutting Down HyperTrader Backend ---")
     await market_data_manager.stop_monitoring()
     await exchange_manager.close()
-    await close_db_connection()
     logger.info("Shutdown complete.")
 
 
@@ -62,7 +59,6 @@ app.add_middleware(
 
 # Include API routers
 app.include_router(endpoints.router, prefix="/api/v1")
-app.include_router(websockets.router)
 
 @app.get("/health")
 def health_check():

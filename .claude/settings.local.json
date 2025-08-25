@@ -14,9 +14,14 @@
       "Bash(cp:*)",
       "Bash(bun run:*)",
       "WebFetch(domain:docs.ccxt.com)",
-      "Bash(uvicorn:*)"
+      "Bash(uvicorn:*)",
+      "Read(/c:\\Users\\trini\\Pictures\\Screenshots/**)"
     ],
     "deny": [],
-    "ask": []
+    "ask": [],
+    "additionalDirectories": [
+      "D:\\d\\Coding\\2025\\HyperTrader\\HyperTrader",
+      "D:\\"
+    ]
   }
 }
