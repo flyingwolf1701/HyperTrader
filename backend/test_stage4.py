@@ -11,7 +11,7 @@ from loguru import logger
 # Add src to path
 sys.path.append(str(Path(__file__).parent / "src"))
 
-from strategy.strategy_manager import StrategyManager
+from src.strategy.strategy_manager import StrategyManager
 
 
 async def test_stage4():
@@ -156,7 +156,7 @@ async def test_without_real_trade():
     logger.info("STAGE 4 DEMO: Enter Trade & ADVANCE Phase (No Real Trade)")
     logger.info("=" * 60)
     
-    from strategy.strategy_manager import StrategyState
+    from src.strategy.strategy_manager import StrategyState
     
     # Create a mock strategy state
     state = StrategyState(
