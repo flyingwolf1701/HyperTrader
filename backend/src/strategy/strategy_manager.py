@@ -14,6 +14,7 @@ from ..exchange.exchange_client import HyperliquidExchangeClient
 from ..utils.config import settings
 from ..utils.trade_logger import TradeLogger
 from ..utils.notifications import NotificationManager
+from ..utils.state_persistence import StatePersistence
 
 
 class StrategyState:
@@ -58,6 +59,29 @@ class StrategyState:
         """Calculate 25% of short position value for RECOVERY phase"""
         self.hedge_fragment = short_value * Decimal("0.25")
         return self.hedge_fragment
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert state to dictionary for persistence"""
+        return {
+            "symbol": self.symbol,
+            "phase": self.unit_tracker.phase.value if self.unit_tracker.phase else "UNKNOWN",
+            "position_size_usd": self.position_size_usd,
+            "unit_size": self.unit_size,
+            "leverage": self.leverage,
+            "position_allocation": self.position_allocation,
+            "initial_position_allocation": self.initial_position_allocation,
+            "position_fragment": self.position_fragment,
+            "hedge_fragment": self.hedge_fragment,
+            "reset_count": self.reset_count,
+            "pre_reset_value": self.pre_reset_value,
+            "last_recovery_unit": self.last_recovery_unit,
+            "entry_price": self.entry_price,
+            "entry_time": self.entry_time.isoformat() if self.entry_time else None,
+            "has_position": self.has_position,
+            "current_unit": self.unit_tracker.current_unit,
+            "peak_unit": self.unit_tracker.peak_unit,
+            "valley_unit": self.unit_tracker.valley_unit,
+        }
 
 
 class StrategyManager:
@@ -74,7 +98,14 @@ class StrategyManager:
         self.is_running = False
         self.trade_logger = TradeLogger()
         self.notifier = NotificationManager()
-        
+        self.state_persistence = StatePersistence()
+    
+    def save_state(self, symbol: str):
+        """Save current strategy state to disk"""
+        if symbol in self.strategies:
+            state = self.strategies[symbol]
+            self.state_persistence.save_state(symbol, state.to_dict())
+    
     async def start_strategy(
         self,
         symbol: str,
@@ -173,6 +204,9 @@ class StrategyManager:
                 logger.info("Peak unit will be tracked as price rises")
                 logger.info("Position fragment will be recalculated on each unit change")
                 
+                # Save state after successful entry
+                self.save_state(symbol)
+                
                 # Start WebSocket monitoring
                 await self._start_monitoring(symbol, unit_size)
                 
@@ -233,6 +267,9 @@ class StrategyManager:
             logger.info(f"  Peak Unit: {state.unit_tracker.peak_unit}")
             logger.info(f"  Position Value: ${state.position_allocation:.2f}")
             logger.info(f"  Position Fragment: ${state.position_fragment:.2f}")
+            
+            # Periodically save state
+            self.save_state(symbol)
             
             # Check for phase transition to RETRACEMENT
             units_from_peak = state.unit_tracker.get_units_from_peak()
