@@ -1,0 +1,65 @@
+# HyperTrader Configuration
+# Advanced Hedging Strategy v6.0.0
+
+# Trading Parameters
+trading:
+  symbol: "ETH/USDC:USDC"  # Trading pair
+  position_size_usd: 1000   # Position size in USD
+  unit_size: 2.0            # Price movement per unit in USD
+  leverage: 10              # Leverage multiplier (1-100)
+
+# Network Settings
+network:
+  testnet: true             # Use testnet (true) or mainnet (false)
+  
+# Strategy Parameters
+strategy:
+  position_fragment_pct: 0.10  # 10% of position value
+  hedge_fragment_pct: 0.25     # 25% of short position value
+  
+  # Phase Transition Triggers
+  retracement_trigger: -1      # Units from peak to trigger RETRACEMENT
+  decline_trigger: -6           # Units from peak to trigger DECLINE  
+  recovery_trigger: 2           # Units from valley to trigger RECOVERY
+  reset_trigger: 6              # Units from valley to trigger RESET
+
+# Risk Management
+risk:
+  max_position_size: 10000     # Maximum position size in USD
+  max_leverage: 20              # Maximum allowed leverage
+  stop_loss_pct: 0.20          # Stop loss at 20% loss
+  daily_loss_limit: 0.10       # Maximum daily loss percentage
+  
+# Monitoring
+monitoring:
+  status_update_interval: 30   # Seconds between status updates
+  price_check_interval: 1      # Seconds between price checks
+  
+# Logging
+logging:
+  level: "INFO"                # Log level (DEBUG, INFO, WARNING, ERROR)
+  file_rotation: "1 day"       # Log file rotation period
+  retention_days: 7             # Days to keep old logs
+  
+# WebSocket Settings
+websocket:
+  reconnect_attempts: 5        # Number of reconnection attempts
+  reconnect_delay: 5           # Seconds between reconnection attempts
+  heartbeat_interval: 30       # Seconds between heartbeat pings
+  
+# Exchange Settings
+exchange:
+  order_timeout: 10            # Seconds to wait for order confirmation
+  rate_limit_delay: 0.1        # Seconds between API calls
+  
+# Safety Features
+safety:
+  confirm_mainnet: true        # Require confirmation for mainnet trading
+  dry_run_available: true      # Allow dry run mode
+  emergency_stop: true         # Enable emergency stop functionality
+  
+# Performance Tracking
+tracking:
+  save_trades: true            # Save trade history to database
+  calculate_metrics: true      # Calculate performance metrics
+  export_csv: true             # Export data to CSV files
