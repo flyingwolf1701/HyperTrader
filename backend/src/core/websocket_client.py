@@ -137,7 +137,7 @@ class HyperliquidWebSocketClient:
                 await asyncio.sleep(30)  # Ping every 30 seconds
                 if self.websocket:
                     await self.websocket.ping()
-                    logger.debug("Sent ping to keep connection alive")
+                    # Removed debug logging for cleaner output
             except Exception as e:
                 logger.warning(f"Ping failed: {e}")
                 break
@@ -189,7 +189,7 @@ class HyperliquidWebSocketClient:
             logger.error(f"Error processing message: {e}")
     
     async def _handle_trades(self, data: dict):
-        """Handle trade data and update unit tracking"""
+        """Handle trade data and update unit tracking - IMPROVED VERSION"""
         if "data" not in data or len(data["data"]) == 0:
             return
             
@@ -208,17 +208,22 @@ class HyperliquidWebSocketClient:
                 # Get unit tracker for this symbol
                 tracker = self.unit_trackers[coin]
                 
-                # Log price with unit info
-                logger.info(
-                    f"[{timestamp}] {coin} Price: ${price:.2f} | "
-                    f"Size: {size:.4f} | Unit: {tracker.current_unit}"
-                )
+                # ONLY log meaningful price updates (every ~$5-10 or on unit changes)
+                if not hasattr(tracker, 'last_logged_price'):
+                    tracker.last_logged_price = price
+                    logger.info(f"[{timestamp}] {coin}: ${price:.2f} (Unit: {tracker.current_unit})")
+                else:
+                    price_change = abs(price - tracker.last_logged_price)
+                    if price_change >= Decimal("10.0"):  # Only log significant moves
+                        logger.info(f"[{timestamp}] {coin}: ${price:.2f} (Unit: {tracker.current_unit})")
+                        tracker.last_logged_price = price
                 
                 # Calculate unit change
                 unit_changed = tracker.calculate_unit_change(price)
                 
-                # Log phase-relevant info when unit changes
+                # ONLY log when unit actually changes
                 if unit_changed:
+                    logger.warning(f"🚀 {coin} UNIT CHANGE: Unit {tracker.current_unit}")
                     self._log_phase_info(coin, tracker)
                     
                     # Call price callback if registered

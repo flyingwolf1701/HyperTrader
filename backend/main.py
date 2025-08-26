@@ -80,38 +80,50 @@ class HyperTrader:
             await self.shutdown(symbol)
     
     async def monitor_strategy(self, symbol: str):
-        """Monitor strategy status and log updates"""
+        """Monitor strategy status - IMPROVED VERSION"""
+        last_status = {}
+        
         while self.is_running:
             try:
-                await asyncio.sleep(30)  # Check every 30 seconds
+                await asyncio.sleep(30)
                 
-                # Get strategy status
                 status = await self.strategy_manager.get_strategy_status(symbol)
                 
-                # Log summary
-                logger.info("\n" + "-" * 40)
-                logger.info("STRATEGY STATUS UPDATE")
-                logger.info("-" * 40)
-                logger.info(f"Phase: {status['phase']}")
-                logger.info(f"Current Price: ${status['current_price']:.2f}")
-                logger.info(f"Current Unit: {status['current_unit']}")
-                logger.info(f"Peak: {status['peak_unit']} | Valley: {status['valley_unit']}")
+                # Only log if something meaningful changed
+                status_changed = (
+                    status.get('current_unit') != last_status.get('current_unit') or
+                    status.get('phase') != last_status.get('phase') or
+                    abs(status.get('position', {}).get('pnl', 0) - last_status.get('pnl', 0)) > 5  # >$5 PnL change
+                )
                 
-                if status['position']['has_position']:
-                    logger.info(f"Position: {status['position']['side']} | PnL: ${status['position']['pnl']:.2f}")
-                
-                logger.info(f"Position Value: ${status['position_allocation']:.2f}")
-                logger.info(f"Resets Completed: {status['reset_count']}")
-                
-                # Calculate total return
-                if status['initial_allocation'] > 0:
-                    total_return = ((status['position_allocation'] - status['initial_allocation']) / status['initial_allocation']) * 100
-                    logger.info(f"Total Return: {total_return:.2f}%")
-                
-                logger.info("-" * 40)
+                if status_changed or not last_status:
+                    logger.info("\n" + "="*50)
+                    logger.info("📊 STRATEGY UPDATE")
+                    logger.info("="*50)
+                    logger.info(f"Phase: {status['phase']}")
+                    logger.info(f"Price: ${status['current_price']:.2f}")
+                    logger.info(f"Unit: {status['current_unit']} (Peak: {status['peak_unit']})")
+                    
+                    if status['position']['has_position']:
+                        pnl = status['position']['pnl']
+                        pnl_icon = "📈" if pnl > 0 else "📉" if pnl < 0 else "➖"
+                        logger.info(f"Position: {status['position']['side']} | {pnl_icon} ${pnl:.2f}")
+                    
+                    if status['reset_count'] > 0:
+                        total_return = ((status['position_allocation'] - status['initial_allocation']) / status['initial_allocation']) * 100
+                        logger.info(f"🔄 Resets: {status['reset_count']} | Return: {total_return:.2f}%")
+                    
+                    logger.info("="*50)
+                    
+                    # Store for comparison
+                    last_status = {
+                        'current_unit': status['current_unit'],
+                        'phase': status['phase'],
+                        'pnl': status['position']['pnl']
+                    }
                 
             except Exception as e:
-                logger.error(f"Error in monitoring: {e}")
+                logger.error(f"Monitor error: {e}")
                 await asyncio.sleep(5)
     
     async def shutdown(self, symbol: str):
@@ -376,21 +388,25 @@ async def main():
         parser.print_help()
         return
     
-    # Configure logging
+    # Configure clean logging
     logger.remove()
+    
+    # Console logging - clean format for better readability
     logger.add(
         sys.stdout,
         colorize=True,
-        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan> - <level>{message}</level>"
+        format="<green>{time:HH:mm:ss}</green> | <level>{level: <7}</level> | <level>{message}</level>",
+        level="INFO"
     )
     
-    # Add file logging for trading commands
+    # Add file logging for trading commands - detailed for debugging
     if args.command in ["trade", "track"]:
         logger.add(
-            f"logs/hypertrader_{{time}}.log",
+            "logs/hypertrader_{time:YYYYMMDD}.log",
             rotation="1 day",
             retention="7 days",
-            level="INFO"
+            level="DEBUG",
+            format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function} | {message}"
         )
     
     # Execute command

@@ -41,15 +41,15 @@ class UnitTracker:
         self.position_fragment = Decimal("0")  # Stage 2
         self.hedge_fragment = Decimal("0")  # Stage 2
         
-        # Debouncing to prevent rapid oscillation
+        # Debouncing to prevent rapid oscillation (0 = immediate for testing)
         self.last_stable_unit = 0
         self.pending_unit = None
         self.pending_unit_time = None
-        self.debounce_seconds = 3  # Wait 3 seconds before confirming unit change
+        self.debounce_seconds = 0  # Set to 0 for immediate response during testing
         
     def calculate_unit_change(self, current_price: Decimal) -> bool:
         """
-        Calculate if a unit change has occurred with debouncing.
+        Calculate if a unit change has occurred with debouncing - IMPROVED VERSION.
         
         Args:
             current_price: Current market price
@@ -59,7 +59,7 @@ class UnitTracker:
         """
         if self.entry_price is None:
             self.entry_price = current_price
-            logger.info(f"Entry price set to: ${self.entry_price:.2f}")
+            logger.info(f"📍 Entry price set: ${self.entry_price:.2f}")
             return False
             
         # Calculate how many units away from entry price
@@ -80,19 +80,21 @@ class UnitTracker:
                 # Update peak (always track the highest unit reached)
                 if self.current_unit > self.peak_unit:
                     self.peak_unit = self.current_unit
+                    logger.info(f"📈 NEW PEAK: Unit {self.peak_unit}")
                 
                 # Update valley only in DECLINE phase (per strategy doc)
                 if self.phase == Phase.DECLINE and self.current_unit < self.valley_unit:
                     self.valley_unit = self.current_unit
+                    logger.info(f"📉 NEW VALLEY: Unit {self.valley_unit}")
                     
-                logger.info(f"*** UNIT CHANGE: {old_unit} -> {self.current_unit} ***")
+                logger.success(f"⚡ UNIT CONFIRMED: {old_unit} → {self.current_unit}")
                 return True
             
             # If this is a different unit than pending, update pending
             if new_unit != self.pending_unit:
                 self.pending_unit = new_unit
                 self.pending_unit_time = current_time
-                logger.debug(f"Pending unit change: {self.last_stable_unit} -> {new_unit}")
+                # Remove debug logging for pending changes to reduce noise
                 return False
             
             # Check if pending unit has stabilized
@@ -107,16 +109,18 @@ class UnitTracker:
                 # Update peak (always track the highest unit reached)
                 if self.current_unit > self.peak_unit:
                     self.peak_unit = self.current_unit
+                    logger.info(f"📈 NEW PEAK: Unit {self.peak_unit}")
                 
                 # Update valley only in DECLINE phase (per strategy doc)
                 # Valley tracks lowest unit reached during DECLINE phase
                 if self.phase == Phase.DECLINE and self.current_unit < self.valley_unit:
                     self.valley_unit = self.current_unit
+                    logger.info(f"📉 NEW VALLEY: Unit {self.valley_unit}")
                     
-                logger.info(f"*** CONFIRMED UNIT CHANGE: {old_unit} -> {self.current_unit} ***")
+                logger.success(f"⚡ UNIT CONFIRMED: {old_unit} → {self.current_unit}")
                 return True
         else:
-            # Price returned to stable unit, clear pending
+            # Price returned to stable unit, clear pending without logging
             self.pending_unit = None
             self.pending_unit_time = None
             
