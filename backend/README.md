@@ -1,219 +1,236 @@
-# HyperTrader Backend - Advanced Hedging Strategy v6.0.0
+# HyperTrader - Advanced Hedging Strategy v6.0.0
 
-Automated cryptocurrency trading bot implementing a sophisticated four-phase hedging strategy on Hyperliquid.
+## Overview
 
-## ✅ Completed: Stage 1 & 2
+HyperTrader implements an automated hedging strategy that manages unified long/short/cash positions across multiple cryptocurrency assets on the Hyperliquid exchange. The strategy operates through four distinct phases (ADVANCE, RETRACEMENT, DECLINE, RECOVERY) with an automatic RESET mechanism to compound profits.
 
-### Stage 1: WebSocket Connection & Price Logging
-- **Real-time WebSocket connection** to Hyperliquid testnet
-- **Live price tracking** with trade size information
-- **Stable connection handling** with proper disconnection
-
-### Stage 2: Unit Change Tracking  
-- **Decimal-based calculations** - No float precision issues
-- **Peak and valley tracking** - Tracks highest and lowest units reached
-- **Phase system** - ADVANCE, RETRACEMENT, DECLINE, RECOVERY phases ready
-- **Unit distance calculations** - Units from peak/valley for phase transitions
-- **Full test coverage** - 10 pytest tests, all passing
-
-## Quick Start
+## Quick Start Guide
 
 ### Prerequisites
-- Python 3.13+
-- `uv` package manager
-- Hyperliquid testnet account (for future stages)
 
-### Installation
+1. **Python Environment**
+   ```bash
+   # Ensure UV is installed
+   pip install uv
+   
+   # Install dependencies
+   uv sync
+   ```
 
-```bash
-cd backend
-uv sync
-```
+2. **Environment Configuration**
+   Create a `.env` file in the backend directory:
+   ```env
+   HYPERLIQUID_WALLET_KEY=your_wallet_address
+   HYPERLIQUID_PRIVATE_KEY=your_private_key
+   HYPERLIQUID_TESTNET=true
+   ```
 
-### Configuration
+3. **Network Selection**
+   - **Testnet**: Use for testing (default, recommended)
+   - **Mainnet**: Only after thorough testing
 
-The `.env` file is already configured:
-```env
-# HyperLiquid API Configuration (Testnet)
-HYPERLIQUID_WALLET_KEY=0x329C49392608175A071fC9AF982fF625f119fFAE
-HYPERLIQUID_PRIVATE_KEY=redacted
-HYPERLIQUID_TESTNET=true
-
-# Trading Configuration
-DEFAULT_LEVERAGE=10
-UNIT_PERCENTAGE=0.10
-```
-
-## Running the System
-
-### Basic Usage (Run Indefinitely)
+### Basic Commands
 
 ```bash
-uv run python main.py
+# Check current positions and balance
+uv run python main.py check
+
+# Start trading strategy (testnet)
+uv run python main.py trade ETH/USDC:USDC 2500 25 --leverage 25
+
+# Track prices with unit detection (no trading)
+uv run python main.py track --symbol ETH --unit-size 25
+
+# Close a position
+uv run python main.py close ETH/USDC:USDC
+
+# Monitor running strategies
+uv run python main.py monitor
+```
+
+## Testing Configuration
+
+For your current testing setup:
+- **Symbol**: ETH/USDC:USDC
+- **Position Size**: $2500
+- **Unit Size**: $25 (smaller for testing)
+- **Leverage**: 25x
+- **Margin Required**: $100 ($2500 ÷ 25x)
+
+### Start Your Test Trade
+
+```bash
+# Start the complete strategy
+uv run python main.py trade ETH/USDC:USDC 2500 25 --leverage 25
 ```
 
 This will:
-- Connect to Hyperliquid testnet WebSocket
-- Subscribe to ETH trades
-- Display real-time prices with trade size
-- Track unit changes (default: $2 per unit)
-- Show phase information on unit changes
-- Track peak and valley units
+1. Open a $2500 long position with 25x leverage
+2. Start real-time price monitoring
+3. Execute strategy phases automatically as price moves
 
-Press `Ctrl+C` to stop.
+## Strategy Phases Explained
 
-### Run with Custom Parameters
+### 1. ADVANCE Phase
+- **Trigger**: Price increases by one unit ($25)
+- **Action**: Track peak units, recalculate position fragments
+- **Portfolio**: 100% Long
+
+### 2. RETRACEMENT Phase
+- **Trigger**: Price drops 1 unit from peak
+- **Actions by units from peak**:
+  - `-1`: Sell 1 fragment long → Open 1 fragment short
+  - `-2`: Sell 2 fragments long → Add 1 fragment short
+  - `-3`: Sell 2 fragments long → Add 1 fragment short  
+  - `-4`: Sell 2 fragments long → Add 1 fragment short
+  - `-5`: Sell remaining long → Add to short
+  - `-6`: Enter DECLINE phase
+
+### 3. DECLINE Phase
+- **Condition**: ~50% short, ~50% cash
+- **Action**: Hold defensive position, profit from further declines
+- **Transition**: +2 units from valley → RECOVERY
+
+### 4. RECOVERY Phase
+- **Actions by units from valley**:
+  - `+2` to `+4`: Close hedge fragments, buy long
+  - `+5`: Close all short, convert to long
+  - `+6`: 100% long → Trigger RESET
+
+### 5. RESET Mechanism
+- **Trigger**: Position becomes 100% long after complete cycle
+- **Action**: Lock in profits as new baseline, restart cycle
+
+## Alternative Testing Methods
+
+### Using cURL (Direct API Testing)
+
+If you want to test individual components without the full strategy:
 
 ```bash
-# Run for specific duration (in minutes)
-uv run python main.py --duration 5
+# Check account balance
+curl -X POST https://api.hyperliquid-testnet.xyz/info \
+  -H "Content-Type: application/json" \
+  -d '{"type": "clearinghouseState", "user": "YOUR_WALLET_ADDRESS"}'
 
-# Track different symbol
-uv run python main.py --symbol BTC
+# Get current ETH price
+curl -X POST https://api.hyperliquid-testnet.xyz/info \
+  -H "Content-Type: application/json" \
+  -d '{"type": "allMids"}'
 
-# Use custom unit size
-uv run python main.py --unit-size 5.0
-
-# Combine parameters
-uv run python main.py --symbol ETH --unit-size 10.0 --duration 10
+# Place a market order (requires signature)
+# Note: Direct API orders require proper signing - use the Python client instead
 ```
 
-### Run Tests
+### Manual Position Management
 
 ```bash
-# Run all unit tracker tests
-uv run pytest tests/test_unit_tracker.py -v
+# Check current position
+uv run python main.py check
 
-# Run with coverage
-uv run pytest tests/test_unit_tracker.py --cov=src --cov-report=term-missing
+# If you need to close a position manually
+uv run python main.py close ETH/USDC:USDC
+
+# Start fresh strategy
+uv run python main.py trade ETH/USDC:USDC 2500 25 --leverage 25
 ```
 
-## Expected Output
+## Monitoring Your Strategy
 
-```
-============================================================
-HyperTrader Stage 1 & 2 - Price Tracking with Unit Detection
-Symbol: ETH
-Unit Size: $2.0
-Duration: Indefinite
-============================================================
-[14:17:53] INFO | Connecting to Hyperliquid WebSocket...
-[14:17:53] INFO | Successfully connected to Hyperliquid WebSocket
-[14:17:53] INFO | Subscribed to ETH trades with unit size $2.0
-[14:17:53] INFO | [14:17:53] ETH Price: $4466.70 | Size: 0.0034 | Unit: 0
-[14:17:53] INFO | Entry price set to: $4466.70
-[14:17:53] INFO | [14:17:53] ETH Price: $4488.90 | Size: 0.0033 | Unit: 0
-[14:17:53] INFO | *** UNIT CHANGE: 0 -> 11 ***
-[14:17:53] INFO | ETH Phase Info - Phase: ADVANCE | Peak: 11 | Valley: 0 | Units from Peak: 0 | Units from Valley: 11
+### Real-time Monitoring
+```bash
+# Start monitoring in separate terminal
+uv run python main.py monitor
 ```
 
-## Unit Tracking Logic
+### Log Files
+Strategy logs are saved to `logs/hypertrader_{timestamp}.log`
 
-### Core Implementation
-- **Entry Price**: Automatically set on first received price
-- **Unit Size**: Configurable (default $2.00)
-- **Unit Calculation**: `current_unit = int((current_price - entry_price) / unit_size)`
-- **Decimal Precision**: All prices use Python's Decimal type for accuracy
-
-### Example Scenarios
-- Entry: $4466.70
-- Price rises to $4468.70 → Unit: +1 (up $2)
-- Price rises to $4476.70 → Unit: +5 (up $10)
-- Price falls to $4464.70 → Unit: -1 (down $2)
-- Price falls to $4456.70 → Unit: -5 (down $10)
-
-### Phase Information Tracked
-- **Current Phase**: ADVANCE (default, ready for other phases)
-- **Peak Unit**: Highest unit reached (for RETRACEMENT detection)
-- **Valley Unit**: Lowest unit reached (for RECOVERY detection)
-- **Units from Peak**: Current distance from peak (triggers phase changes)
-- **Units from Valley**: Current distance from valley (triggers recovery)
-
-## Project Structure
-
-```
-backend/
-├── .env                      # Environment configuration
-├── README.md                 # This file
-├── pyproject.toml           # Python dependencies
-├── main.py                  # Main entry point with argument parsing
-├── src/                     # Core modules
-│   ├── __init__.py         # Package init
-│   ├── config.py           # Settings and configuration
-│   ├── models.py           # UnitTracker, Phase enum
-│   └── websocket_client.py # HyperliquidWebSocketClient
-├── tests/                   # Test suite
-│   ├── __init__.py         # Test package init
-│   └── test_unit_tracker.py # Comprehensive unit tests
-└── logs/                    # Log files (auto-created)
-    └── price_tracker.log   # Rotating log file
-```
-
-## API Documentation
-
-### HyperliquidWebSocketClient
-Main WebSocket client for real-time price tracking.
-
-**Methods:**
-- `connect()` - Establish WebSocket connection
-- `disconnect()` - Close connection gracefully
-- `subscribe_to_trades(symbol, unit_size)` - Subscribe to trades with unit tracking
-- `listen()` - Main event loop for processing messages
-
-### UnitTracker
-Tracks unit changes and phase information.
-
-**Properties:**
-- `entry_price: Decimal` - Entry price (set on first price)
-- `unit_size: Decimal` - Price movement per unit
-- `current_unit: int` - Current unit position
-- `peak_unit: int` - Highest unit reached
-- `valley_unit: int` - Lowest unit reached
-- `phase: Phase` - Current trading phase
-
-**Methods:**
-- `calculate_unit_change(price)` - Calculate and update unit position
-- `get_units_from_peak()` - Distance from peak (for retracement)
-- `get_units_from_valley()` - Distance from valley (for recovery)
-
-## Development Plan Progress
-
-- [x] **Stage 1**: WebSocket Connection & Price Logging ✅
-- [x] **Stage 2**: Unit Change Tracking ✅
-- [ ] **Stage 3**: CCXT Exchange Integration & Validation
-- [ ] **Stage 4**: "Enter Trade" & ADVANCE Phase Implementation
-- [ ] **Stage 5**: RETRACEMENT Phase Implementation
-- [ ] **Stage 6**: RESET Mechanism Implementation
-- [ ] **Stage 7**: DECLINE Phase Implementation
-- [ ] **Stage 8**: RECOVERY Phase Implementation
-
-## Next: Stage 3 - CCXT Integration
-
-Stage 3 will add exchange integration for:
-- Account balance fetching
-- Position data retrieval
-- Market order execution
-- Integration with unit tracking for automated trading
+### Key Metrics to Watch
+- **Current Phase**: Which phase the strategy is in
+- **Current Unit**: Distance from entry price in units
+- **Peak/Valley Units**: Historical extremes
+- **Position Value**: Current position worth
+- **Unrealized PnL**: Current profit/loss
 
 ## Troubleshooting
 
-### "ModuleNotFoundError: No module named 'websockets'"
-Always use `uv run` to execute scripts:
+### Common Issues
+
+1. **"No existing position" Error**
+   - Make sure you have an open position before running certain commands
+   - Use `python main.py check` to verify
+
+2. **WebSocket Connection Issues**
+   - Check internet connection
+   - Verify Hyperliquid API status
+   - Restart the strategy
+
+3. **API Authentication Errors**
+   - Verify wallet address and private key in `.env`
+   - Ensure testnet setting matches your credentials
+
+4. **Position Size Errors**
+   - Check available balance with `python main.py check`
+   - Reduce position size if insufficient margin
+
+### Emergency Procedures
+
 ```bash
-uv run python main.py  # ✅ Correct
-python main.py         # ❌ Wrong
+# Emergency stop - close all positions
+uv run python main.py close ETH/USDC:USDC
+
+# Check status after emergency stop
+uv run python main.py check
 ```
 
-### No price updates showing
-- Check internet connection
-- Verify Hyperliquid testnet is operational
-- Check logs in `logs/price_tracker.log`
+## Configuration Files
 
-### Unit changes seem wrong
-- Verify entry price is set (shown in first price message)
-- Check unit size parameter (default $2)
-- Remember: Price must move full unit size to trigger change
+- **`.env`**: API credentials and network settings
+- **`config.yaml`**: Strategy parameters (optional)
+- **`logs/`**: Strategy execution logs
+- **`state/`**: Strategy state persistence (auto-created)
 
----
+## Safety Features
 
-**⚠️ Testnet Only** - Currently configured for Hyperliquid testnet. No real funds at risk.
+- **Testnet by default**: Safe testing environment
+- **Position limits**: Configurable maximum position sizes
+- **Error handling**: Comprehensive error recovery
+- **State persistence**: Automatic strategy state saving
+- **Emergency stop**: Manual position closure capability
+
+## Development and Testing
+
+```bash
+# Run in demo mode (no real trades)
+uv run python main.py track --symbol ETH --unit-size 25 --duration 5
+
+# Test specific functionality
+uv run python -m pytest tests/ -v
+```
+
+## Production Deployment
+
+⚠️ **WARNING**: Only use mainnet after extensive testnet validation
+
+```bash
+# For mainnet (CAREFUL!)
+uv run python main.py trade ETH/USDC:USDC 2500 25 --leverage 25 --mainnet
+```
+
+## Support
+
+- **Logs**: Check `logs/` directory for detailed execution logs
+- **State**: Strategy state is auto-saved for crash recovery
+- **Monitoring**: Use monitor command for real-time status
+
+## Strategy Performance
+
+The strategy aims to:
+- **Profit during trends**: Long positions in ADVANCE phase
+- **Protect during retracements**: Progressive hedging in RETRACEMENT
+- **Profit from declines**: Short positions in DECLINE phase  
+- **Capitalize on recovery**: Strategic re-entry in RECOVERY phase
+- **Compound returns**: RESET mechanism locks in gains
+
+Expected outcome: Net positive returns through complete market cycles while managing downside risk.
