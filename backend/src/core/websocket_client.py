@@ -81,22 +81,95 @@ class HyperliquidWebSocketClient:
             return False
     
     async def listen(self):
-        """Main listening loop for processing WebSocket messages"""
+        """Main listening loop for processing WebSocket messages with auto-reconnect"""
         if not self.is_connected or not self.websocket:
             logger.error("WebSocket not connected.")
             return
         
         logger.info("Starting WebSocket listener...")
         
+        reconnect_attempts = 0
+        max_reconnect_attempts = 5
+        
+        while self.is_connected:
+            try:
+                # Set up ping task to keep connection alive
+                ping_task = asyncio.create_task(self._ping_loop())
+                
+                # Main message loop
+                async for message in self.websocket:
+                    await self._process_message(message)
+                    
+            except websockets.exceptions.ConnectionClosed:
+                logger.warning("WebSocket connection closed")
+                ping_task.cancel()
+                
+                if reconnect_attempts < max_reconnect_attempts:
+                    reconnect_attempts += 1
+                    logger.info(f"Attempting to reconnect... (attempt {reconnect_attempts}/{max_reconnect_attempts})")
+                    
+                    # Wait before reconnecting
+                    await asyncio.sleep(5)
+                    
+                    # Try to reconnect
+                    if await self._reconnect():
+                        reconnect_attempts = 0
+                        logger.info("Reconnection successful")
+                        continue
+                    else:
+                        logger.error("Reconnection failed")
+                else:
+                    logger.error("Max reconnection attempts reached")
+                    self.is_connected = False
+                    break
+                    
+            except Exception as e:
+                logger.error(f"Error in WebSocket listener: {e}")
+                if ping_task and not ping_task.done():
+                    ping_task.cancel()
+                self.is_connected = False
+                break
+    
+    async def _ping_loop(self):
+        """Send ping messages periodically to keep connection alive"""
+        while self.is_connected:
+            try:
+                await asyncio.sleep(30)  # Ping every 30 seconds
+                if self.websocket:
+                    await self.websocket.ping()
+                    logger.debug("Sent ping to keep connection alive")
+            except Exception as e:
+                logger.warning(f"Ping failed: {e}")
+                break
+    
+    async def _reconnect(self) -> bool:
+        """Attempt to reconnect to WebSocket"""
         try:
-            async for message in self.websocket:
-                await self._process_message(message)
-        except websockets.exceptions.ConnectionClosed:
-            logger.warning("WebSocket connection closed")
-            self.is_connected = False
+            # Close existing connection if any
+            if self.websocket:
+                await self.websocket.close()
+            
+            # Connect again
+            self.websocket = await websockets.connect(self.ws_url)
+            self.is_connected = True
+            
+            # Re-subscribe to all symbols
+            for symbol, tracker in self.unit_trackers.items():
+                subscription_message = {
+                    "method": "subscribe",
+                    "subscription": {
+                        "type": "trades",
+                        "coin": symbol
+                    }
+                }
+                await self.websocket.send(json.dumps(subscription_message))
+                logger.info(f"Re-subscribed to {symbol} trades")
+            
+            return True
+            
         except Exception as e:
-            logger.error(f"Error in WebSocket listener: {e}")
-            self.is_connected = False
+            logger.error(f"Reconnection failed: {e}")
+            return False
     
     async def _process_message(self, message: str):
         """Process incoming WebSocket message"""

@@ -2,6 +2,10 @@
 Comprehensive test suite for HyperTrader strategy
 Tests every phase, transition, and edge case
 """
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).parent.parent))
+
 import pytest
 from decimal import Decimal
 from datetime import datetime, timedelta

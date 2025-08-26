@@ -1,10 +1,14 @@
 """
 Tests for Stage 3: CCXT Exchange Client
 """
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).parent.parent))
+
 import pytest
 from decimal import Decimal
 from unittest.mock import Mock, MagicMock, patch
-from src.exchange_client import HyperliquidExchangeClient
+from src.exchange.exchange_client import HyperliquidExchangeClient
 
 
 class TestHyperliquidExchangeClient:

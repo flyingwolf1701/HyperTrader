@@ -1,9 +1,13 @@
 """
 Tests for Stage 1 & 2: Unit tracking functionality
 """
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).parent.parent))
+
 import pytest
 from decimal import Decimal
-from src.models import UnitTracker, Phase
+from src.core.models import UnitTracker, Phase
 
 
 class TestUnitTracker:
