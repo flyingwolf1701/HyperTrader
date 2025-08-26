@@ -100,6 +100,17 @@ class HyperTrader:
                     logger.info("\n" + "="*50)
                     logger.info("📊 STRATEGY UPDATE")
                     logger.info("="*50)
+                    
+                    # Check WebSocket connection health
+                    ws_status = "🟢 Connected" if self.strategy_manager.ws_client.is_connected else "🔴 DISCONNECTED"
+                    logger.info(f"WebSocket: {ws_status}")
+                    
+                    # Check for stale connection (no messages in 3+ minutes)
+                    if hasattr(self.strategy_manager.ws_client, '_last_message_time'):
+                        time_since_msg = (datetime.now() - self.strategy_manager.ws_client._last_message_time).total_seconds()
+                        if time_since_msg > 180:  # 3 minutes
+                            logger.warning(f"⚠️ No WebSocket messages for {time_since_msg:.0f}s")
+                    
                     logger.info(f"Phase: {status['phase']}")
                     logger.info(f"Price: ${status['current_price']:.2f}")
                     logger.info(f"Unit: {status['current_unit']} (Peak: {status['peak_unit']})")
@@ -127,7 +138,7 @@ class HyperTrader:
                 await asyncio.sleep(5)
     
     async def shutdown(self, symbol: str):
-        """Gracefully shutdown the strategy"""
+        """Gracefully shutdown the strategy - IMPROVED VERSION"""
         logger.info("\n" + "=" * 60)
         logger.info("SHUTTING DOWN HYPERTRADER")
         logger.info("=" * 60)
@@ -147,16 +158,37 @@ class HyperTrader:
         except:
             pass
         
-        # Ask about position closure
+        # Ask about position closure - FIXED VERSION
         if self.strategy_manager.strategies.get(symbol):
             logger.warning("\nWARNING: Active position detected")
-            response = input("Close position before shutdown? (y/n): ")
             
-            if response.lower() == 'y':
-                await self.strategy_manager.stop_strategy(symbol, close_position=True)
-                logger.info("Position closed")
-            else:
-                logger.warning("Position left open - monitor manually!")
+            try:
+                # Use asyncio's run_in_executor to handle input properly
+                import asyncio
+                import sys
+                
+                print("Close position before shutdown? (y/n): ", end='', flush=True)
+                
+                # Read input in async-compatible way
+                loop = asyncio.get_event_loop()
+                response = await loop.run_in_executor(None, sys.stdin.readline)
+                response = response.strip().lower()
+                
+                if response == 'y' or response == 'yes':
+                    logger.info("🔄 Closing position...")
+                    await self.strategy_manager.stop_strategy(symbol, close_position=True)
+                    logger.success("✅ Position closed successfully")
+                else:
+                    logger.warning("⚠️ Position left open - you must monitor manually!")
+                    logger.info("Use: python main.py close ETH/USDC:USDC to close later")
+                    
+            except KeyboardInterrupt:
+                logger.warning("\n⚠️ Interrupt received during shutdown")
+                logger.warning("Position left open - use: python main.py close ETH/USDC:USDC")
+            except Exception as e:
+                logger.error(f"Error reading input: {e}")
+                logger.warning("⚠️ Could not get user response")
+                logger.warning("Position left open - use: python main.py close ETH/USDC:USDC")
         
         # Disconnect WebSocket
         if self.strategy_manager.ws_client.is_connected:

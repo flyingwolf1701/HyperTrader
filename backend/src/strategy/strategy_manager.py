@@ -202,7 +202,7 @@ class StrategyManager:
                 logger.info(f"\nPhase: ADVANCE")
                 logger.info("Monitoring for price increases...")
                 logger.info("Peak unit will be tracked as price rises")
-                logger.info("Position fragment will be recalculated on each unit change")
+                logger.info("🔒 Position fragment LOCKED at peak values - no recalc on drops")
                 
                 # Save state after successful entry
                 self.save_state(symbol)
@@ -252,9 +252,9 @@ class StrategyManager:
     
     async def handle_advance_phase(self, symbol: str):
         """
-        Handle ADVANCE phase logic
+        Handle ADVANCE phase logic - FIXED VERSION
         - Track peak units
-        - Recalculate position fragment on unit changes
+        - ONLY recalculate position fragment on NEW PEAKS
         - Monitor for phase transition
         """
         if symbol not in self.strategies:
@@ -265,18 +265,26 @@ class StrategyManager:
         # Get current position value
         position = self.exchange_client.get_position(symbol)
         if position:
-            # Update position allocation with current value
             current_price = self.exchange_client.get_current_price(symbol)
-            state.position_allocation = position["contracts"] * current_price
+            current_position_value = position["contracts"] * current_price
             
-            # Recalculate position fragment (10% of current value)
-            state.calculate_position_fragment()
-            
-            logger.info(f"ADVANCE Phase Update:")
-            logger.info(f"  Current Unit: {state.unit_tracker.current_unit}")
-            logger.info(f"  Peak Unit: {state.unit_tracker.peak_unit}")
-            logger.info(f"  Position Value: ${state.position_allocation:.2f}")
-            logger.info(f"  Position Fragment: ${state.position_fragment:.2f}")
+            # CRITICAL FIX: Only recalculate fragment on NEW PEAKS
+            if state.unit_tracker.current_unit > state.unit_tracker.peak_unit:
+                # We have a NEW PEAK - update position allocation and fragment
+                state.position_allocation = current_position_value
+                state.calculate_position_fragment()
+                
+                logger.success(f"📈 NEW PEAK REACHED - Fragment Updated:")
+                logger.info(f"  Peak Unit: {state.unit_tracker.peak_unit}")
+                logger.info(f"  Position Value: ${state.position_allocation:.2f}")
+                logger.info(f"  NEW Position Fragment: ${state.position_fragment:.2f}")
+            else:
+                # NOT a new peak - keep existing fragment amounts
+                logger.info(f"ADVANCE Phase Update:")
+                logger.info(f"  Current Unit: {state.unit_tracker.current_unit}")
+                logger.info(f"  Peak Unit: {state.unit_tracker.peak_unit}")
+                logger.info(f"  Current Position Value: ${current_position_value:.2f}")
+                logger.info(f"  USING Peak Fragment: ${state.position_fragment:.2f} (NO RECALC)")
             
             # Periodically save state
             self.save_state(symbol)
@@ -284,7 +292,8 @@ class StrategyManager:
             # Check for phase transition to RETRACEMENT
             units_from_peak = state.unit_tracker.get_units_from_peak()
             if units_from_peak <= -1:
-                logger.warning(f"Price dropped {abs(units_from_peak)} unit(s) from peak")
+                logger.warning(f"💥 Price dropped {abs(units_from_peak)} unit(s) from peak")
+                logger.warning(f"🔒 LOCKING IN fragment amount: ${state.position_fragment:.2f}")
                 logger.info("Transitioning to RETRACEMENT phase")
                 state.unit_tracker.phase = Phase.RETRACEMENT
                 
