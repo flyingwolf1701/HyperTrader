@@ -229,13 +229,23 @@ class StrategyManager:
             if not self.ws_client.is_connected:
                 await self.ws_client.connect()
             
-            # Subscribe to trades with custom callback
-            # For now, we'll use the basic tracking
-            # In future stages, we'll add phase-specific callbacks
-            coin = symbol.split("/")[0]  # Extract coin from symbol
-            await self.ws_client.subscribe_to_trades(coin, unit_size)
+            # Get the strategy state
+            state = self.strategies[symbol]
             
-            logger.info(f"Started monitoring {coin} prices")
+            # Create callback for price changes
+            async def price_change_callback(new_price: Decimal):
+                await self.monitor_price_change(symbol, new_price)
+            
+            # Subscribe using strategy's unit tracker and callback
+            coin = symbol.split("/")[0]  # Extract coin from symbol
+            await self.ws_client.subscribe_to_trades(
+                coin, 
+                unit_size,
+                unit_tracker=state.unit_tracker,  # Use strategy's unit tracker
+                price_callback=price_change_callback  # Connect to phase handler
+            )
+            
+            logger.info(f"Started monitoring {coin} prices with strategy integration")
             
         except Exception as e:
             logger.error(f"Error starting monitoring: {e}")

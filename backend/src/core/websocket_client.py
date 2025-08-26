@@ -26,6 +26,7 @@ class HyperliquidWebSocketClient:
         self.websocket: Optional[websockets.WebSocketClientProtocol] = None
         self.is_connected = False
         self.unit_trackers = {}  # Dict[symbol, UnitTracker] for multiple symbols
+        self.price_callbacks = {}  # Dict[symbol, callable] for price change callbacks
         
     async def connect(self) -> bool:
         """Establish WebSocket connection"""
@@ -47,14 +48,21 @@ class HyperliquidWebSocketClient:
             await self.websocket.close()
         logger.info("Disconnected from Hyperliquid WebSocket")
     
-    async def subscribe_to_trades(self, symbol: str, unit_size: Decimal = Decimal("2.0")) -> bool:
+    async def subscribe_to_trades(self, symbol: str, unit_size: Decimal = Decimal("2.0"), unit_tracker: UnitTracker = None, price_callback: callable = None) -> bool:
         """Subscribe to trade data for a symbol and initialize unit tracking"""
         if not self.is_connected or not self.websocket:
             logger.error("WebSocket not connected. Call connect() first.")
             return False
         
-        # Initialize unit tracker for this symbol
-        self.unit_trackers[symbol] = UnitTracker(unit_size=unit_size)
+        # Use provided tracker or create new one
+        if unit_tracker:
+            self.unit_trackers[symbol] = unit_tracker
+        else:
+            self.unit_trackers[symbol] = UnitTracker(unit_size=unit_size)
+        
+        # Store price callback if provided
+        if price_callback:
+            self.price_callbacks[symbol] = price_callback
         
         subscription_message = {
             "method": "subscribe",
@@ -139,6 +147,10 @@ class HyperliquidWebSocketClient:
                 # Log phase-relevant info when unit changes
                 if unit_changed:
                     self._log_phase_info(coin, tracker)
+                    
+                    # Call price callback if registered
+                    if coin in self.price_callbacks:
+                        asyncio.create_task(self.price_callbacks[coin](price))
     
     def _log_phase_info(self, coin: str, tracker: UnitTracker):
         """Log phase-relevant information after unit change"""

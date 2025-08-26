@@ -15,7 +15,8 @@
       "Bash(bun run:*)",
       "WebFetch(domain:docs.ccxt.com)",
       "Bash(uvicorn:*)",
-      "Read(/c:\\Users\\trini\\Pictures\\Screenshots/**)"
+      "Read(/c:\\Users\\trini\\Pictures\\Screenshots/**)",
+      "Bash(powershell:*)"
     ],
     "deny": [],
     "ask": [],
