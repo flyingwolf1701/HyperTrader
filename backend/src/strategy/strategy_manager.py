@@ -59,6 +59,11 @@ class StrategyState:
         
         # Unit tracker
         self.unit_tracker = UnitTracker(unit_size=unit_size)
+        
+        # TRACKING: Retracement actions for accurate portfolio calculation
+        self.retracement_actions_taken = []  # Track what was actually executed
+        self.total_eth_sold = Decimal("0")   # Total ETH sold during retracement
+        self.total_usd_shorted = Decimal("0") # Total USD shorted during retracement
     
     def calculate_position_fragment_at_peak(self, peak_price: Decimal):
         """CORRECTED: Calculate 12% fragment at peak and LOCK IT"""
@@ -79,6 +84,23 @@ class StrategyState:
         logger.info(f"  This ETH amount stays CONSTANT during retracement")
         
         return self.position_fragment_usd
+    
+    def record_retracement_action(self, units_from_peak: int, eth_sold: Decimal, usd_shorted: Decimal):
+        """Record retracement action for accurate tracking"""
+        action = {
+            'units_from_peak': units_from_peak,
+            'eth_sold': eth_sold,
+            'usd_shorted': usd_shorted,
+            'timestamp': datetime.now()
+        }
+        self.retracement_actions_taken.append(action)
+        self.total_eth_sold += eth_sold
+        self.total_usd_shorted += usd_shorted
+        
+        logger.info(f"📝 Recorded retracement action:")
+        logger.info(f"  Unit: {units_from_peak}, ETH sold: {eth_sold:.6f}, USD shorted: ${usd_shorted}")
+        logger.info(f"  Total ETH sold: {self.total_eth_sold:.6f}")
+        logger.info(f"  Total USD shorted: ${self.total_usd_shorted}")
     
     def add_short_position(self, usd_amount: Decimal, entry_price: Decimal, unit_level: int):
         """Add a new short position to tracking"""
@@ -157,6 +179,9 @@ class StrategyState:
             "current_unit": self.unit_tracker.current_unit,
             "peak_unit": self.unit_tracker.peak_unit,
             "valley_unit": self.unit_tracker.valley_unit,
+            "retracement_actions_taken": self.retracement_actions_taken,
+            "total_eth_sold": self.total_eth_sold,
+            "total_usd_shorted": self.total_usd_shorted,
         }
 
 
@@ -302,7 +327,7 @@ class StrategyManager:
                 await self.handle_retracement_phase(symbol)
     
     async def handle_retracement_phase(self, symbol: str):
-        """CORRECTED RETRACEMENT phase with USD buy, ETH sell pattern"""
+        """CORRECTED: Exact implementation per strategy doc v7.0.3"""
         if symbol not in self.strategies:
             return
         
@@ -313,59 +338,164 @@ class StrategyManager:
         logger.info("=" * 60)
         logger.info(f"RETRACEMENT Phase - {abs(units_from_peak)} units from peak")
         logger.info(f"Current Price: ${current_price}")
-        logger.info(f"Fragment ETH (constant): {state.position_fragment_eth:.6f} ETH")
-        logger.info(f"Fragment USD (original): ${state.position_fragment_usd}")
+        logger.info(f"Fragment ETH (locked at peak): {state.position_fragment_eth:.6f} ETH")
+        logger.info(f"Fragment USD (locked at peak): ${state.position_fragment_usd}")
         logger.info("=" * 60)
         
         try:
-            if units_from_peak in [-1, -2, -3, -4]:
-                # CORRECTED: Execute retracement action
-                logger.info(f"Action: Sell {state.position_fragment_eth:.6f} ETH, Short ${state.position_fragment_usd}")
+            # CRITICAL: Check if we already executed this retracement level
+            already_executed = any(
+                action['units_from_peak'] == units_from_peak 
+                for action in state.retracement_actions_taken
+            )
+            
+            if already_executed:
+                logger.info(f"Retracement action for {units_from_peak} already executed")
+                return
+            
+            # STRATEGY DOC v7.0.3 EXACT SPECIFICATION:
+            if units_from_peak == -1:
+                # -1: Sell 1 position_fragment_eth, Open 1 position_fragment_usd short
+                eth_to_sell = state.position_fragment_eth      # 1x fragment
+                usd_to_short = state.position_fragment_usd     # 1x fragment
+                action_desc = "Sell 1 fragment ETH, Open 1 fragment USD short"
                 
-                # Step 1: Sell ETH amount (constant from peak)
+            elif units_from_peak == -2:
+                # -2: Sell 2 position_fragment_eth, Add 1 position_fragment_usd short  
+                eth_to_sell = state.position_fragment_eth * 2  # 2x fragment
+                usd_to_short = state.position_fragment_usd     # 1x fragment
+                action_desc = "Sell 2 fragment ETH, Add 1 fragment USD short"
+                
+            elif units_from_peak == -3:
+                # -3: Sell 2 position_fragment_eth, Add 1 position_fragment_usd short
+                eth_to_sell = state.position_fragment_eth * 2  # 2x fragment  
+                usd_to_short = state.position_fragment_usd     # 1x fragment
+                action_desc = "Sell 2 fragment ETH, Add 1 fragment USD short"
+                
+            elif units_from_peak == -4:
+                # -4: Sell 2 position_fragment_eth, Add 1 position_fragment_usd short
+                eth_to_sell = state.position_fragment_eth * 2  # 2x fragment
+                usd_to_short = state.position_fragment_usd     # 1x fragment  
+                action_desc = "Sell 2 fragment ETH, Add 1 fragment USD short"
+                
+            elif units_from_peak == -5:
+                # -5: Sell remaining long position, hold proceeds in cash
+                logger.info("🔄 STRATEGY DOC ACTION (-5): Sell remaining long position, hold cash")
+                
+                position = self.exchange_client.get_position(symbol)
+                if position and position.get('side') == 'long':
+                    remaining_contracts = abs(position.get('contracts', 0))
+                    
+                    sell_result = await self.exchange_client.sell_long_eth(
+                        symbol=symbol,
+                        eth_amount=remaining_contracts,
+                        reduce_only=True
+                    )
+                    
+                    if sell_result:
+                        logger.success(f"✅ Sold remaining long: {remaining_contracts:.6f} ETH")
+                        cash_received = sell_result.get('usd_received', 0)
+                        logger.success(f"💰 Cash held: ${cash_received:.2f}")
+                        
+                        # Record this action
+                        state.record_retracement_action(-5, remaining_contracts, Decimal("0"))
+                        
+                return  # No short position for -5
+                
+            elif units_from_peak <= -6:
+                # -6 and below: Enter DECLINE phase  
+                logger.info("🔄 STRATEGY DOC TRANSITION: Entering DECLINE phase")
+                state.unit_tracker.phase = Phase.DECLINE
+                state.unit_tracker.valley_unit = state.unit_tracker.current_unit
+                
+                logger.info("=" * 60)
+                logger.info("PORTFOLIO STATUS: Short position + Cash reserves")
+                logger.info("=" * 60)
+                
+                await self.handle_decline_phase(symbol)
+                return
+                
+            else:
+                logger.warning(f"Unexpected retracement level: {units_from_peak}")
+                return
+            
+            # Execute trades for -1 to -4
+            if units_from_peak in [-1, -2, -3, -4]:
+                logger.info(f"🔄 STRATEGY DOC ACTION ({units_from_peak}): {action_desc}")
+                logger.info(f"   ETH to sell: {eth_to_sell:.6f} ETH")
+                logger.info(f"   USD to short: ${usd_to_short}")
+                
+                # Step 1: Sell ETH (reduce long position)
                 sell_result = await self.exchange_client.sell_long_eth(
                     symbol=symbol,
-                    eth_amount=state.position_fragment_eth,
+                    eth_amount=eth_to_sell,
                     reduce_only=True
                 )
                 
                 if sell_result:
-                    logger.success(f"✅ Reduced long by {state.position_fragment_eth:.6f} ETH")
-                    logger.success(f"   Received: ${sell_result.get('usd_received', 0):.2f}")
+                    cash_received = sell_result.get('usd_received', 0)
+                    logger.success(f"✅ Long reduced: {eth_to_sell:.6f} ETH → ${cash_received:.2f}")
                 
-                # Step 2: Open short with USD amount (constant from peak)
+                # Step 2: Open/Add to short position  
                 short_result = await self.exchange_client.open_short_usd(
                     symbol=symbol,
-                    usd_amount=state.position_fragment_usd,
+                    usd_amount=usd_to_short,
                     leverage=state.leverage
                 )
                 
                 if short_result:
-                    logger.success(f"✅ Opened short: ${state.position_fragment_usd}")
+                    logger.success(f"✅ Short added: ${usd_to_short}")
                     
-                    # Track the short position
+                    # Track individual short position
                     state.add_short_position(
-                        usd_amount=state.position_fragment_usd,
+                        usd_amount=usd_to_short,
                         entry_price=current_price,
                         unit_level=units_from_peak
                     )
                 
-                # Log portfolio approximation
-                short_count = len(state.short_positions)
-                remaining_long_pct = max(0, 100 - (short_count * 12))
-                short_pct = short_count * 12
+                # Record the action taken
+                state.record_retracement_action(units_from_peak, eth_to_sell, usd_to_short)
                 
-                logger.info(f"Portfolio (approx): {remaining_long_pct}% Long / {short_pct}% Short")
-                
-            elif units_from_peak <= -5:
-                # Enter DECLINE phase
-                logger.info("Price dropped -5+ units - Entering DECLINE phase")
-                state.unit_tracker.phase = Phase.DECLINE
-                state.unit_tracker.valley_unit = state.unit_tracker.current_unit
-                await self.handle_decline_phase(symbol)
+                # Calculate and display portfolio status
+                self._display_portfolio_status(state, current_price)
                 
         except Exception as e:
-            logger.error(f"Error in RETRACEMENT phase: {e}")
+            logger.error(f"❌ Error in RETRACEMENT phase: {e}")
+    
+    def _display_portfolio_status(self, state: StrategyState, current_price: Decimal):
+        """Display accurate portfolio composition after retracement action"""
+        try:
+            # Get current positions from exchange
+            position = self.exchange_client.get_position(state.symbol)
+            
+            if position:
+                long_contracts = 0
+                short_contracts = 0
+                
+                if position.get('side') == 'long':
+                    long_contracts = abs(position.get('contracts', 0))
+                elif position.get('side') == 'short':
+                    short_contracts = abs(position.get('contracts', 0))
+            
+            # Calculate values
+            long_value = long_contracts * current_price
+            short_value = short_contracts * current_price
+            total_value = long_value + short_value
+            
+            if total_value > 0:
+                long_pct = (long_value / total_value) * 100
+                short_pct = (short_value / total_value) * 100
+            else:
+                long_pct = short_pct = 0
+            
+            logger.info("📊 CURRENT PORTFOLIO STATUS:")
+            logger.info(f"   Long: {long_contracts:.6f} ETH (${long_value:.2f}) - {long_pct:.1f}%")
+            logger.info(f"   Short: {short_contracts:.6f} ETH (${short_value:.2f}) - {short_pct:.1f}%")
+            logger.info(f"   Total ETH sold in retracement: {state.total_eth_sold:.6f} ETH")
+            logger.info(f"   Total USD shorted in retracement: ${state.total_usd_shorted}")
+            
+        except Exception as e:
+            logger.warning(f"Could not calculate portfolio status: {e}")
     
     async def handle_decline_phase(self, symbol: str):
         """CORRECTED DECLINE phase - track valley and short value growth"""
@@ -532,8 +662,11 @@ class StrategyManager:
             state.initial_notional_allocation = current_notional_value
             state.initial_margin_allocation = current_margin_value
             
-            # Clear short positions
+            # Clear short positions and retracement tracking
             state.short_positions.clear()
+            state.retracement_actions_taken.clear()  # Clear retracement tracking
+            state.total_eth_sold = Decimal("0")      # Reset totals
+            state.total_usd_shorted = Decimal("0")   # Reset totals
             
             # RESET unit tracking variables
             state.unit_tracker.current_unit = 0

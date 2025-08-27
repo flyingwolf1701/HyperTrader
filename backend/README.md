@@ -132,7 +132,7 @@ uv run python main.py check
 uv run python main.py close ETH/USDC:USDC
 
 # Start fresh strategy
-uv run python main.py trade ETH/USDC:USDC 2500 25 --leverage 25
+uv run python main.py trade ETH/USDC:USDC 2500 5 --leverage 25
 ```
 
 ## Monitoring Your Strategy
