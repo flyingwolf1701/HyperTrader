@@ -302,24 +302,36 @@ class StrategyManager:
         if position:
             current_price = self.exchange_client.get_current_price(symbol)
             
-            # CORRECTED: Only recalculate fragment on NEW PEAKS
-            if state.unit_tracker.current_unit > state.unit_tracker.peak_unit:
-                # NEW PEAK - recalculate and LOCK fragment
-                state.calculate_position_fragment_at_peak(current_price)
-                
-                logger.success(f"📈 NEW PEAK REACHED:")
-                logger.info(f"  Peak Unit: {state.unit_tracker.peak_unit}")
-                logger.info(f"  🔒 Fragment LOCKED: ${state.position_fragment_usd} = {state.position_fragment_eth:.6f} ETH")
+            # CORRECTED: Check if current unit equals peak unit (new peak reached)
+            if state.unit_tracker.current_unit == state.unit_tracker.peak_unit and state.unit_tracker.current_unit > 0:
+                # NEW PEAK - recalculate and LOCK fragment (only if not already calculated for this peak)
+                if state.position_fragment_usd == Decimal("0"):
+                    state.calculate_position_fragment_at_peak(current_price)
+                    
+                    logger.success(f"📈 NEW PEAK REACHED:")
+                    logger.info(f"  Peak Unit: {state.unit_tracker.peak_unit}")
+                    logger.info(f"  🔒 Fragment LOCKED: ${state.position_fragment_usd} = {state.position_fragment_eth:.6f} ETH")
+                else:
+                    logger.info(f"ADVANCE Phase - Peak Unit {state.unit_tracker.peak_unit}")
+                    logger.info(f"  🔒 Fragment Already Locked: ${state.position_fragment_usd} = {state.position_fragment_eth:.6f} ETH")
             else:
-                # NOT a new peak - keep existing fragment
+                # NOT at peak - keep existing fragment or show zero if no peak reached yet
                 logger.info(f"ADVANCE Phase Update:")
                 logger.info(f"  Current Unit: {state.unit_tracker.current_unit}")
                 logger.info(f"  Peak Unit: {state.unit_tracker.peak_unit}")
-                logger.info(f"  🔒 USING Locked Fragment: ${state.position_fragment_usd} = {state.position_fragment_eth:.6f} ETH")
+                if state.position_fragment_usd > Decimal("0"):
+                    logger.info(f"  🔒 USING Locked Fragment: ${state.position_fragment_usd} = {state.position_fragment_eth:.6f} ETH")
+                else:
+                    logger.info(f"  ⏳ No fragment locked yet (awaiting first peak)")
             
             # Check for phase transition to RETRACEMENT
             units_from_peak = state.unit_tracker.get_units_from_peak()
             if units_from_peak <= -1:
+                # Ensure we have a fragment locked before entering retracement
+                if state.position_fragment_usd == Decimal("0"):
+                    logger.warning(f"🚨 Price dropped but no fragment locked - calculating emergency fragment")
+                    state.calculate_position_fragment_at_peak(current_price)
+                
                 logger.warning(f"💥 Price dropped {abs(units_from_peak)} unit(s) from peak")
                 logger.warning(f"🔒 Fragment LOCKED: {state.position_fragment_eth:.6f} ETH")
                 logger.info("Transitioning to RETRACEMENT phase")
@@ -421,6 +433,14 @@ class StrategyManager:
             
             # Execute trades for -1 to -4
             if units_from_peak in [-1, -2, -3, -4]:
+                # SAFETY CHECK: Ensure fragments are not zero
+                if eth_to_sell <= Decimal("0") or usd_to_short <= Decimal("0"):
+                    logger.error(f"❌ Cannot execute retracement with zero fragments:")
+                    logger.error(f"   ETH to sell: {eth_to_sell}")
+                    logger.error(f"   USD to short: {usd_to_short}")
+                    logger.error("   Fragment calculation may have failed - aborting retracement")
+                    return
+                
                 logger.info(f"🔄 STRATEGY DOC ACTION ({units_from_peak}): {action_desc}")
                 logger.info(f"   ETH to sell: {eth_to_sell:.6f} ETH")
                 logger.info(f"   USD to short: ${usd_to_short}")

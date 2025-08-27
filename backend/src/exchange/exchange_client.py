@@ -446,13 +446,14 @@ class HyperliquidExchangeClient:
             logger.info(f"  Margin Needed: ${margin_needed}")
             
             # Use create_order for market orders (Hyperliquid requires price)
+            # CRITICAL: Use reduceOnly: False to ensure we open a NEW long position
             order = self.exchange.create_order(
                 symbol=symbol,
                 type='market',
                 side='buy',
                 amount=float(eth_amount),  # ETH amount to buy
                 price=float(current_price),  # Pass price directly for Hyperliquid
-                params={}
+                params={'reduceOnly': False}  # CRITICAL: This opens new long position instead of reducing short
             )
             
             logger.success(f"✅ Long position opened:")
@@ -495,13 +496,14 @@ class HyperliquidExchangeClient:
             logger.info(f"  Margin Needed: ${margin_needed}")
             
             # Use create_order for market orders (Hyperliquid requires price)
+            # CRITICAL: Use reduceOnly: False to ensure we open a NEW short position
             order = self.exchange.create_order(
                 symbol=symbol,
                 type='market',
                 side='sell',
                 amount=float(eth_amount),  # ETH amount to short
                 price=float(current_price),  # Pass price directly for Hyperliquid
-                params={}
+                params={'reduceOnly': False}  # CRITICAL: This opens new short position instead of reducing long
             )
             
             logger.success(f"✅ Short position opened:")
