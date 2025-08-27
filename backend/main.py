@@ -391,7 +391,7 @@ async def main():
     trade_parser.add_argument("symbol", help="Trading symbol (e.g., ETH/USDC:USDC)")
     trade_parser.add_argument("position_size", type=float, help="Position size in USD")
     trade_parser.add_argument("unit_size", type=float, help="Unit size in USD")
-    trade_parser.add_argument("--leverage", type=int, default=10, help="Leverage (default: 10)")
+    trade_parser.add_argument("--leverage", type=int, default=25, help="Leverage (default: 25 for ETH)")
     trade_parser.add_argument("--mainnet", action="store_true", help="Use mainnet (default: testnet)")
     
     # Track command
@@ -452,8 +452,8 @@ async def main():
             logger.error("Unit size must be positive")
             return
         
-        if args.leverage < 1 or args.leverage > 100:
-            logger.error("Leverage must be between 1 and 100")
+        if args.leverage < 1 or args.leverage > 25:
+            logger.error("Leverage must be between 1 and 25 (ETH max on Hyperliquid)")
             return
         
         # Safety check for mainnet
