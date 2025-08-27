@@ -445,10 +445,14 @@ class HyperliquidExchangeClient:
             logger.info(f"  Leverage: {leverage}x")
             logger.info(f"  Margin Needed: ${margin_needed}")
             
-            # Use create_market_buy_order with amount in ETH
-            order = self.exchange.create_market_buy_order(
+            # Use create_order for market orders (Hyperliquid requires price)
+            order = self.exchange.create_order(
                 symbol=symbol,
-                amount=float(eth_amount)  # ETH amount to buy
+                type='market',
+                side='buy',
+                amount=float(eth_amount),  # ETH amount to buy
+                price=float(current_price),  # Pass price directly for Hyperliquid
+                params={}
             )
             
             logger.success(f"✅ Long position opened:")
@@ -490,10 +494,14 @@ class HyperliquidExchangeClient:
             logger.info(f"  Leverage: {leverage}x")
             logger.info(f"  Margin Needed: ${margin_needed}")
             
-            # Use create_market_sell_order with amount in ETH
-            order = self.exchange.create_market_sell_order(
+            # Use create_order for market orders (Hyperliquid requires price)
+            order = self.exchange.create_order(
                 symbol=symbol,
-                amount=float(eth_amount)  # ETH amount to short
+                type='market',
+                side='sell',
+                amount=float(eth_amount),  # ETH amount to short
+                price=float(current_price),  # Pass price directly for Hyperliquid
+                params={}
             )
             
             logger.success(f"✅ Short position opened:")
@@ -530,11 +538,14 @@ class HyperliquidExchangeClient:
             logger.info(f"  USD Value: ${usd_value:.2f}")
             logger.info(f"  Reduce Only: {reduce_only}")
             
-            # Use create_market_sell_order with specific ETH amount
-            params = {"reduceOnly": reduce_only} if reduce_only else {}
-            order = self.exchange.create_market_sell_order(
+            # Use create_order for market orders (Hyperliquid requires price)
+            params = {'reduceOnly': reduce_only} if reduce_only else {}
+            order = self.exchange.create_order(
                 symbol=symbol,
+                type='market',
+                side='sell',
                 amount=float(eth_amount),  # Specific ETH amount to sell
+                price=float(current_price),  # Pass price directly for Hyperliquid
                 params=params
             )
             
@@ -570,11 +581,14 @@ class HyperliquidExchangeClient:
             logger.info(f"  Current Price: ${current_price}")
             logger.info(f"  USD Cost: ${usd_cost:.2f}")
             
-            # Buy back specific ETH amount to close short
-            order = self.exchange.create_market_buy_order(
+            # Use create_order for market orders (Hyperliquid requires price)
+            order = self.exchange.create_order(
                 symbol=symbol,
+                type='market',
+                side='buy',
                 amount=float(eth_amount),  # Specific ETH amount to buy back
-                params={"reduceOnly": True}  # Only close existing short
+                price=float(current_price),  # Pass price directly for Hyperliquid
+                params={'reduceOnly': True}
             )
             
             logger.success(f"✅ Short position closed:")
