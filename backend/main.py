@@ -35,7 +35,7 @@ class HyperTrader:
         self,
         symbol: str,
         position_size_usd: Decimal,
-        unit_size: Decimal,
+        unit_value: Decimal,
         leverage: int = 10
     ):
         """Start the full trading strategy"""
@@ -46,7 +46,7 @@ class HyperTrader:
             logger.info(f"Network: {'TESTNET' if self.testnet else 'MAINNET'}")
             logger.info(f"Symbol: {symbol}")
             logger.info(f"Position Size: ${position_size_usd}")
-            logger.info(f"Unit Size: ${unit_size}")
+            logger.info(f"Unit Value: ${unit_value}")
             logger.info(f"Leverage: {leverage}x")
             logger.info(f"Started at: {datetime.now().isoformat()}")
             logger.info("=" * 60)
@@ -55,7 +55,7 @@ class HyperTrader:
             success = await self.strategy_manager.start_strategy(
                 symbol=symbol,
                 position_size_usd=position_size_usd,
-                unit_size=unit_size,
+                unit_value=unit_value,
                 leverage=leverage
             )
             
@@ -393,14 +393,14 @@ async def main():
     trade_parser = subparsers.add_parser("trade", help="Start trading strategy")
     trade_parser.add_argument("symbol", help="Trading symbol (e.g., ETH/USDC:USDC)")
     trade_parser.add_argument("position_size", type=float, help="Position size in USD")
-    trade_parser.add_argument("unit_size", type=float, help="Unit size in USD")
+    trade_parser.add_argument("unit_value", type=float, help="Unit value in USD")
     trade_parser.add_argument("--leverage", type=int, default=25, help="Leverage (default: 25 for ETH)")
     trade_parser.add_argument("--mainnet", action="store_true", help="Use mainnet (default: testnet)")
     
     # Track command
     track_parser = subparsers.add_parser("track", help="Track prices with unit detection")
     track_parser.add_argument("--symbol", default="ETH", help="Symbol to track (default: ETH)")
-    track_parser.add_argument("--unit-size", default="2.0", help="Unit size in USD (default: 2.0)")
+    track_parser.add_argument("--unit-value", default="2.0", help="Unit value in USD (default: 2.0)")
     track_parser.add_argument("--duration", type=int, help="Duration in minutes (optional)")
     
     # Check command
@@ -451,8 +451,8 @@ async def main():
             logger.error("Position size must be positive")
             return
         
-        if args.unit_size <= 0:
-            logger.error("Unit size must be positive")
+        if args.unit_value <= 0:
+            logger.error("Unit value must be positive")
             return
         
         if args.leverage < 1 or args.leverage > 25:
@@ -486,14 +486,14 @@ async def main():
         await trader.start_trading(
             symbol=args.symbol,
             position_size_usd=Decimal(str(args.position_size)),
-            unit_size=Decimal(str(args.unit_size)),
+            unit_value=Decimal(str(args.unit_value)),
             leverage=args.leverage
         )
     
     elif args.command == "track":
         await run_price_tracker(
             symbol=args.symbol,
-            unit_size=args.unit_size,
+            unit_value=args.unit_value,
             duration_minutes=args.duration
         )
     

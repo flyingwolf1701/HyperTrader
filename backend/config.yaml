@@ -5,7 +5,7 @@
 trading:
   symbol: "ETH/USDC:USDC"  # Trading pair
   position_size_usd: 1000   # Position size in USD
-  unit_size: 10.0            # Price movement per unit in USD
+  unit_value: 10.0           # Price movement per unit in USD
   leverage: 10              # Leverage multiplier (1-100)
 
 # Network Settings

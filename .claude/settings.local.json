@@ -22,7 +22,10 @@
       "Bash(done)",
       "Bash(sed:*)",
       "Bash(for file in test_*.py)",
-      "Bash(do sed -i 's|sys.path.append(str(Path(__file__).parent.parent / \"\"src\"\"))|sys.path.append(str(Path(__file__).parent.parent.parent))|' \"$file\")"
+      "Bash(do sed -i 's|sys.path.append(str(Path(__file__).parent.parent / \"\"src\"\"))|sys.path.append(str(Path(__file__).parent.parent.parent))|' \"$file\")",
+      "Read(C:\\Users\\trini\\Pictures\\Screenshots/**)",
+      "Bash(dir:*)",
+      "Bash(move:*)"
     ],
     "deny": [],
     "ask": [],
