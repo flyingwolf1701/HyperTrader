@@ -466,10 +466,13 @@ class StrategyManager:
                 if short_result:
                     logger.success(f"✅ Short added: ${usd_to_short}")
                     
+                    # Use the actual execution price from the exchange
+                    short_entry_price = Decimal(str(short_result.get('price', current_price)))
+                    
                     # Track individual short position
                     state.add_short_position(
                         usd_amount=usd_to_short,
-                        entry_price=current_price,
+                        entry_price=short_entry_price,
                         unit_level=units_from_peak
                     )
                 
@@ -478,6 +481,17 @@ class StrategyManager:
                 
                 # Calculate and display portfolio status
                 self._display_portfolio_status(state, current_price)
+                
+                # CRITICAL: After -4 action, transition to DECLINE phase
+                if units_from_peak == -4:
+                    logger.warning("🔄 COMPLETED RETRACEMENT -4: Transitioning to DECLINE phase")
+                    state.unit_tracker.phase = Phase.DECLINE
+                    state.unit_tracker.valley_unit = state.unit_tracker.current_unit
+                    logger.info("=" * 60)
+                    logger.info("DECLINE PHASE STARTED")
+                    logger.info(f"Valley Unit: {state.unit_tracker.valley_unit}")
+                    logger.info("Portfolio: Short positions + Cash reserves")
+                    logger.info("=" * 60)
                 
         except Exception as e:
             logger.error(f"❌ Error in RETRACEMENT phase: {e}")
