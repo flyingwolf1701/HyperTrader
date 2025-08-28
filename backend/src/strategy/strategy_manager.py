@@ -21,11 +21,11 @@ from .short_position import ShortPosition
 class StrategyState:
     """CORRECTED: Holds complete state with proper short position tracking"""
     
-    def __init__(self, symbol: str, position_size_usd: Decimal, unit_size: Decimal, leverage: int = 25):
+    def __init__(self, symbol: str, position_size_usd: Decimal, unit_value: Decimal, leverage: int = 25):
         # Configuration
         self.symbol = symbol
         self.position_size_usd = position_size_usd
-        self.unit_size = unit_size
+        self.unit_value = unit_value
         self.leverage = leverage  # ETH is 25x on Hyperliquid
         
         # CORRECTED: Track notional vs margin separately
@@ -34,9 +34,9 @@ class StrategyState:
         self.initial_notional_allocation = position_size_usd
         self.initial_margin_allocation = position_size_usd / Decimal(leverage)
         
-        # CORRECTED: Fragment calculations - 12% of notional, not 10%
-        self.position_fragment_usd = Decimal("0")  # 12% of notional value
-        self.position_fragment_eth = Decimal("0")  # ETH amount locked at peak
+        # Fragment tracking as dicts with usd and coin_value keys
+        self.position_fragment = {"usd": Decimal("0"), "coin_value": Decimal("0")}  # 12% of notional
+        self.hedge_fragment = {"usd": Decimal("0"), "coin_value": Decimal("0")}  # 25% of short value
         
         # CORRECTED: Track individual short positions for accurate P&L
         self.short_positions: List[ShortPosition] = []
@@ -58,7 +58,7 @@ class StrategyState:
         self.peak_price: Optional[Decimal] = None
         
         # Unit tracker
-        self.unit_tracker = UnitTracker(unit_size=unit_size)
+        self.unit_tracker = UnitTracker(unit_value=unit_value)
         
         # TRACKING: Retracement actions for accurate portfolio calculation
         self.retracement_actions_taken = []  # Track what was actually executed
@@ -66,24 +66,31 @@ class StrategyState:
         self.total_usd_shorted = Decimal("0") # Total USD shorted during retracement
     
     def calculate_position_fragment_at_peak(self, peak_price: Decimal):
-        """CORRECTED: Calculate 12% fragment at peak and LOCK IT"""
+        """Calculate 12% fragment at peak and LOCK IT"""
         # Update notional allocation based on current ETH holdings at peak price
         # (This accounts for any growth during ADVANCE phase)
         current_eth_amount = self.notional_allocation / peak_price  # Approximate
         self.notional_allocation = current_eth_amount * peak_price
         
         # Calculate 12% fragment (better for 8-step scaling)
-        self.position_fragment_usd = self.notional_allocation * Decimal("0.12")
-        self.position_fragment_eth = self.position_fragment_usd / peak_price
+        fragment_usd = self.notional_allocation * Decimal("0.12")
+        fragment_eth = fragment_usd / peak_price
+        
+        # Store in dict format
+        self.position_fragment["usd"] = fragment_usd
+        self.position_fragment["coin_value"] = fragment_eth
         self.peak_price = peak_price
+        
+        # Also update unit tracker's fragment
+        self.unit_tracker.position_fragment = self.position_fragment.copy()
         
         logger.info(f"🔒 FRAGMENT LOCKED AT PEAK ${peak_price}:")
         logger.info(f"  Notional Value: ${self.notional_allocation}")
-        logger.info(f"  Fragment USD: ${self.position_fragment_usd}")
-        logger.info(f"  Fragment ETH: {self.position_fragment_eth:.6f} ETH")
+        logger.info(f"  Fragment USD: ${fragment_usd}")
+        logger.info(f"  Fragment ETH: {fragment_eth:.6f} ETH")
         logger.info(f"  This ETH amount stays CONSTANT during retracement")
         
-        return self.position_fragment_usd
+        return fragment_usd
     
     def record_retracement_action(self, units_from_peak: int, eth_sold: Decimal, usd_shorted: Decimal):
         """Record retracement action for accurate tracking"""
@@ -140,18 +147,27 @@ class StrategyState:
         
         return total_value
     
-    def calculate_hedge_fragment(self, current_price: Decimal) -> Decimal:
-        """CORRECTED: Calculate 25% of CURRENT short value (including P&L)"""
+    def calculate_hedge_fragment(self, current_price: Decimal) -> dict:
+        """Calculate 25% of CURRENT short value (including P&L)"""
         total_short_value = self.calculate_total_short_value(current_price)
-        hedge_fragment = total_short_value * Decimal("0.25")
+        hedge_fragment_usd = total_short_value * Decimal("0.25")
+        hedge_fragment_eth = hedge_fragment_usd / current_price
+        
+        # Store in dict format
+        self.hedge_fragment["usd"] = hedge_fragment_usd
+        self.hedge_fragment["coin_value"] = hedge_fragment_eth
+        
+        # Also update unit tracker's fragment
+        self.unit_tracker.hedge_fragment = self.hedge_fragment.copy()
         
         logger.info(f"HEDGE FRAGMENT CALCULATION:")
         logger.info(f"  Total Short Value: ${total_short_value:.2f}")
-        logger.info(f"  Hedge Fragment (25%): ${hedge_fragment:.2f}")
-        logger.info(f"  Position Fragment (cash): ${self.position_fragment_usd}")
-        logger.info(f"  🎯 Total Recovery Purchase: ${hedge_fragment + self.position_fragment_usd:.2f}")
+        logger.info(f"  Hedge Fragment USD (25%): ${hedge_fragment_usd:.2f}")
+        logger.info(f"  Hedge Fragment ETH: {hedge_fragment_eth:.6f}")
+        logger.info(f"  Position Fragment (cash): ${self.position_fragment['usd']}")
+        logger.info(f"  🎯 Total Recovery Purchase: ${hedge_fragment_usd + self.position_fragment['usd']:.2f}")
         
-        return hedge_fragment
+        return self.hedge_fragment
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert state to dictionary for persistence"""
@@ -159,14 +175,14 @@ class StrategyState:
             "symbol": self.symbol,
             "phase": self.unit_tracker.phase.value if self.unit_tracker.phase else "UNKNOWN",
             "position_size_usd": self.position_size_usd,
-            "unit_size": self.unit_size,
+            "unit_value": self.unit_value,
             "leverage": self.leverage,
             "notional_allocation": self.notional_allocation,
             "margin_allocation": self.margin_allocation,
             "initial_notional_allocation": self.initial_notional_allocation,
             "initial_margin_allocation": self.initial_margin_allocation,
-            "position_fragment_usd": self.position_fragment_usd,
-            "position_fragment_eth": self.position_fragment_eth,
+            "position_fragment": self.position_fragment,
+            "hedge_fragment": self.hedge_fragment,
             "short_positions": [short.to_dict() for short in self.short_positions],
             "reset_count": self.reset_count,
             "pre_reset_notional": self.pre_reset_notional,
@@ -208,7 +224,7 @@ class StrategyManager:
         self,
         symbol: str,
         position_size_usd: Decimal,
-        unit_size: Decimal,
+        unit_value: Decimal,
         leverage: int = 25  # ETH is 25x on Hyperliquid
     ) -> bool:
         """Start a trading strategy - CORRECTED with proper leverage"""
@@ -218,7 +234,7 @@ class StrategyManager:
             logger.info(f"Symbol: {symbol}")
             logger.info(f"Notional Position: ${position_size_usd}")
             logger.info(f"Margin Required: ${position_size_usd / Decimal(leverage)} (at {leverage}x)")
-            logger.info(f"Unit Size: ${unit_size}")
+            logger.info(f"Unit Value: ${unit_value}")
             logger.info("=" * 60)
             
             # Check if strategy already exists
@@ -227,7 +243,7 @@ class StrategyManager:
                 return False
             
             # Create strategy state
-            state = StrategyState(symbol, position_size_usd, unit_size, leverage)
+            state = StrategyState(symbol, position_size_usd, unit_value, leverage)
             self.strategies[symbol] = state
             
             # Check existing position
@@ -276,7 +292,7 @@ class StrategyManager:
                 self.save_state(symbol)
                 
                 # Start WebSocket monitoring
-                await self._start_monitoring(symbol, unit_size)
+                await self._start_monitoring(symbol, unit_value)
                 
                 return True
             else:
@@ -305,22 +321,22 @@ class StrategyManager:
             # CORRECTED: Check if current unit equals peak unit (new peak reached)
             if state.unit_tracker.current_unit == state.unit_tracker.peak_unit and state.unit_tracker.current_unit > 0:
                 # NEW PEAK - recalculate and LOCK fragment (only if not already calculated for this peak)
-                if state.position_fragment_usd == Decimal("0"):
+                if state.position_fragment["usd"] == Decimal("0"):
                     state.calculate_position_fragment_at_peak(current_price)
                     
                     logger.success(f"📈 NEW PEAK REACHED:")
                     logger.info(f"  Peak Unit: {state.unit_tracker.peak_unit}")
-                    logger.info(f"  🔒 Fragment LOCKED: ${state.position_fragment_usd} = {state.position_fragment_eth:.6f} ETH")
+                    logger.info(f"  🔒 Fragment LOCKED: ${state.position_fragment['usd']} = {state.position_fragment['coin_value']:.6f} ETH")
                 else:
                     logger.info(f"ADVANCE Phase - Peak Unit {state.unit_tracker.peak_unit}")
-                    logger.info(f"  🔒 Fragment Already Locked: ${state.position_fragment_usd} = {state.position_fragment_eth:.6f} ETH")
+                    logger.info(f"  🔒 Fragment Already Locked: ${state.position_fragment['usd']} = {state.position_fragment['coin_value']:.6f} ETH")
             else:
                 # NOT at peak - keep existing fragment or show zero if no peak reached yet
                 logger.info(f"ADVANCE Phase Update:")
                 logger.info(f"  Current Unit: {state.unit_tracker.current_unit}")
                 logger.info(f"  Peak Unit: {state.unit_tracker.peak_unit}")
-                if state.position_fragment_usd > Decimal("0"):
-                    logger.info(f"  🔒 USING Locked Fragment: ${state.position_fragment_usd} = {state.position_fragment_eth:.6f} ETH")
+                if state.position_fragment["usd"] > Decimal("0"):
+                    logger.info(f"  🔒 USING Locked Fragment: ${state.position_fragment['usd']} = {state.position_fragment['coin_value']:.6f} ETH")
                 else:
                     logger.info(f"  ⏳ No fragment locked yet (awaiting first peak)")
             
@@ -328,12 +344,12 @@ class StrategyManager:
             units_from_peak = state.unit_tracker.get_units_from_peak()
             if units_from_peak <= -1:
                 # Ensure we have a fragment locked before entering retracement
-                if state.position_fragment_usd == Decimal("0"):
+                if state.position_fragment["usd"] == Decimal("0"):
                     logger.warning(f"🚨 Price dropped but no fragment locked - calculating emergency fragment")
                     state.calculate_position_fragment_at_peak(current_price)
                 
                 logger.warning(f"💥 Price dropped {abs(units_from_peak)} unit(s) from peak")
-                logger.warning(f"🔒 Fragment LOCKED: {state.position_fragment_eth:.6f} ETH")
+                logger.warning(f"🔒 Fragment LOCKED: {state.position_fragment['coin_value']:.6f} ETH")
                 logger.info("Transitioning to RETRACEMENT phase")
                 state.unit_tracker.phase = Phase.RETRACEMENT
                 await self.handle_retracement_phase(symbol)
@@ -350,8 +366,8 @@ class StrategyManager:
         logger.info("=" * 60)
         logger.info(f"RETRACEMENT Phase - {abs(units_from_peak)} units from peak")
         logger.info(f"Current Price: ${current_price}")
-        logger.info(f"Fragment ETH (locked at peak): {state.position_fragment_eth:.6f} ETH")
-        logger.info(f"Fragment USD (locked at peak): ${state.position_fragment_usd}")
+        logger.info(f"Fragment ETH (locked at peak): {state.position_fragment['coin_value']:.6f} ETH")
+        logger.info(f"Fragment USD (locked at peak): ${state.position_fragment['usd']}")
         logger.info("=" * 60)
         
         try:
@@ -367,27 +383,27 @@ class StrategyManager:
             
             # STRATEGY DOC v7.0.3 EXACT SPECIFICATION:
             if units_from_peak == -1:
-                # -1: Sell 1 position_fragment_eth, Open 1 position_fragment_usd short
-                eth_to_sell = state.position_fragment_eth      # 1x fragment
-                usd_to_short = state.position_fragment_usd     # 1x fragment
+                # -1: Sell 1 position_fragment ETH, Open 1 position_fragment USD short
+                eth_to_sell = state.position_fragment["coin_value"]      # 1x fragment
+                usd_to_short = state.position_fragment["usd"]     # 1x fragment
                 action_desc = "Sell 1 fragment ETH, Open 1 fragment USD short"
                 
             elif units_from_peak == -2:
-                # -2: Sell 2 position_fragment_eth, Add 1 position_fragment_usd short  
-                eth_to_sell = state.position_fragment_eth * 2  # 2x fragment
-                usd_to_short = state.position_fragment_usd     # 1x fragment
+                # -2: Sell 2 position_fragment ETH, Add 1 position_fragment USD short  
+                eth_to_sell = state.position_fragment["coin_value"] * 2  # 2x fragment
+                usd_to_short = state.position_fragment["usd"]     # 1x fragment
                 action_desc = "Sell 2 fragment ETH, Add 1 fragment USD short"
                 
             elif units_from_peak == -3:
-                # -3: Sell 2 position_fragment_eth, Add 1 position_fragment_usd short
-                eth_to_sell = state.position_fragment_eth * 2  # 2x fragment  
-                usd_to_short = state.position_fragment_usd     # 1x fragment
+                # -3: Sell 2 position_fragment ETH, Add 1 position_fragment USD short
+                eth_to_sell = state.position_fragment["coin_value"] * 2  # 2x fragment  
+                usd_to_short = state.position_fragment["usd"]     # 1x fragment
                 action_desc = "Sell 2 fragment ETH, Add 1 fragment USD short"
                 
             elif units_from_peak == -4:
-                # -4: Sell 2 position_fragment_eth, Add 1 position_fragment_usd short
-                eth_to_sell = state.position_fragment_eth * 2  # 2x fragment
-                usd_to_short = state.position_fragment_usd     # 1x fragment  
+                # -4: Sell 2 position_fragment ETH, Add 1 position_fragment USD short
+                eth_to_sell = state.position_fragment["coin_value"] * 2  # 2x fragment
+                usd_to_short = state.position_fragment["usd"]     # 1x fragment  
                 action_desc = "Sell 2 fragment ETH, Add 1 fragment USD short"
                 
             elif units_from_peak == -5:
@@ -555,7 +571,7 @@ class StrategyManager:
             logger.info(f"  Valley Unit: {state.unit_tracker.valley_unit}")
             logger.info(f"  Short Positions: {len(state.short_positions)}")
             logger.info(f"  🚀 Total Short Value: ${total_short_value:.2f}")
-            logger.info(f"  Growth from shorts: ${total_short_value - (len(state.short_positions) * state.position_fragment_usd):.2f}")
+            logger.info(f"  Growth from shorts: ${total_short_value - (len(state.short_positions) * state.position_fragment['usd']):.2f}")
         
         # Check for phase transition to RECOVERY
         units_from_valley = state.unit_tracker.get_units_from_valley()
@@ -596,7 +612,7 @@ class StrategyManager:
                 hedge_eth_to_close = hedge_fragment_usd / current_price
                 
                 # Buy long: Hedge proceeds + position fragment
-                total_long_purchase = hedge_fragment_usd + state.position_fragment_usd
+                total_long_purchase = hedge_fragment_usd + state.position_fragment['usd']
                 
                 logger.info(f"Action: Close {hedge_eth_to_close:.6f} ETH short, Buy ${total_long_purchase:.2f} long")
                 
@@ -618,7 +634,7 @@ class StrategyManager:
                 if buy_result:
                     logger.success(f"✅ Bought ${total_long_purchase:.2f} long")
                     logger.info(f"  - From short proceeds: ${hedge_fragment_usd:.2f}")
-                    logger.info(f"  - From cash: ${state.position_fragment_usd}")
+                    logger.info(f"  - From cash: ${state.position_fragment['usd']}")
                 
             elif units_from_valley >= 6:
                 # Final recovery - close all shorts, trigger reset
@@ -637,7 +653,7 @@ class StrategyManager:
                     logger.success(f"✅ Closed all remaining shorts")
                 
                 # Buy final long position
-                final_purchase = total_remaining_short_value + state.position_fragment_usd
+                final_purchase = total_remaining_short_value + state.position_fragment['usd']
                 buy_result = await self.exchange_client.buy_long_usd(
                     symbol=symbol,
                     usd_amount=final_purchase,
@@ -710,8 +726,8 @@ class StrategyManager:
             # Update entry price and reset fragment values
             state.entry_price = current_price
             state.unit_tracker.entry_price = current_price
-            state.position_fragment_usd = Decimal("0")
-            state.position_fragment_eth = Decimal("0")
+            state.position_fragment['usd'] = Decimal('0')
+            state.position_fragment['coin_value'] = Decimal('0')
             state.peak_price = None
             
             # Set phase to ADVANCE
@@ -759,7 +775,7 @@ class StrategyManager:
         elif state.unit_tracker.phase == Phase.RECOVERY:
             await self.handle_recovery_phase(symbol)
     
-    async def _start_monitoring(self, symbol: str, unit_size: Decimal):
+    async def _start_monitoring(self, symbol: str, unit_value: Decimal):
         """Start WebSocket monitoring for price changes"""
         try:
             # Connect WebSocket if not connected
@@ -777,7 +793,7 @@ class StrategyManager:
             coin = symbol.split("/")[0]  # Extract coin from symbol
             await self.ws_client.subscribe_to_trades(
                 coin, 
-                unit_size,
+                unit_value,
                 unit_tracker=state.unit_tracker,
                 price_callback=price_change_callback
             )
@@ -823,14 +839,14 @@ class StrategyManager:
             "allocation": {
                 "notional": float(state.notional_allocation),
                 "margin": float(state.margin_allocation),
-                "fragment_usd": float(state.position_fragment_usd),
-                "fragment_eth": float(state.position_fragment_eth)
+                "fragment_usd": float(state.position_fragment['usd']),
+                "fragment_eth": float(state.position_fragment['coin_value'])
             },
             "short_positions": {
                 "count": len(state.short_positions),
                 "total_value": float(total_short_value),
-                "original_total": float(len(state.short_positions) * state.position_fragment_usd),
-                "unrealized_pnl": float(total_short_value - (len(state.short_positions) * state.position_fragment_usd)) if state.short_positions else 0
+                "original_total": float(len(state.short_positions) * state.position_fragment['usd']),
+                "unrealized_pnl": float(total_short_value - (len(state.short_positions) * state.position_fragment['usd'])) if state.short_positions else 0
             },
             "compound_tracking": {
                 "reset_count": state.reset_count,
