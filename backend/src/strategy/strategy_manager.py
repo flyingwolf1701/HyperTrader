@@ -227,10 +227,10 @@ class StrategyManager:
         unit_value: Decimal,
         leverage: int = 25  # ETH is 25x on Hyperliquid
     ) -> bool:
-        """Start a trading strategy - CORRECTED with proper leverage"""
+        """Start a trading strategy - CORRECTED with proper order and WebSocket first"""
         try:
             logger.info("=" * 60)
-            logger.info(f"HYPERTRADER - CORRECTED LEVERAGE CALCULATIONS")
+            logger.info(f"HYPERTRADER - CORRECTED STRATEGY START ORDER")
             logger.info(f"Symbol: {symbol}")
             logger.info(f"Notional Position: ${position_size_usd}")
             logger.info(f"Margin Required: ${position_size_usd / Decimal(leverage)} (at {leverage}x)")
@@ -254,9 +254,12 @@ class StrategyManager:
                 logger.info("Please close existing position before starting new strategy")
                 return False
             
-            # Enter trade (100% long position) - Use notional amount
-            logger.info("\nPhase: ENTERING TRADE")
-            logger.info("Opening 100% long position...")
+            # STEP 1: START WEBSOCKET MONITORING FIRST (before any trades)
+            logger.info("\nStep 1: Starting WebSocket monitoring...")
+            await self._start_monitoring_preparation(symbol, unit_value, state)
+            
+            # STEP 2: Enter trade (100% long position) - Use notional amount
+            logger.info("\nStep 2: Opening 100% long position...")
             
             # CORRECTED: Use buy_long_usd method for USD-based entry
             order = await self.exchange_client.buy_long_usd(
@@ -291,8 +294,9 @@ class StrategyManager:
                 # Save state after successful entry
                 self.save_state(symbol)
                 
-                # Start WebSocket monitoring
-                await self._start_monitoring(symbol, unit_value)
+                # STEP 3: Activate monitoring (WebSocket already connected, now start callbacks)
+                logger.info("\nStep 3: Activating price monitoring...")
+                await self._activate_monitoring(symbol)
                 
                 return True
             else:
@@ -775,8 +779,64 @@ class StrategyManager:
         elif state.unit_tracker.phase == Phase.RECOVERY:
             await self.handle_recovery_phase(symbol)
     
+    async def _start_monitoring_preparation(self, symbol: str, unit_value: Decimal, state: StrategyState):
+        """STEP 1: Connect WebSocket and prepare monitoring (before trade execution)"""
+        try:
+            logger.info(f"🔗 Connecting to WebSocket...")
+            
+            # Connect WebSocket if not connected
+            if not self.ws_client.is_connected:
+                await self.ws_client.connect()
+                logger.success(f"✅ WebSocket connected")
+            
+            # Extract coin from symbol  
+            coin = symbol.split("/")[0]  # ETH from ETH/USDC:USDC
+            
+            # Subscribe to trades (but don't activate callbacks yet)
+            await self.ws_client.subscribe_to_trades(
+                coin, 
+                unit_value,
+                unit_tracker=state.unit_tracker,
+                price_callback=None  # No callback yet - we'll add it after trade
+            )
+            
+            logger.success(f"✅ Subscribed to {coin} price feed")
+            logger.info(f"WebSocket ready - waiting for trade execution...")
+            
+        except Exception as e:
+            logger.error(f"❌ Error preparing monitoring: {e}")
+            raise
+    
+    async def _activate_monitoring(self, symbol: str):
+        """STEP 3: Activate price change callbacks (after trade execution)"""
+        try:
+            # Get the strategy state
+            state = self.strategies[symbol]
+            coin = symbol.split("/")[0]
+            
+            # Create callback for price changes
+            async def price_change_callback(new_price: Decimal):
+                await self.monitor_price_change(symbol, new_price)
+            
+            # Update the existing subscription with the callback
+            if coin in self.ws_client.price_callbacks:
+                self.ws_client.price_callbacks[coin] = price_change_callback
+                logger.success(f"✅ Price monitoring activated for {coin}")
+                
+                # Show current boundaries for user info
+                if state.unit_tracker.entry_price:
+                    boundaries = state.unit_tracker.get_current_unit_boundaries()
+                    logger.info(f"🎯 Unit boundaries:")
+                    logger.info(f"  Next +1 unit: ${boundaries['next_up']:.2f}")
+                    logger.info(f"  Next -1 unit: ${boundaries['next_down']:.2f}")
+            else:
+                logger.warning(f"⚠️ No price callback found for {coin} - monitoring may not work")
+            
+        except Exception as e:
+            logger.error(f"❌ Error activating monitoring: {e}")
+    
     async def _start_monitoring(self, symbol: str, unit_value: Decimal):
-        """Start WebSocket monitoring for price changes"""
+        """Legacy method - kept for compatibility"""
         try:
             # Connect WebSocket if not connected
             if not self.ws_client.is_connected:
@@ -802,6 +862,7 @@ class StrategyManager:
             
         except Exception as e:
             logger.error(f"Error starting monitoring: {e}")
+    
     
     async def get_strategy_status(self, symbol: str) -> Dict[str, Any]:
         """CORRECTED status reporting with notional/margin details and compound tracking"""
