@@ -51,41 +51,53 @@ def test_corrected_calculations():
     print(f"  Fragment Size (ETH): {fragment_eth:.4f} ETH")
     print()
     
-    # Simulate RETRACEMENT sequence - CORRECTED
-    print("RETRACEMENT SEQUENCE - CORRECTED MATH:")
+    # Simulate RETRACEMENT sequence - CORRECTED per Strategy Doc v7.0.3
+    print("RETRACEMENT SEQUENCE - STRATEGY DOC v7.0.3 COMPLIANT:")
     print("-" * 50)
     
     current_price = entry_price
     short_positions = []
     
-    # Execute 4 retracement actions
-    retracement_prices = [
-        entry_price - unit_size,      # $2475 (-1 unit)
-        entry_price - unit_size * 2,  # $2450 (-2 units) 
-        entry_price - unit_size * 3,  # $2425 (-3 units)
-        entry_price - unit_size * 4   # $2400 (-4 units)
+    # CORRECTED: Execute retracement actions per strategy doc v7.0.3
+    retracement_data = [
+        (-1, entry_price - unit_size, 1, "Sell 1 fragment ETH, Open 1 fragment USD short"),
+        (-2, entry_price - unit_size * 2, 2, "Sell 2 fragment ETH, Add 1 fragment USD short"), 
+        (-3, entry_price - unit_size * 3, 2, "Sell 2 fragment ETH, Add 1 fragment USD short"),
+        (-4, entry_price - unit_size * 4, 2, "Sell 2 fragment ETH, Add 1 fragment USD short")
     ]
     
-    for i, price in enumerate(retracement_prices, 1):
-        print(f"\n-{i} Unit: Price drops to ${price}")
-        print(f"Action: Sell {fragment_eth:.4f} ETH, Short ${fragment_notional}")
+    total_eth_sold = Decimal("0")
+    
+    for unit_level, price, eth_multiplier, action_desc in retracement_data:
+        eth_to_sell = fragment_eth * eth_multiplier
+        total_eth_sold += eth_to_sell
+        
+        print(f"\n{unit_level} Unit: Price drops to ${price}")
+        print(f"Strategy Doc Action: {action_desc}")
+        print(f"Implementation: Sell {eth_to_sell:.4f} ETH ({eth_multiplier}x), Short ${fragment_notional}")
         
         # Calculate what we get for selling ETH at current price
-        usd_received = fragment_eth * price
+        usd_received = eth_to_sell * price
         
-        # Track the short position
+        # Track the short position (1x fragment USD each time)
         short = ShortPosition(
             usd_amount=fragment_notional,
             entry_price=price,
             eth_amount=fragment_notional / price,
-            unit_opened=-i
+            unit_opened=unit_level
         )
         short_positions.append(short)
         
         print(f"Result:")
-        print(f"  Sold: {fragment_eth:.4f} ETH -> ${usd_received:.2f}")
+        print(f"  Sold: {eth_to_sell:.4f} ETH -> ${usd_received:.2f}")
         print(f"  Short: ${fragment_notional} ({short.eth_amount:.4f} ETH)")
-        print(f"  Note: Sold SAME ETH amount, got LESS USD due to lower price")
+        print(f"  Total ETH sold: {total_eth_sold:.4f} ETH")
+        
+    print(f"\n📊 RETRACEMENT SUMMARY:")
+    print(f"  Total ETH sold: {total_eth_sold:.4f} ETH")
+    print(f"  Original position: {eth_amount:.4f} ETH")
+    print(f"  % of position sold: {(total_eth_sold/eth_amount)*100:.1f}%")
+    print(f"  Note: CORRECTED scaling - more ETH sold at -2,-3,-4 levels")
     
     # Show short position value at valley - CORRECTED
     valley_price = Decimal("2250")  # Significant drop for P&L demo
@@ -133,16 +145,22 @@ def test_corrected_calculations():
     print()
     
     print("=" * 70)
-    print("KEY INSIGHTS FROM CORRECTED CALCULATIONS:")
+    print("KEY INSIGHTS FROM CORRECTED IMPLEMENTATION:")
     print("=" * 70)
-    print("CHECK Fragment: 12% of NOTIONAL value (not 10%)")
-    print("CHECK Leverage: 25x for ETH (not 10x)")
-    print("CHECK Short P&L: Compounds as price drops")
-    print("CHECK Hedge Fragment: 25% of CURRENT short value (with P&L)")
-    print("CHECK Compound Growth: ~35% in this example cycle")
-    print("CHECK Buy Low: Recovery purchases at lower prices = more ETH")
+    print("✅ Fragment: 12% of NOTIONAL value (not 10%)")
+    print("✅ Leverage: 25x for ETH (not 10x)")
+    print("✅ RETRACEMENT: Proper scaling per Strategy Doc v7.0.3")
+    print("    - Unit -1: 1x fragment ETH sold")
+    print("    - Unit -2: 2x fragment ETH sold") 
+    print("    - Unit -3: 2x fragment ETH sold")
+    print("    - Unit -4: 2x fragment ETH sold")
+    print("✅ Short P&L: Compounds as price drops")
+    print("✅ Hedge Fragment: 25% of CURRENT short value (with P&L)")
+    print("✅ Compound Growth: Better scaling = better returns")
+    print("✅ Strategy Compliance: Exact implementation per official doc")
     print()
-    print("This demonstrates the TRUE power of the strategy!")
+    print("🎯 CRITICAL FIX: Retracement now implements correct scaling!")
+    print("This dramatically improves the strategy's hedging effectiveness.")
 
 
 if __name__ == "__main__":

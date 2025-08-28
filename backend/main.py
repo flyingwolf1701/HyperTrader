@@ -120,9 +120,12 @@ class HyperTrader:
                         pnl_icon = "📈" if pnl > 0 else "📉" if pnl < 0 else "➖"
                         logger.info(f"Position: {status['position']['side']} | {pnl_icon} ${pnl:.2f}")
                     
-                    if status['reset_count'] > 0:
-                        total_return = ((status['position_allocation'] - status['initial_allocation']) / status['initial_allocation']) * 100
-                        logger.info(f"🔄 Resets: {status['reset_count']} | Return: {total_return:.2f}%")
+                    if status.get('compound_tracking', {}).get('reset_count', 0) > 0:
+                        reset_count = status['compound_tracking']['reset_count']
+                        current_notional = status['allocation']['notional']
+                        initial_notional = status['compound_tracking']['initial_notional']
+                        total_return = ((current_notional - initial_notional) / initial_notional) * 100
+                        logger.info(f"🔄 Resets: {reset_count} | Return: {total_return:.2f}%")
                     
                     logger.info("="*50)
                     
