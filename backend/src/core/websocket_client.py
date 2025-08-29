@@ -1,6 +1,6 @@
 """
-WebSocket client for HyperLiquid - Stage 1 & 2 Implementation
-Handles real-time price feeds and unit tracking
+WebSocket client for HyperLiquid - FIXED VERSION with proper heartbeat mechanism
+Implements Hyperliquid's specific ping/pong heartbeat system
 """
 import asyncio
 import json
@@ -15,7 +15,7 @@ from src.utils import settings
 
 
 class HyperliquidWebSocketClient:
-    """WebSocket client for real-time price tracking with unit change detection"""
+    """WebSocket client with CORRECT Hyperliquid heartbeat implementation"""
     
     def __init__(self, testnet: bool = True):
         self.ws_url = "wss://api.hyperliquid-testnet.xyz/ws" if testnet else "wss://api.hyperliquid.xyz/ws"
@@ -23,6 +23,8 @@ class HyperliquidWebSocketClient:
         self.is_connected = False
         self.unit_trackers = {}  # Dict[symbol, UnitTracker] for multiple symbols
         self.price_callbacks = {}  # Dict[symbol, callable] for price change callbacks
+        self._heartbeat_task: Optional[asyncio.Task] = None
+        self._last_pong_time = datetime.now()
         
     async def connect(self) -> bool:
         """Establish WebSocket connection"""
@@ -30,6 +32,7 @@ class HyperliquidWebSocketClient:
             logger.info(f"Connecting to Hyperliquid WebSocket: {self.ws_url}")
             self.websocket = await websockets.connect(self.ws_url)
             self.is_connected = True
+            self._last_pong_time = datetime.now()
             logger.info("Successfully connected to Hyperliquid WebSocket")
             return True
         except Exception as e:
@@ -40,8 +43,19 @@ class HyperliquidWebSocketClient:
     async def disconnect(self):
         """Close WebSocket connection"""
         self.is_connected = False
+        
+        # Cancel heartbeat task
+        if self._heartbeat_task and not self._heartbeat_task.done():
+            self._heartbeat_task.cancel()
+            try:
+                await self._heartbeat_task
+            except asyncio.CancelledError:
+                pass
+        
+        # Close WebSocket
         if self.websocket and not self.websocket.closed:
             await self.websocket.close()
+        
         logger.info("Disconnected from Hyperliquid WebSocket")
     
     async def subscribe_to_trades(self, symbol: str, unit_size_usd: Decimal = Decimal("2.0"), unit_tracker: UnitTracker = None, price_callback: callable = None) -> bool:
@@ -80,33 +94,33 @@ class HyperliquidWebSocketClient:
             return False
     
     async def listen(self):
-        """Main listening loop for processing WebSocket messages with auto-reconnect"""
+        """Main listening loop with CORRECT Hyperliquid heartbeat implementation"""
         if not self.is_connected or not self.websocket:
             logger.error("WebSocket not connected.")
             return
         
-        logger.info("Starting WebSocket listener...")
+        logger.info("Starting WebSocket listener with Hyperliquid heartbeat...")
+        
+        # Start heartbeat task
+        self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
         
         reconnect_attempts = 0
         max_reconnect_attempts = 5
-        last_message_time = datetime.now()
         
         while self.is_connected:
             try:
-                # Set up ping task to keep connection alive
-                ping_task = asyncio.create_task(self._ping_loop())
-                
                 # Set up connection monitoring task
                 monitor_task = asyncio.create_task(self._connection_monitor())
                 
                 # Main message loop
                 async for message in self.websocket:
-                    last_message_time = datetime.now()
+                    self._last_pong_time = datetime.now()  # Update activity time
                     await self._process_message(message)
                     
             except websockets.exceptions.ConnectionClosed:
                 logger.warning("🔌 WebSocket connection closed")
-                ping_task.cancel()
+                
+                # Cancel tasks
                 if 'monitor_task' in locals():
                     monitor_task.cancel()
                 
@@ -131,48 +145,53 @@ class HyperliquidWebSocketClient:
                     
             except Exception as e:
                 logger.error(f"🚨 Error in WebSocket listener: {e}")
-                if ping_task and not ping_task.done():
-                    ping_task.cancel()
                 if 'monitor_task' in locals() and not monitor_task.done():
                     monitor_task.cancel()
                 self.is_connected = False
                 break
                 
+        # Cleanup
+        if self._heartbeat_task and not self._heartbeat_task.done():
+            self._heartbeat_task.cancel()
+        
         logger.warning("🛑 WebSocket listener stopped")
     
-    async def _ping_loop(self):
-        """Send ping messages periodically to keep connection alive"""
+    async def _heartbeat_loop(self):
+        """
+        CORRECT Hyperliquid heartbeat implementation
+        Sends {"method": "ping"} every 50 seconds (10 seconds before timeout)
+        """
         while self.is_connected:
             try:
-                await asyncio.sleep(30)  # Ping every 30 seconds
-                if self.websocket:
-                    await self.websocket.ping()
-                    # Removed debug logging for cleaner output
+                await asyncio.sleep(50)  # 50 seconds - same as official Python SDK
+                
+                if not self.is_connected or not self.websocket:
+                    break
+                
+                # Send Hyperliquid-specific ping
+                ping_message = {"method": "ping"}
+                await self.websocket.send(json.dumps(ping_message))
+                logger.debug("💗 Sent Hyperliquid ping")
+                
             except Exception as e:
-                logger.warning(f"Ping failed: {e}")
+                logger.warning(f"Heartbeat failed: {e}")
                 break
                 
     async def _connection_monitor(self):
-        """Monitor connection health and detect stale connections"""
-        last_trade_time = datetime.now()
-        
+        """Monitor connection health based on pong responses"""
         while self.is_connected:
             try:
-                await asyncio.sleep(60)  # Check every minute
+                await asyncio.sleep(70)  # Check every 70 seconds
                 
-                # Check if we haven't received trades in 2+ minutes
-                time_since_last = datetime.now() - last_trade_time
-                if time_since_last.total_seconds() > 120:
-                    logger.warning(f"🚨 No trades received for {time_since_last.total_seconds():.0f}s")
-                    logger.warning("📡 Connection may be stale - forcing reconnect")
+                # Check if we haven't received any activity in 90+ seconds
+                time_since_activity = (datetime.now() - self._last_pong_time).total_seconds()
+                if time_since_activity > 90:  # 30 seconds after expected pong
+                    logger.warning(f"🚨 No server activity for {time_since_activity:.0f}s")
+                    logger.warning("📡 Connection appears stale - forcing reconnect")
                     # Force reconnection by closing current connection
                     if self.websocket:
                         await self.websocket.close()
                     break
-                else:
-                    # Update last trade time from websocket activity
-                    if hasattr(self, '_last_message_time'):
-                        last_trade_time = self._last_message_time
                         
             except Exception as e:
                 logger.error(f"Connection monitor error: {e}")
@@ -188,6 +207,12 @@ class HyperliquidWebSocketClient:
             # Connect again
             self.websocket = await websockets.connect(self.ws_url)
             self.is_connected = True
+            self._last_pong_time = datetime.now()
+            
+            # Restart heartbeat
+            if self._heartbeat_task and not self._heartbeat_task.done():
+                self._heartbeat_task.cancel()
+            self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
             
             # Re-subscribe to all symbols
             for symbol, tracker in self.unit_trackers.items():
@@ -208,14 +233,20 @@ class HyperliquidWebSocketClient:
             return False
     
     async def _process_message(self, message: str):
-        """Process incoming WebSocket message"""
+        """Process incoming WebSocket message with CORRECT pong handling"""
         try:
-            self._last_message_time = datetime.now()  # Track for connection monitoring
             data = json.loads(message)
             
+            # Handle Hyperliquid pong response
+            if data.get("channel") == "pong":
+                logger.debug("💗 Received Hyperliquid pong")
+                self._last_pong_time = datetime.now()
+                return
+            
             # Handle trades data
-            if data.get("channel") == "trades":
+            elif data.get("channel") == "trades":
                 await self._handle_trades(data)
+                
             # Handle subscription confirmations
             elif "method" in data and data.get("method") == "subscription":
                 logger.info(f"Subscription confirmed: {data}")
@@ -226,24 +257,20 @@ class HyperliquidWebSocketClient:
             logger.error(f"Error processing message: {e}")
     
     async def _handle_trades(self, data: dict):
-        """Handle trade data and update unit tracking - FIXED VERSION WITH RATE LIMITING"""
+        """Handle trade data and update unit tracking - RATE LIMITED VERSION"""
         if "data" not in data or len(data["data"]) == 0:
             return
             
         trades = data["data"]
         
         # CRITICAL FIX: Only process the LAST trade to prevent rapid oscillation
-        # Processing every trade in the batch was causing the unit calculation chaos
         if trades:
             trade = trades[-1]  # Only process the most recent trade
             coin = trade.get("coin")
             price_str = trade.get("px")
-            size_str = trade.get("sz", "0")
             
             if coin and price_str and coin in self.unit_trackers:
                 price = Decimal(price_str)
-                size = Decimal(size_str)
-                timestamp = datetime.now().strftime('%H:%M:%S')
                 
                 # Get unit tracker for this symbol
                 tracker = self.unit_trackers[coin]
@@ -271,15 +298,15 @@ class HyperliquidWebSocketClient:
                     if coin in self.price_callbacks and self.price_callbacks[coin] is not None:
                         asyncio.create_task(self.price_callbacks[coin](price))
                         
-                # Add periodic heartbeat for connection verification
-                if not hasattr(self, '_last_heartbeat_time'):
-                    self._last_heartbeat_time = datetime.now()
+                # Add periodic connection verification
+                if not hasattr(self, '_last_heartbeat_log'):
+                    self._last_heartbeat_log = datetime.now()
                     
-                # Log heartbeat every 2 minutes to confirm connection
-                time_since_heartbeat = datetime.now() - self._last_heartbeat_time
+                # Log connection status every 2 minutes
+                time_since_heartbeat = datetime.now() - self._last_heartbeat_log
                 if time_since_heartbeat.total_seconds() >= 120:
-                    logger.info(f"💓 Connection alive - Last {coin} trade: ${price:.2f}")
-                    self._last_heartbeat_time = datetime.now()
+                    logger.info(f"💓 Connection healthy - Last {coin} trade: ${price:.2f}")
+                    self._last_heartbeat_log = datetime.now()
     
     def _log_phase_info(self, coin: str, tracker: UnitTracker):
         """Log phase-relevant information after unit change"""
