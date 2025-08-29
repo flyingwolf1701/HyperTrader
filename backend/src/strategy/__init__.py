@@ -1,4 +1,2 @@
-"""Trading strategy implementations with corrected calculations"""
-from .short_position import ShortPosition
-
-__all__ = ['ShortPosition']
+"""Trading strategy implementations - SIMPLIFIED LONG-ONLY VERSION"""
+# No imports needed for simplified strategy

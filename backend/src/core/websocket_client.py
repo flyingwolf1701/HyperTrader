@@ -53,8 +53,11 @@ class HyperliquidWebSocketClient:
                 pass
         
         # Close WebSocket
-        if self.websocket and not self.websocket.closed:
-            await self.websocket.close()
+        if self.websocket:
+            try:
+                await self.websocket.close()
+            except Exception as e:
+                logger.warning(f"Error closing WebSocket: {e}")
         
         logger.info("Disconnected from Hyperliquid WebSocket")
     
@@ -296,7 +299,8 @@ class HyperliquidWebSocketClient:
                     
                     # Call price callback if registered and not None
                     if coin in self.price_callbacks and self.price_callbacks[coin] is not None:
-                        asyncio.create_task(self.price_callbacks[coin](price))
+                        logger.info(f"🔔 Calling strategy callback for {coin} at ${price}")
+                        asyncio.create_task(self.price_callbacks[coin](Decimal(str(price))))
                         
                 # Add periodic connection verification
                 if not hasattr(self, '_last_heartbeat_log'):

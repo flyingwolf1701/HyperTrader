@@ -20,6 +20,10 @@ class Settings(BaseSettings):
     hyperliquid_testnet: bool = True
     hyperliquid_base_url: str = "https://api.hyperliquid-testnet.xyz"
     
+    # HyperLiquid Sub-Wallet Configuration
+    hyperliquid_testnet_subwallet_long: Optional[str] = None
+    hyperliquid_testnet_subwallet_long_private: Optional[str] = None
+    
     # WebSocket Configuration
     hyperliquid_ws_url: str = "wss://api.hyperliquid-testnet.xyz/ws"
     ws_heartbeat_interval: int = 30
@@ -48,3 +52,20 @@ class Settings(BaseSettings):
 
 # Global settings instance
 settings = Settings()
+
+
+def get_long_subwallet_credentials(testnet: bool = True):
+    """Get the appropriate sub-wallet credentials for long positions"""
+    if testnet:
+        wallet_key = (settings.hyperliquid_testnet_subwallet_long 
+                     if settings.hyperliquid_testnet_subwallet_long 
+                     else settings.hyperliquid_wallet_key)
+        private_key = (settings.hyperliquid_testnet_subwallet_long_private 
+                      if settings.hyperliquid_testnet_subwallet_long_private 
+                      else settings.hyperliquid_private_key)
+    else:
+        # For mainnet, fall back to main wallet for now
+        wallet_key = settings.hyperliquid_wallet_key
+        private_key = settings.hyperliquid_private_key
+    
+    return wallet_key, private_key

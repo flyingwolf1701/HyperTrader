@@ -1,0 +1,39 @@
+{
+  "symbol": "ETH/USDC:USDC",
+  "phase": "ADVANCE",
+  "position_size_usd": 2500.0,
+  "unit_size_usd": 5.0,
+  "leverage": 25.0,
+  "notional_allocation": 2500.0,
+  "margin_allocation": 100.0,
+  "initial_notional_allocation": 2500.0,
+  "initial_margin_allocation": 100.0,
+  "position_fragment": {
+    "usd": 0.0,
+    "coin_value": 0.0
+  },
+  "hedge_fragment": {
+    "usd": 0.0,
+    "coin_value": 0.0
+  },
+  "short_positions": [],
+  "reset_count": 0.0,
+  "pre_reset_notional": 2500.0,
+  "pre_reset_margin": 100.0,
+  "last_recovery_unit": 0.0,
+  "entry_price": 4384.55,
+  "entry_time": "2025-08-29T15:50:32.457682",
+  "has_position": 1.0,
+  "peak_price": "None",
+  "current_unit": 0.0,
+  "peak_unit": 0.0,
+  "valley_unit": 0.0,
+  "retracement_actions_taken": {},
+  "total_eth_sold": 0.0,
+  "total_usd_shorted": 0.0,
+  "_metadata": {
+    "saved_at": "2025-08-29T15:50:32.457961",
+    "symbol": "ETH/USDC:USDC",
+    "version": 1.0
+  }
+}

@@ -17,7 +17,7 @@ import argparse
 sys.path.append(str(Path(__file__).parent / "src"))
 
 from src.core import HyperliquidWebSocketClient
-from src.exchange import HyperliquidExchangeClient
+from src.exchange.hyperliquid_sdk import HyperliquidSDK
 from src.strategy.strategy_manager import StrategyManager
 from src.utils import settings
 
@@ -36,12 +36,13 @@ class HyperTrader:
         symbol: str,
         position_size_usd: Decimal,
         unit_size_usd: Decimal,
-        leverage: int = 10
+        leverage: int = 25,
+        shutdown_event: Optional[asyncio.Event] = None
     ):
         """Start the full trading strategy"""
         try:
             logger.info("=" * 60)
-            logger.info("HYPERTRADER - ADVANCED HEDGING STRATEGY v6.0.0")
+            logger.info("HYPERTRADER - SIMPLIFIED LONG-ONLY STRATEGY v2.0")
             logger.info("=" * 60)
             logger.info(f"Network: {'TESTNET' if self.testnet else 'MAINNET'}")
             logger.info(f"Symbol: {symbol}")
@@ -68,16 +69,54 @@ class HyperTrader:
             # Start monitoring in background
             self.monitoring_task = asyncio.create_task(self.monitor_strategy(symbol))
             
-            # Start WebSocket listener
+            # Start WebSocket listener with shutdown handling
             logger.info("\nStarting real-time price monitoring...")
-            await self.strategy_manager.ws_client.listen()
+            logger.info("Press Ctrl+C to stop...")
+            
+            if shutdown_event:
+                # Create listening task
+                listen_task = asyncio.create_task(self.strategy_manager.ws_client.listen())
+                
+                # Wait for either WebSocket completion or shutdown signal
+                done, pending = await asyncio.wait(
+                    [listen_task, asyncio.create_task(shutdown_event.wait())],
+                    return_when=asyncio.FIRST_COMPLETED
+                )
+                
+                # Cancel any remaining tasks
+                for task in pending:
+                    task.cancel()
+                    
+                if shutdown_event.is_set():
+                    logger.info("Shutdown event received")
+            else:
+                # Start WebSocket listener as a cancellable task
+                logger.info("Starting real-time price monitoring...")
+                ws_task = asyncio.create_task(self.strategy_manager.ws_client.listen())
+                
+                try:
+                    await ws_task
+                except asyncio.CancelledError:
+                    logger.info("WebSocket task cancelled")
             
         except KeyboardInterrupt:
             logger.info("\nShutdown requested by user")
-            await self.shutdown(symbol)
+            # Cancel any running tasks
+            if 'ws_task' in locals() and not ws_task.done():
+                ws_task.cancel()
+                try:
+                    await ws_task
+                except asyncio.CancelledError:
+                    pass
         except Exception as e:
             logger.error(f"Unexpected error: {e}")
-            await self.shutdown(symbol)
+        finally:
+            logger.info("Cleaning up...")
+            # Ensure proper cleanup
+            if hasattr(self, 'strategy_manager'):
+                if self.strategy_manager.ws_client.is_connected:
+                    await self.strategy_manager.ws_client.disconnect()
+            logger.info("Cleanup complete")
     
     async def monitor_strategy(self, symbol: str):
         """Monitor strategy status - IMPROVED VERSION"""
@@ -271,15 +310,27 @@ def check_positions():
     logger.info("=" * 60)
     
     try:
-        # Initialize exchange client
-        exchange = HyperliquidExchangeClient(testnet=settings.hyperliquid_testnet)
+        # Initialize exchange client with long sub-wallet
+        base_url = "https://api.hyperliquid-testnet.xyz" if settings.hyperliquid_testnet else "https://api.hyperliquid.xyz"
+        
+        # Use sub-wallet credentials if available, otherwise fall back to main wallet
+        wallet_key = (settings.hyperliquid_testnet_subwallet_long 
+                     if settings.hyperliquid_testnet_subwallet_long 
+                     else settings.hyperliquid_wallet_key)
+        private_key = (settings.hyperliquid_testnet_subwallet_long_private 
+                      if settings.hyperliquid_testnet_subwallet_long_private 
+                      else settings.hyperliquid_private_key)
+        
+        exchange = HyperliquidSDK(
+            api_key=wallet_key,
+            api_secret=private_key,
+            base_url=base_url
+        )
         
         # Get balance
         balance = exchange.get_balance("USDC")
         logger.info(f"Account Balance:")
-        logger.info(f"  - Free: ${balance.free:.2f}")
-        logger.info(f"  - Used: ${balance.used:.2f}")
-        logger.info(f"  - Total: ${balance.total:.2f}")
+        logger.info(f"  - Total: ${balance:.2f}")
         
         # Check for positions
         symbols = ["ETH/USDC:USDC", "BTC/USDC:USDC", "SOL/USDC:USDC"]
@@ -291,10 +342,10 @@ def check_positions():
             if position:
                 has_positions = True
                 logger.info(f"  {sym}:")
-                logger.info(f"    - Side: {position.side.upper()}")
-                logger.info(f"    - Size: {position.contracts}")
-                logger.info(f"    - Entry: ${position.entryPrice:.2f}")
-                logger.info(f"    - PnL: ${position.unrealizedPnl:.2f}")
+                logger.info(f"    - Side: {position['side'].upper()}")
+                logger.info(f"    - Size: {position['size']}")
+                logger.info(f"    - Entry: ${position['entry_price']:.2f}")
+                logger.info(f"    - PnL: ${position['unrealized_pnl']:.2f}")
         
         if not has_positions:
             logger.info("  No active positions")
@@ -312,8 +363,22 @@ def close_position(symbol: str):
     logger.info(f"Closing position: {symbol}")
     
     try:
-        # Initialize exchange client
-        exchange = HyperliquidExchangeClient(testnet=settings.hyperliquid_testnet)
+        # Initialize exchange client with long sub-wallet
+        base_url = "https://api.hyperliquid-testnet.xyz" if settings.hyperliquid_testnet else "https://api.hyperliquid.xyz"
+        
+        # Use sub-wallet credentials if available, otherwise fall back to main wallet
+        wallet_key = (settings.hyperliquid_testnet_subwallet_long 
+                     if settings.hyperliquid_testnet_subwallet_long 
+                     else settings.hyperliquid_wallet_key)
+        private_key = (settings.hyperliquid_testnet_subwallet_long_private 
+                      if settings.hyperliquid_testnet_subwallet_long_private 
+                      else settings.hyperliquid_private_key)
+        
+        exchange = HyperliquidSDK(
+            api_key=wallet_key,
+            api_secret=private_key,
+            base_url=base_url
+        )
         
         # Get current position
         position = exchange.get_position(symbol)
@@ -322,7 +387,7 @@ def close_position(symbol: str):
             return True
         
         # Close the position
-        logger.info(f"Current position: {position.side} {position.contracts} contracts")
+        logger.info(f"Current position: {position['side']} {position['size']} contracts")
         result = exchange.close_position(symbol)
         
         if result:
@@ -474,21 +539,29 @@ async def main():
         # Create and start trader
         trader = HyperTrader(testnet=not args.mainnet)
         
-        # Setup signal handlers
+        # Setup signal handlers for graceful shutdown
+        shutdown_event = asyncio.Event()
+        
         def signal_handler(sig, frame):
-            logger.info("\nReceived interrupt signal")
-            asyncio.create_task(trader.shutdown(args.symbol))
+            logger.info("\nReceived interrupt signal - shutting down...")
+            shutdown_event.set()
         
         signal.signal(signal.SIGINT, signal_handler)
         signal.signal(signal.SIGTERM, signal_handler)
         
-        # Start trading
-        await trader.start_trading(
-            symbol=args.symbol,
-            position_size_usd=Decimal(str(args.position_size)),
-            unit_size_usd=Decimal(str(args.unit_size_usd)),
-            leverage=args.leverage
-        )
+        # Start trading with shutdown handling
+        try:
+            await trader.start_trading(
+                symbol=args.symbol,
+                position_size_usd=Decimal(str(args.position_size)),
+                unit_size_usd=Decimal(str(args.unit_size_usd)),
+                leverage=args.leverage,
+                shutdown_event=shutdown_event
+            )
+        except KeyboardInterrupt:
+            logger.info("Keyboard interrupt received")
+        finally:
+            await trader.shutdown(args.symbol)
     
     elif args.command == "track":
         await run_price_tracker(
