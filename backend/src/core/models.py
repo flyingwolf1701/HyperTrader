@@ -24,16 +24,16 @@ class UnitTracker:
     
     def __init__(self, 
                  entry_price: Optional[Decimal] = None, 
-                 unit_value: Decimal = Decimal("5.0")):
+                 unit_size_usd: Decimal = Decimal("5.00")):
         """
         Initialize unit tracker with FIXED boundaries.
         
         Args:
             entry_price: Initial entry price (set on first price if None)
-            unit_value: Price movement that constitutes one unit (in USD)
+            unit_size_usd: Price movement that constitutes one unit (in USD)
         """
         self.entry_price = entry_price
-        self.unit_value = unit_value
+        self.unit_size_usd = unit_size_usd
         self.current_unit = 0
         self.peak_unit = 0
         self.valley_unit = 0
@@ -50,7 +50,7 @@ class UnitTracker:
         """Calculate the exact price for a given unit level"""
         if self.entry_price is None:
             return Decimal("0")
-        return self.entry_price + (Decimal(unit) * self.unit_value)
+        return self.entry_price + (Decimal(unit) * self.unit_size_usd)
     
     def calculate_unit_change(self, current_price: Decimal) -> bool:
         """

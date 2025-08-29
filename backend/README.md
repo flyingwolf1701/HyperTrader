@@ -36,10 +36,10 @@ HyperTrader implements an automated hedging strategy that manages unified long/s
 uv run python main.py check
 
 # Start trading strategy (testnet)
-uv run python main.py trade ETH/USDC:USDC 2500 25 --leverage 25
+uv run python main.py trade ETH/USDC:USDC 2500 5 --leverage 25
 
 # Track prices with unit detection (no trading)
-uv run python main.py track --symbol ETH --unit-size 25
+uv run python main.py track --symbol ETH --unit-size 5
 
 # Close a position
 uv run python main.py close ETH/USDC:USDC

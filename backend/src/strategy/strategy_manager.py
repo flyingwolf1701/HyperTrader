@@ -2,7 +2,6 @@
 Strategy Manager - CORRECTED VERSION with proper leverage/margin calculations
 Coordinates WebSocket price tracking with exchange operations
 """
-import asyncio
 from decimal import Decimal
 from datetime import datetime
 from typing import Optional, Dict, Any, List
@@ -11,7 +10,6 @@ from loguru import logger
 from ..core.models import UnitTracker, Phase
 from ..core.websocket_client import HyperliquidWebSocketClient
 from ..exchange.exchange_client import HyperliquidExchangeClient
-from ..utils.config import settings
 from ..utils.trade_logger import TradeLogger
 from ..utils.notifications import NotificationManager
 from ..utils.state_persistence import StatePersistence
@@ -21,11 +19,11 @@ from .short_position import ShortPosition
 class StrategyState:
     """CORRECTED: Holds complete state with proper short position tracking"""
     
-    def __init__(self, symbol: str, position_size_usd: Decimal, unit_value: Decimal, leverage: int = 25):
+    def __init__(self, symbol: str, position_size_usd: Decimal, unit_size_usd: Decimal, leverage: int = 25):
         # Configuration
         self.symbol = symbol
         self.position_size_usd = position_size_usd
-        self.unit_value = unit_value
+        self.unit_size_usd = unit_size_usd
         self.leverage = leverage  # ETH is 25x on Hyperliquid
         
         # CORRECTED: Track notional vs margin separately
@@ -58,7 +56,7 @@ class StrategyState:
         self.peak_price: Optional[Decimal] = None
         
         # Unit tracker
-        self.unit_tracker = UnitTracker(unit_value=unit_value)
+        self.unit_tracker = UnitTracker(unit_size_usd=unit_size_usd)
         
         # TRACKING: Retracement actions for accurate portfolio calculation
         self.retracement_actions_taken = []  # Track what was actually executed
@@ -88,7 +86,7 @@ class StrategyState:
         logger.info(f"  Notional Value: ${self.notional_allocation}")
         logger.info(f"  Fragment USD: ${fragment_usd}")
         logger.info(f"  Fragment ETH: {fragment_eth:.6f} ETH")
-        logger.info(f"  This ETH amount stays CONSTANT during retracement")
+        logger.info("  This ETH amount stays CONSTANT during retracement")
         
         return fragment_usd
     
@@ -104,7 +102,7 @@ class StrategyState:
         self.total_eth_sold += eth_sold
         self.total_usd_shorted += usd_shorted
         
-        logger.info(f"📝 Recorded retracement action:")
+        logger.info("📝 Recorded retracement action:")
         logger.info(f"  Unit: {units_from_peak}, ETH sold: {eth_sold:.6f}, USD shorted: ${usd_shorted}")
         logger.info(f"  Total ETH sold: {self.total_eth_sold:.6f}")
         logger.info(f"  Total USD shorted: ${self.total_usd_shorted}")
@@ -120,7 +118,7 @@ class StrategyState:
         )
         self.short_positions.append(short)
         
-        logger.info(f"📝 Added short position:")
+        logger.info("📝 Added short position:")
         logger.info(f"  USD: ${usd_amount}")
         logger.info(f"  Entry: ${entry_price}")
         logger.info(f"  ETH: {eth_amount:.6f}")
@@ -160,7 +158,7 @@ class StrategyState:
         # Also update unit tracker's fragment
         self.unit_tracker.hedge_fragment = self.hedge_fragment.copy()
         
-        logger.info(f"HEDGE FRAGMENT CALCULATION:")
+        logger.info("HEDGE FRAGMENT CALCULATION:")
         logger.info(f"  Total Short Value: ${total_short_value:.2f}")
         logger.info(f"  Hedge Fragment USD (25%): ${hedge_fragment_usd:.2f}")
         logger.info(f"  Hedge Fragment ETH: {hedge_fragment_eth:.6f}")
@@ -175,7 +173,7 @@ class StrategyState:
             "symbol": self.symbol,
             "phase": self.unit_tracker.phase.value if self.unit_tracker.phase else "UNKNOWN",
             "position_size_usd": self.position_size_usd,
-            "unit_value": self.unit_value,
+            "unit_size_usd": self.unit_size_usd,
             "leverage": self.leverage,
             "notional_allocation": self.notional_allocation,
             "margin_allocation": self.margin_allocation,
@@ -224,17 +222,17 @@ class StrategyManager:
         self,
         symbol: str,
         position_size_usd: Decimal,
-        unit_value: Decimal,
+        unit_size_usd: Decimal,
         leverage: int = 25  # ETH is 25x on Hyperliquid
     ) -> bool:
         """Start a trading strategy - CORRECTED with proper order and WebSocket first"""
         try:
             logger.info("=" * 60)
-            logger.info(f"HYPERTRADER - CORRECTED STRATEGY START ORDER")
+            logger.info("HYPERTRADER - CORRECTED STRATEGY START ORDER")
             logger.info(f"Symbol: {symbol}")
             logger.info(f"Notional Position: ${position_size_usd}")
             logger.info(f"Margin Required: ${position_size_usd / Decimal(leverage)} (at {leverage}x)")
-            logger.info(f"Unit Value: ${unit_value}")
+            logger.info(f"Unit Size: ${unit_size_usd}")
             logger.info("=" * 60)
             
             # Check if strategy already exists
@@ -243,20 +241,20 @@ class StrategyManager:
                 return False
             
             # Create strategy state
-            state = StrategyState(symbol, position_size_usd, unit_value, leverage)
+            state = StrategyState(symbol, position_size_usd, unit_size_usd, leverage)
             self.strategies[symbol] = state
             
             # Check existing position
             existing_position = self.exchange_client.get_position(symbol)
             if existing_position:
                 logger.warning(f"Existing position found for {symbol}")
-                logger.info(f"Position: {existing_position['side']} {existing_position.get('contracts', 'N/A')}")
+                logger.info(f"Position: {existing_position.side} {existing_position.contracts}")
                 logger.info("Please close existing position before starting new strategy")
                 return False
             
             # STEP 1: START WEBSOCKET MONITORING FIRST (before any trades)
             logger.info("\nStep 1: Starting WebSocket monitoring...")
-            await self._start_monitoring_preparation(symbol, unit_value, state)
+            await self._start_monitoring_preparation(symbol, unit_size_usd, state)
             
             # STEP 2: Enter trade (100% long position) - Use notional amount
             logger.info("\nStep 2: Opening 100% long position...")
@@ -274,8 +272,8 @@ class StrategyManager:
                 state.entry_time = datetime.now()
                 
                 # Get entry price from order or current market
-                if order.get("price") and order["price"] != 0:
-                    state.entry_price = Decimal(str(order["price"]))
+                if order.price and order.price != 0:
+                    state.entry_price = order.price
                 else:
                     state.entry_price = self.exchange_client.get_current_price(symbol)
                 
@@ -285,11 +283,11 @@ class StrategyManager:
                 # Set phase to ADVANCE
                 state.unit_tracker.phase = Phase.ADVANCE
                 
-                logger.success(f"Position opened successfully")
+                logger.success("Position opened successfully")
                 logger.info(f"Entry Price: ${state.entry_price:.2f}")
                 logger.info(f"Notional Value: ${state.notional_allocation}")
                 logger.info(f"Margin Used: ${state.margin_allocation}")
-                logger.info(f"Phase: ADVANCE")
+                logger.info("Phase: ADVANCE")
                 
                 # Save state after successful entry
                 self.save_state(symbol)
@@ -328,7 +326,7 @@ class StrategyManager:
                 if state.position_fragment["usd"] == Decimal("0"):
                     state.calculate_position_fragment_at_peak(current_price)
                     
-                    logger.success(f"📈 NEW PEAK REACHED:")
+                    logger.success("📈 NEW PEAK REACHED:")
                     logger.info(f"  Peak Unit: {state.unit_tracker.peak_unit}")
                     logger.info(f"  🔒 Fragment LOCKED: ${state.position_fragment['usd']} = {state.position_fragment['coin_value']:.6f} ETH")
                 else:
@@ -336,20 +334,20 @@ class StrategyManager:
                     logger.info(f"  🔒 Fragment Already Locked: ${state.position_fragment['usd']} = {state.position_fragment['coin_value']:.6f} ETH")
             else:
                 # NOT at peak - keep existing fragment or show zero if no peak reached yet
-                logger.info(f"ADVANCE Phase Update:")
+                logger.info("ADVANCE Phase Update:")
                 logger.info(f"  Current Unit: {state.unit_tracker.current_unit}")
                 logger.info(f"  Peak Unit: {state.unit_tracker.peak_unit}")
                 if state.position_fragment["usd"] > Decimal("0"):
                     logger.info(f"  🔒 USING Locked Fragment: ${state.position_fragment['usd']} = {state.position_fragment['coin_value']:.6f} ETH")
                 else:
-                    logger.info(f"  ⏳ No fragment locked yet (awaiting first peak)")
+                    logger.info("  ⏳ No fragment locked yet (awaiting first peak)")
             
             # Check for phase transition to RETRACEMENT
             units_from_peak = state.unit_tracker.get_units_from_peak()
             if units_from_peak <= -1:
                 # Ensure we have a fragment locked before entering retracement
                 if state.position_fragment["usd"] == Decimal("0"):
-                    logger.warning(f"🚨 Price dropped but no fragment locked - calculating emergency fragment")
+                    logger.warning("🚨 Price dropped but no fragment locked - calculating emergency fragment")
                     state.calculate_position_fragment_at_peak(current_price)
                 
                 logger.warning(f"💥 Price dropped {abs(units_from_peak)} unit(s) from peak")
@@ -415,8 +413,8 @@ class StrategyManager:
                 logger.info("🔄 STRATEGY DOC ACTION (-5): Sell remaining long position, hold cash")
                 
                 position = self.exchange_client.get_position(symbol)
-                if position and position.get('side') == 'long':
-                    remaining_contracts = abs(position.get('contracts', 0))
+                if position and position.side == 'long':
+                    remaining_contracts = abs(position.contracts)
                     
                     sell_result = await self.exchange_client.sell_long_eth(
                         symbol=symbol,
@@ -426,7 +424,7 @@ class StrategyManager:
                     
                     if sell_result:
                         logger.success(f"✅ Sold remaining long: {remaining_contracts:.6f} ETH")
-                        cash_received = sell_result.get('usd_received', 0)
+                        cash_received = sell_result.usd_received or Decimal("0")
                         logger.success(f"💰 Cash held: ${cash_received:.2f}")
                         
                         # Record this action
@@ -455,7 +453,7 @@ class StrategyManager:
             if units_from_peak in [-1, -2, -3, -4]:
                 # SAFETY CHECK: Ensure fragments are not zero
                 if eth_to_sell <= Decimal("0") or usd_to_short <= Decimal("0"):
-                    logger.error(f"❌ Cannot execute retracement with zero fragments:")
+                    logger.error("❌ Cannot execute retracement with zero fragments:")
                     logger.error(f"   ETH to sell: {eth_to_sell}")
                     logger.error(f"   USD to short: {usd_to_short}")
                     logger.error("   Fragment calculation may have failed - aborting retracement")
@@ -473,7 +471,7 @@ class StrategyManager:
                 )
                 
                 if sell_result:
-                    cash_received = sell_result.get('usd_received', 0)
+                    cash_received = sell_result.usd_received or Decimal("0")
                     logger.success(f"✅ Long reduced: {eth_to_sell:.6f} ETH → ${cash_received:.2f}")
                 
                 # Step 2: Open/Add to short position  
@@ -487,7 +485,7 @@ class StrategyManager:
                     logger.success(f"✅ Short added: ${usd_to_short}")
                     
                     # Use the actual execution price from the exchange
-                    short_entry_price = Decimal(str(short_result.get('price', current_price)))
+                    short_entry_price = short_result.price or current_price
                     
                     # Track individual short position
                     state.add_short_position(
@@ -522,14 +520,14 @@ class StrategyManager:
             # Get current positions from exchange
             position = self.exchange_client.get_position(state.symbol)
             
+            long_contracts = 0
+            short_contracts = 0
+            
             if position:
-                long_contracts = 0
-                short_contracts = 0
-                
-                if position.get('side') == 'long':
-                    long_contracts = abs(position.get('contracts', 0))
-                elif position.get('side') == 'short':
-                    short_contracts = abs(position.get('contracts', 0))
+                if position.side == 'long':
+                    long_contracts = abs(position.contracts)
+                elif position.side == 'short':
+                    short_contracts = abs(position.contracts)
             
             # Calculate values
             long_value = long_contracts * current_price
@@ -610,7 +608,8 @@ class StrategyManager:
         try:
             if units_from_valley >= 2 and units_from_valley <= 5:
                 # CORRECTED: Calculate hedge fragment from current short value
-                hedge_fragment_usd = state.calculate_hedge_fragment(current_price)
+                hedge_fragment = state.calculate_hedge_fragment(current_price)
+                hedge_fragment_usd = hedge_fragment['usd']
                 
                 # Close short: Whatever ETH amount the hedge fragment represents
                 hedge_eth_to_close = hedge_fragment_usd / current_price
@@ -654,7 +653,7 @@ class StrategyManager:
                 )
                 
                 if close_result:
-                    logger.success(f"✅ Closed all remaining shorts")
+                    logger.success("✅ Closed all remaining shorts")
                 
                 # Buy final long position
                 final_purchase = total_remaining_short_value + state.position_fragment['usd']
@@ -693,14 +692,14 @@ class StrategyManager:
                 return
             
             current_price = self.exchange_client.get_current_price(symbol)
-            current_notional_value = abs(position.get("contracts", 0)) * current_price
+            current_notional_value = abs(position.contracts) * current_price
             current_margin_value = current_notional_value / Decimal(state.leverage)
             
             # Calculate compound growth
             cycle_growth = current_notional_value - state.notional_allocation
             growth_percentage = (cycle_growth / state.notional_allocation) * 100
             
-            logger.info(f"Cycle Summary:")
+            logger.info("Cycle Summary:")
             logger.info(f"  Starting Notional: ${state.notional_allocation:.2f}")
             logger.info(f"  Ending Notional: ${current_notional_value:.2f}")
             logger.info(f"  🚀 Compound Growth: ${cycle_growth:.2f} ({growth_percentage:.2f}%)")
@@ -740,7 +739,7 @@ class StrategyManager:
             state.last_recovery_unit = 0
             
             logger.success("🔄 RESET Complete!")
-            logger.info(f"New Baseline:")
+            logger.info("New Baseline:")
             logger.info(f"  Notional Value: ${state.notional_allocation:.2f}")
             logger.info(f"  Margin Value: ${state.margin_allocation:.2f}")
             logger.info(f"  Entry Price: ${state.entry_price:.2f}")
@@ -779,15 +778,15 @@ class StrategyManager:
         elif state.unit_tracker.phase == Phase.RECOVERY:
             await self.handle_recovery_phase(symbol)
     
-    async def _start_monitoring_preparation(self, symbol: str, unit_value: Decimal, state: StrategyState):
+    async def _start_monitoring_preparation(self, symbol: str, unit_size_usd: Decimal, state: StrategyState):
         """STEP 1: Connect WebSocket and prepare monitoring (before trade execution)"""
         try:
-            logger.info(f"🔗 Connecting to WebSocket...")
+            logger.info("🔗 Connecting to WebSocket...")
             
             # Connect WebSocket if not connected
             if not self.ws_client.is_connected:
                 await self.ws_client.connect()
-                logger.success(f"✅ WebSocket connected")
+                logger.success("✅ WebSocket connected")
             
             # Extract coin from symbol  
             coin = symbol.split("/")[0]  # ETH from ETH/USDC:USDC
@@ -795,13 +794,13 @@ class StrategyManager:
             # Subscribe to trades (but don't activate callbacks yet)
             await self.ws_client.subscribe_to_trades(
                 coin, 
-                unit_value,
+                unit_size_usd,
                 unit_tracker=state.unit_tracker,
                 price_callback=None  # No callback yet - we'll add it after trade
             )
             
             logger.success(f"✅ Subscribed to {coin} price feed")
-            logger.info(f"WebSocket ready - waiting for trade execution...")
+            logger.info("WebSocket ready - waiting for trade execution...")
             
         except Exception as e:
             logger.error(f"❌ Error preparing monitoring: {e}")
@@ -826,7 +825,7 @@ class StrategyManager:
                 # Show current boundaries for user info
                 if state.unit_tracker.entry_price:
                     boundaries = state.unit_tracker.get_current_unit_boundaries()
-                    logger.info(f"🎯 Unit boundaries:")
+                    logger.info("🎯 Unit boundaries:")
                     logger.info(f"  Next +1 unit: ${boundaries['next_up']:.2f}")
                     logger.info(f"  Next -1 unit: ${boundaries['next_down']:.2f}")
             else:
@@ -835,7 +834,7 @@ class StrategyManager:
         except Exception as e:
             logger.error(f"❌ Error activating monitoring: {e}")
     
-    async def _start_monitoring(self, symbol: str, unit_value: Decimal):
+    async def _start_monitoring(self, symbol: str, unit_size_usd: Decimal):
         """Legacy method - kept for compatibility"""
         try:
             # Connect WebSocket if not connected
@@ -853,7 +852,7 @@ class StrategyManager:
             coin = symbol.split("/")[0]  # Extract coin from symbol
             await self.ws_client.subscribe_to_trades(
                 coin, 
-                unit_value,
+                unit_size_usd,
                 unit_tracker=state.unit_tracker,
                 price_callback=price_change_callback
             )
@@ -893,9 +892,9 @@ class StrategyManager:
             "units_from_valley": state.unit_tracker.get_units_from_valley(),
             "position": {
                 "has_position": state.has_position,
-                "side": position.get("side") if position else None,
-                "contracts": float(position.get("contracts", 0)) if position else 0,
-                "pnl": float(position.get("unrealizedPnl", 0)) if position else 0
+                "side": position.side if position else None,
+                "contracts": float(position.contracts) if position else 0,
+                "pnl": float(position.unrealizedPnl) if position else 0
             },
             "allocation": {
                 "notional": float(state.notional_allocation),
@@ -935,7 +934,7 @@ class StrategyManager:
                 # Close all positions (long and short)
                 orders = self.exchange_client.close_all_positions(symbol)
                 if orders:
-                    logger.success(f"All positions closed")
+                    logger.success("All positions closed")
             except Exception as e:
                 logger.error(f"Error closing position: {e}")
         

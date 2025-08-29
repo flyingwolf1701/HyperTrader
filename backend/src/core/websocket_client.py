@@ -48,7 +48,7 @@ class HyperliquidWebSocketClient:
             await self.websocket.close()
         logger.info("Disconnected from Hyperliquid WebSocket")
     
-    async def subscribe_to_trades(self, symbol: str, unit_value: Decimal = Decimal("2.0"), unit_tracker: UnitTracker = None, price_callback: callable = None) -> bool:
+    async def subscribe_to_trades(self, symbol: str, unit_size_usd: Decimal = Decimal("2.0"), unit_tracker: UnitTracker = None, price_callback: callable = None) -> bool:
         """Subscribe to trade data for a symbol and initialize unit tracking"""
         if not self.is_connected or not self.websocket:
             logger.error("WebSocket not connected. Call connect() first.")
@@ -58,7 +58,7 @@ class HyperliquidWebSocketClient:
         if unit_tracker:
             self.unit_trackers[symbol] = unit_tracker
         else:
-            self.unit_trackers[symbol] = UnitTracker(unit_value=unit_value)
+            self.unit_trackers[symbol] = UnitTracker(unit_size_usd=unit_size_usd)
         
         # Store price callback if provided (can be None initially)
         if price_callback:
@@ -77,7 +77,7 @@ class HyperliquidWebSocketClient:
         
         try:
             await self.websocket.send(json.dumps(subscription_message))
-            logger.info(f"Subscribed to {symbol} trades with unit value ${unit_value}")
+            logger.info(f"Subscribed to {symbol} trades with unit size ${unit_size_usd}")
             return True
         except Exception as e:
             logger.error(f"Failed to subscribe to {symbol} trades: {e}")

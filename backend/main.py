@@ -35,7 +35,7 @@ class HyperTrader:
         self,
         symbol: str,
         position_size_usd: Decimal,
-        unit_value: Decimal,
+        unit_size_usd: Decimal,
         leverage: int = 10
     ):
         """Start the full trading strategy"""
@@ -46,7 +46,7 @@ class HyperTrader:
             logger.info(f"Network: {'TESTNET' if self.testnet else 'MAINNET'}")
             logger.info(f"Symbol: {symbol}")
             logger.info(f"Position Size: ${position_size_usd}")
-            logger.info(f"Unit Value: ${unit_value}")
+            logger.info(f"Unit Size: ${unit_size_usd}")
             logger.info(f"Leverage: {leverage}x")
             logger.info(f"Started at: {datetime.now().isoformat()}")
             logger.info("=" * 60)
@@ -55,7 +55,7 @@ class HyperTrader:
             success = await self.strategy_manager.start_strategy(
                 symbol=symbol,
                 position_size_usd=position_size_usd,
-                unit_value=unit_value,
+                unit_size_usd=unit_size_usd,
                 leverage=leverage
             )
             
@@ -203,14 +203,14 @@ class HyperTrader:
 
 async def run_price_tracker(
     symbol: str = "ETH",
-    unit_size: str = "2.0",
+    unit_size_usd: str = "2.0",
     duration_minutes: int = None
 ):
     """Run the WebSocket price tracker with unit tracking"""
     logger.info("=" * 60)
     logger.info(f"HyperTrader - Price Tracking with Unit Detection")
     logger.info(f"Symbol: {symbol}")
-    logger.info(f"Unit Size: ${unit_size}")
+    logger.info(f"Unit Size: ${unit_size_usd}")
     logger.info(f"Duration: {duration_minutes} minutes" if duration_minutes else "Duration: Indefinite")
     logger.info("=" * 60)
     
@@ -223,7 +223,7 @@ async def run_price_tracker(
         return False
     
     # Subscribe to trades with unit tracking
-    if not await ws_client.subscribe_to_trades(symbol, Decimal(unit_size)):
+    if not await ws_client.subscribe_to_trades(symbol, Decimal(unit_size_usd)):
         logger.error(f"Failed to subscribe to {symbol} trades")
         await ws_client.disconnect()
         return False
@@ -277,9 +277,9 @@ def check_positions():
         # Get balance
         balance = exchange.get_balance("USDC")
         logger.info(f"Account Balance:")
-        logger.info(f"  - Free: ${balance['free']:.2f}")
-        logger.info(f"  - Used: ${balance['used']:.2f}")
-        logger.info(f"  - Total: ${balance['total']:.2f}")
+        logger.info(f"  - Free: ${balance.free:.2f}")
+        logger.info(f"  - Used: ${balance.used:.2f}")
+        logger.info(f"  - Total: ${balance.total:.2f}")
         
         # Check for positions
         symbols = ["ETH/USDC:USDC", "BTC/USDC:USDC", "SOL/USDC:USDC"]
@@ -291,10 +291,10 @@ def check_positions():
             if position:
                 has_positions = True
                 logger.info(f"  {sym}:")
-                logger.info(f"    - Side: {position['side'].upper()}")
-                logger.info(f"    - Size: {position['contracts']}")
-                logger.info(f"    - Entry: ${position['entryPrice']:.2f}")
-                logger.info(f"    - PnL: ${position['unrealizedPnl']:.2f}")
+                logger.info(f"    - Side: {position.side.upper()}")
+                logger.info(f"    - Size: {position.contracts}")
+                logger.info(f"    - Entry: ${position.entryPrice:.2f}")
+                logger.info(f"    - PnL: ${position.unrealizedPnl:.2f}")
         
         if not has_positions:
             logger.info("  No active positions")
@@ -322,7 +322,7 @@ def close_position(symbol: str):
             return True
         
         # Close the position
-        logger.info(f"Current position: {position['side']} {position['contracts']} contracts")
+        logger.info(f"Current position: {position.side} {position.contracts} contracts")
         result = exchange.close_position(symbol)
         
         if result:
@@ -393,14 +393,14 @@ async def main():
     trade_parser = subparsers.add_parser("trade", help="Start trading strategy")
     trade_parser.add_argument("symbol", help="Trading symbol (e.g., ETH/USDC:USDC)")
     trade_parser.add_argument("position_size", type=float, help="Position size in USD")
-    trade_parser.add_argument("unit_value", type=float, help="Unit value in USD")
+    trade_parser.add_argument("unit_size_usd", type=float, help="Unit size in USD")
     trade_parser.add_argument("--leverage", type=int, default=25, help="Leverage (default: 25 for ETH)")
     trade_parser.add_argument("--mainnet", action="store_true", help="Use mainnet (default: testnet)")
     
     # Track command
     track_parser = subparsers.add_parser("track", help="Track prices with unit detection")
     track_parser.add_argument("--symbol", default="ETH", help="Symbol to track (default: ETH)")
-    track_parser.add_argument("--unit-value", default="2.0", help="Unit value in USD (default: 2.0)")
+    track_parser.add_argument("--unit-size-usd", default="2.0", help="Unit size in USD (default: 2.0)")
     track_parser.add_argument("--duration", type=int, help="Duration in minutes (optional)")
     
     # Check command
@@ -451,8 +451,8 @@ async def main():
             logger.error("Position size must be positive")
             return
         
-        if args.unit_value <= 0:
-            logger.error("Unit value must be positive")
+        if args.unit_size_usd <= 0:
+            logger.error("Unit size must be positive")
             return
         
         if args.leverage < 1 or args.leverage > 25:
@@ -486,14 +486,14 @@ async def main():
         await trader.start_trading(
             symbol=args.symbol,
             position_size_usd=Decimal(str(args.position_size)),
-            unit_value=Decimal(str(args.unit_value)),
+            unit_size_usd=Decimal(str(args.unit_size_usd)),
             leverage=args.leverage
         )
     
     elif args.command == "track":
         await run_price_tracker(
             symbol=args.symbol,
-            unit_value=args.unit_value,
+            unit_size_usd=args.unit_size_usd,
             duration_minutes=args.duration
         )
     
