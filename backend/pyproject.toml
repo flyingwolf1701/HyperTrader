@@ -7,6 +7,8 @@ requires-python = ">=3.13"
 dependencies = [
     "asyncpg>=0.30.0",
     "ccxt>=4.4.100",
+    "eth-account>=0.13.7",
+    "eth-utils>=5.3.1",
     "fastapi>=0.116.1",
     "httpx>=0.28.1",
     "loguru>=0.7.3",
@@ -15,6 +17,7 @@ dependencies = [
     "pydantic-settings>=2.10.1",
     "python-dotenv>=1.1.1",
     "python-multipart>=0.0.20",
+    "requests>=2.32.5",
     "sqlalchemy[asyncio]>=2.0.0",
     "uvicorn[standard]>=0.35.0",
     "websockets>=15.0.1",

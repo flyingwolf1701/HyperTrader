@@ -1,8 +1,10 @@
-# HyperTrader - Advanced Hedging Strategy v6.0.0
+# HyperTrader - Simplified Long-Only Strategy v2.0
 
 ## Overview
 
-HyperTrader implements an automated hedging strategy that manages unified long/short/cash positions across multiple cryptocurrency assets on the Hyperliquid exchange. The strategy operates through four distinct phases (ADVANCE, RETRACEMENT, DECLINE, RECOVERY) with an automatic RESET mechanism to compound profits.
+HyperTrader implements an automated long-only strategy that scales positions during market volatility through four phases (ADVANCE, RETRACEMENT, DECLINE, RECOVERY) with an automatic RESET mechanism to compound profits.
+
+**Key Simplification**: This version removes all short position complexity while preserving the core retracement scaling and compound growth logic.
 
 ## Quick Start Guide
 
@@ -60,46 +62,56 @@ For your current testing setup:
 ### Start Your Test Trade
 
 ```bash
-# Start the complete strategy
+# Start the simplified strategy
 uv run python main.py trade ETH/USDC:USDC 2500 25 --leverage 25
 ```
 
 This will:
 1. Open a $2500 long position with 25x leverage
 2. Start real-time price monitoring
-3. Execute strategy phases automatically as price moves
+3. Execute simplified scaling strategy automatically as price moves
+
+## Simplified Strategy Logic
+
+### Core Concept
+Instead of complex long+short hedging, this version simply **scales the long position up and down** based on market movements:
+
+- **Rising markets**: Hold 100% long position
+- **Falling markets**: Sell fragments to reduce exposure (25% at a time)  
+- **Recovery**: Buy back fragments to rebuild position
+- **Compound growth**: RESET mechanism captures gains for next cycle
 
 ## Strategy Phases Explained
 
 ### 1. ADVANCE Phase
 - **Trigger**: Price increases by one unit ($25)
-- **Action**: Track peak units, recalculate position fragments
+- **Action**: Track peaks, lock 25% fragments when new peak reached
 - **Portfolio**: 100% Long
 
-### 2. RETRACEMENT Phase
-- **Trigger**: Price drops 1 unit from peak
+### 2. RETRACEMENT Phase  
+- **Trigger**: Price drops from peak
 - **Actions by units from peak**:
-  - `-1`: Sell 1 fragment long → Open 1 fragment short
-  - `-2`: Sell 2 fragments long → Add 1 fragment short
-  - `-3`: Sell 2 fragments long → Add 1 fragment short  
-  - `-4`: Sell 2 fragments long → Add 1 fragment short
-  - `-5`: Sell remaining long → Add to short
-  - `-6`: Enter DECLINE phase
+  - `-1`: Hold position (no action)
+  - `-2`: Sell 25% fragment (reduce exposure)
+  - `-3`: Sell 25% fragment (reduce exposure)
+  - `-4`: Sell 25% fragment (reduce exposure)
+  - `-5`: Sell remaining position → 100% cash
 
-### 3. DECLINE Phase
-- **Condition**: ~50% short, ~50% cash
-- **Action**: Hold defensive position, profit from further declines
-- **Transition**: +2 units from valley → RECOVERY
+### 3. VALLEY TRACKING
+- **Condition**: Portfolio is 100% cash
+- **Action**: Track lowest point (valley) for recovery signal
 
 ### 4. RECOVERY Phase
-- **Actions by units from valley**:
-  - `+2` to `+4`: Close hedge fragments, buy long
-  - `+5`: Close all short, convert to long
-  - `+6`: 100% long → Trigger RESET
+- **Trigger**: Price rises +2 units from valley
+- **Actions**:
+  - `+2`: Buy back 25% fragment
+  - `+3`: Buy back 25% fragment  
+  - `+4`: Buy back 25% fragment
+  - `+5`: Buy back final 25% → 100% long → RESET
 
 ### 5. RESET Mechanism
 - **Trigger**: Position becomes 100% long after complete cycle
-- **Action**: Lock in profits as new baseline, restart cycle
+- **Action**: Lock in profits as new baseline, restart with larger position
 
 ## Alternative Testing Methods
 
@@ -132,7 +144,7 @@ uv run python main.py check
 uv run python main.py close ETH/USDC:USDC
 
 # Start fresh strategy
-uv run python main.py trade ETH/USDC:USDC 2500 5 --leverage 25
+uv run python main.py trade ETH/USDC:USDC 2500 2 --leverage 25
 ```
 
 ## Monitoring Your Strategy
@@ -226,11 +238,18 @@ uv run python main.py trade ETH/USDC:USDC 2500 25 --leverage 25 --mainnet
 
 ## Strategy Performance
 
-The strategy aims to:
-- **Profit during trends**: Long positions in ADVANCE phase
-- **Protect during retracements**: Progressive hedging in RETRACEMENT
-- **Profit from declines**: Short positions in DECLINE phase  
-- **Capitalize on recovery**: Strategic re-entry in RECOVERY phase
-- **Compound returns**: RESET mechanism locks in gains
+The simplified strategy aims to:
+- **Profit during uptrends**: Hold 100% long positions during ADVANCE phase
+- **Reduce risk during retracements**: Scale down position by selling fragments  
+- **Preserve capital during declines**: Hold cash during valley periods
+- **Capitalize on recovery**: Rebuild position during RECOVERY phase
+- **Compound returns**: RESET mechanism captures gains and starts next cycle with larger base
 
-Expected outcome: Net positive returns through complete market cycles while managing downside risk.
+**Key Benefits of Simplification**:
+- ✅ No position netting issues (single wallet, long-only)
+- ✅ Easier to understand and monitor
+- ✅ Preserves core compound growth mechanism
+- ✅ Works perfectly with Hyperliquid's position management
+- ✅ Still provides risk management through position scaling
+
+Expected outcome: Steady compound growth through market cycles with reduced complexity and operational risk.

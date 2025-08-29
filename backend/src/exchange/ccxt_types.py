@@ -146,3 +146,6 @@ class OrderResult:
     leverage: Optional[int] = None
     margin_used: Optional[Decimal] = None
     info: Optional[Dict[str, Any]] = None
+    leverage: Optional[int] = None
+    margin_used: Optional[Decimal] = None
+    info: Optional[Dict[str, Any]] = None
