@@ -11,19 +11,21 @@ HyperTrader implements an automated long-only strategy that scales positions dur
 ### Prerequisites
 
 1. **Python Environment**
+
    ```bash
    # Ensure UV is installed
    pip install uv
-   
+
    # Install dependencies
    uv sync
    ```
 
 2. **Environment Configuration**
    Create a `.env` file in the backend directory:
+
    ```env
    HYPERLIQUID_WALLET_KEY=your_wallet_address
-   HYPERLIQUID_PRIVATE_KEY=your_private_key
+   HYPERLIQUID_TESTNET_PRIVATE_KEY=your_private_key
    HYPERLIQUID_TESTNET=true
    ```
 
@@ -53,6 +55,7 @@ uv run python main.py monitor
 ## Testing Configuration
 
 For your current testing setup:
+
 - **Symbol**: ETH/USDC:USDC
 - **Position Size**: $2500
 - **Unit Size**: $25 (smaller for testing)
@@ -67,6 +70,7 @@ uv run python main.py trade ETH/USDC:USDC 2500 25 --leverage 25
 ```
 
 This will:
+
 1. Open a $2500 long position with 25x leverage
 2. Start real-time price monitoring
 3. Execute simplified scaling strategy automatically as price moves
@@ -74,21 +78,24 @@ This will:
 ## Simplified Strategy Logic
 
 ### Core Concept
+
 Instead of complex long+short hedging, this version simply **scales the long position up and down** based on market movements:
 
 - **Rising markets**: Hold 100% long position
-- **Falling markets**: Sell fragments to reduce exposure (25% at a time)  
+- **Falling markets**: Sell fragments to reduce exposure (25% at a time)
 - **Recovery**: Buy back fragments to rebuild position
 - **Compound growth**: RESET mechanism captures gains for next cycle
 
 ## Strategy Phases Explained
 
 ### 1. ADVANCE Phase
+
 - **Trigger**: Price increases by one unit ($25)
 - **Action**: Track peaks, lock 25% fragments when new peak reached
 - **Portfolio**: 100% Long
 
-### 2. RETRACEMENT Phase  
+### 2. RETRACEMENT Phase
+
 - **Trigger**: Price drops from peak
 - **Actions by units from peak**:
   - `-1`: Hold position (no action)
@@ -98,18 +105,21 @@ Instead of complex long+short hedging, this version simply **scales the long pos
   - `-5`: Sell remaining position → 100% cash
 
 ### 3. VALLEY TRACKING
+
 - **Condition**: Portfolio is 100% cash
 - **Action**: Track lowest point (valley) for recovery signal
 
 ### 4. RECOVERY Phase
+
 - **Trigger**: Price rises +2 units from valley
 - **Actions**:
   - `+2`: Buy back 25% fragment
-  - `+3`: Buy back 25% fragment  
+  - `+3`: Buy back 25% fragment
   - `+4`: Buy back 25% fragment
   - `+5`: Buy back final 25% → 100% long → RESET
 
 ### 5. RESET Mechanism
+
 - **Trigger**: Position becomes 100% long after complete cycle
 - **Action**: Lock in profits as new baseline, restart with larger position
 
@@ -150,15 +160,18 @@ uv run python main.py trade ETH/USDC:USDC 2500 2 --leverage 25
 ## Monitoring Your Strategy
 
 ### Real-time Monitoring
+
 ```bash
 # Start monitoring in separate terminal
 uv run python main.py monitor
 ```
 
 ### Log Files
+
 Strategy logs are saved to `logs/hypertrader_{timestamp}.log`
 
 ### Key Metrics to Watch
+
 - **Current Phase**: Which phase the strategy is in
 - **Current Unit**: Distance from entry price in units
 - **Peak/Valley Units**: Historical extremes
@@ -170,15 +183,18 @@ Strategy logs are saved to `logs/hypertrader_{timestamp}.log`
 ### Common Issues
 
 1. **"No existing position" Error**
+
    - Make sure you have an open position before running certain commands
    - Use `python main.py check` to verify
 
 2. **WebSocket Connection Issues**
+
    - Check internet connection
    - Verify Hyperliquid API status
    - Restart the strategy
 
 3. **API Authentication Errors**
+
    - Verify wallet address and private key in `.env`
    - Ensure testnet setting matches your credentials
 
@@ -239,13 +255,15 @@ uv run python main.py trade ETH/USDC:USDC 2500 25 --leverage 25 --mainnet
 ## Strategy Performance
 
 The simplified strategy aims to:
+
 - **Profit during uptrends**: Hold 100% long positions during ADVANCE phase
-- **Reduce risk during retracements**: Scale down position by selling fragments  
+- **Reduce risk during retracements**: Scale down position by selling fragments
 - **Preserve capital during declines**: Hold cash during valley periods
 - **Capitalize on recovery**: Rebuild position during RECOVERY phase
 - **Compound returns**: RESET mechanism captures gains and starts next cycle with larger base
 
 **Key Benefits of Simplification**:
+
 - ✅ No position netting issues (single wallet, long-only)
 - ✅ Easier to understand and monitor
 - ✅ Preserves core compound growth mechanism

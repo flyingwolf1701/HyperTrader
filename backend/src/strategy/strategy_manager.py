@@ -9,7 +9,7 @@ from loguru import logger
 
 from ..core.models import UnitTracker, Phase
 from ..core.websocket_client import HyperliquidWebSocketClient
-from ..exchange.hyperliquid_sdk import HyperliquidSDK
+from ..exchange.exchange_client import HyperliquidExchangeClient
 from ..utils import settings
 
 
@@ -108,23 +108,7 @@ class StrategyManager:
     def __init__(self, testnet: bool = True):
         self.testnet = testnet
         self.ws_client = HyperliquidWebSocketClient(testnet=testnet)
-        
-        # Initialize Hyperliquid SDK with long sub-wallet credentials
-        base_url = "https://api.hyperliquid-testnet.xyz" if testnet else "https://api.hyperliquid.xyz"
-        
-        # Use sub-wallet credentials if available, otherwise fall back to main wallet
-        wallet_key = (settings.hyperliquid_testnet_subwallet_long 
-                     if settings.hyperliquid_testnet_subwallet_long 
-                     else settings.hyperliquid_wallet_key)
-        private_key = (settings.hyperliquid_testnet_subwallet_long_private 
-                      if settings.hyperliquid_testnet_subwallet_long_private 
-                      else settings.hyperliquid_private_key)
-        
-        self.exchange_client = HyperliquidSDK(
-            api_key=wallet_key,
-            api_secret=private_key,
-            base_url=base_url
-        )
+        self.exchange_client = HyperliquidExchangeClient(testnet=testnet)
         self.strategies: Dict[str, StrategyState] = {}
         self.is_running = False
     
@@ -158,7 +142,7 @@ class StrategyManager:
             existing_position = self.exchange_client.get_position(symbol)
             if existing_position:
                 logger.warning(f"Existing position found for {symbol}")
-                logger.info(f"Position: {existing_position['side']} {existing_position['size']}")
+                logger.info(f"Position: {existing_position.side} {existing_position.contracts} contracts")
                 logger.info("Please close existing position before starting new strategy")
                 return False
             
@@ -335,8 +319,8 @@ class StrategyManager:
             elif units_from_peak == -5:
                 # Sell remaining position
                 position = self.exchange_client.get_position(symbol)
-                if position and position['side'] == 'long':
-                    remaining_contracts = abs(position['size'])
+                if position and position.side == 'long':
+                    remaining_contracts = abs(position.contracts)
                     
                     logger.warning("🔄 SELLING REMAINDER at -5 from peak")
                     logger.info(f"   Selling: {remaining_contracts:.6f} ETH (remainder)")
@@ -385,7 +369,7 @@ class StrategyManager:
             position = self.exchange_client.get_position(state.symbol)
             
             if position:
-                long_contracts = abs(position['size'])
+                long_contracts = abs(position.contracts)
                 long_value = long_contracts * current_price
                 
                 logger.info("📊 PORTFOLIO STATUS:")
@@ -489,7 +473,7 @@ class StrategyManager:
                 return
             
             current_price = self.exchange_client.get_current_price(symbol)
-            current_notional_value = abs(position['size']) * current_price
+            current_notional_value = abs(position.contracts) * current_price
             current_margin_value = current_notional_value / Decimal(state.leverage)
             
             # Calculate compound growth
@@ -526,7 +510,7 @@ class StrategyManager:
             state.unit_tracker.entry_price = current_price
             state.position_fragment_usd = Decimal("0")
             state.position_fragment_eth = Decimal("0")
-            state.initial_eth_amount = abs(position['size'])
+            state.initial_eth_amount = abs(position.contracts)
             
             # Set phase to ADVANCE
             state.unit_tracker.phase = Phase.ADVANCE
@@ -573,12 +557,12 @@ class StrategyManager:
     async def _start_monitoring_preparation(self, symbol: str, unit_size_usd: Decimal, state: StrategyState):
         """STEP 1: Connect WebSocket and prepare monitoring"""
         try:
-            logger.info("🔗 Connecting to WebSocket...")
+            logger.info("[WEBSOCKET] Connecting to WebSocket...")
             
             # Connect WebSocket if not connected
             if not self.ws_client.is_connected:
                 await self.ws_client.connect()
-                logger.success("✅ WebSocket connected")
+                logger.success("[OK] WebSocket connected")
             
             # Extract coin from symbol  
             coin = symbol.split("/")[0]  # ETH from ETH/USDC:USDC
@@ -591,7 +575,7 @@ class StrategyManager:
                 price_callback=None  # No callback yet - we'll add it after trade
             )
             
-            logger.success(f"✅ Subscribed to {coin} price feed")
+            logger.success(f"[OK] Subscribed to {coin} price feed")
             logger.info("WebSocket ready - waiting for trade execution...")
             
         except Exception as e:
@@ -650,8 +634,8 @@ class StrategyManager:
             "units_from_valley": state.unit_tracker.get_units_from_valley(),
             "position": {
                 "has_position": state.has_position,
-                "side": position['side'] if position else None,
-                "contracts": float(position['size']) if position else 0,
+                "side": position.side if position else None,
+                "contracts": float(position.contracts) if position else 0,
                 "pnl": float(position['unrealized_pnl']) if position else 0
             },
             "allocation": {
@@ -690,7 +674,7 @@ class StrategyManager:
             try:
                 position = self.exchange_client.get_position(symbol)
                 if position:
-                    remaining_eth = abs(position['size'])
+                    remaining_eth = abs(position.contracts)
                     close_result = await self.exchange_client.sell_long_eth(
                         symbol=symbol,
                         eth_amount=remaining_eth,

@@ -16,13 +16,13 @@ class Settings(BaseSettings):
     
     # HyperLiquid API Configuration
     hyperliquid_wallet_key: str
-    hyperliquid_private_key: str
+    HYPERLIQUID_TESTNET_PRIVATE_KEY: str
     hyperliquid_testnet: bool = True
     hyperliquid_base_url: str = "https://api.hyperliquid-testnet.xyz"
     
     # HyperLiquid Sub-Wallet Configuration
-    hyperliquid_testnet_subwallet_long: Optional[str] = None
-    hyperliquid_testnet_subwallet_long_private: Optional[str] = None
+    HYPERLIQUID_TESTNET_SUB_WALLET_LONG: Optional[str] = None
+    HYPERLIQUID_TESTNET_SUB_WALLET_LONG_private: Optional[str] = None
     
     # WebSocket Configuration
     hyperliquid_ws_url: str = "wss://api.hyperliquid-testnet.xyz/ws"
@@ -57,15 +57,15 @@ settings = Settings()
 def get_long_subwallet_credentials(testnet: bool = True):
     """Get the appropriate sub-wallet credentials for long positions"""
     if testnet:
-        wallet_key = (settings.hyperliquid_testnet_subwallet_long 
-                     if settings.hyperliquid_testnet_subwallet_long 
+        wallet_key = (settings.HYPERLIQUID_TESTNET_SUB_WALLET_LONG 
+                     if settings.HYPERLIQUID_TESTNET_SUB_WALLET_LONG 
                      else settings.hyperliquid_wallet_key)
-        private_key = (settings.hyperliquid_testnet_subwallet_long_private 
-                      if settings.hyperliquid_testnet_subwallet_long_private 
-                      else settings.hyperliquid_private_key)
+        private_key = (settings.HYPERLIQUID_TESTNET_SUB_WALLET_LONG_private 
+                      if settings.HYPERLIQUID_TESTNET_SUB_WALLET_LONG_private 
+                      else settings.HYPERLIQUID_TESTNET_PRIVATE_KEY)
     else:
         # For mainnet, fall back to main wallet for now
         wallet_key = settings.hyperliquid_wallet_key
-        private_key = settings.hyperliquid_private_key
+        private_key = settings.HYPERLIQUID_TESTNET_PRIVATE_KEY
     
     return wallet_key, private_key

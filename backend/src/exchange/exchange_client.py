@@ -30,7 +30,7 @@ class HyperliquidExchangeClient:
         try:
             # Get credentials from settings
             wallet_address = settings.hyperliquid_wallet_key
-            private_key = settings.hyperliquid_private_key
+            private_key = settings.HYPERLIQUID_TESTNET_PRIVATE_KEY
             
             if not wallet_address or not private_key:
                 raise ValueError("Wallet address and private key are required")

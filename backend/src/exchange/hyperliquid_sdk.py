@@ -5,7 +5,7 @@ from eth_account.signers.local import LocalAccount
 from eth_account.messages import encode_defunct
 from eth_utils import keccak, to_bytes
 
-class HyperliquidSDK:
+class HyperliquidCustomSDK:
     def __init__(self, api_key: str, api_secret: str, base_url: str = "https://api.hyperliquid-testnet.xyz"):
         self.base_url = base_url
         self.account: LocalAccount = Account.from_key(api_secret)

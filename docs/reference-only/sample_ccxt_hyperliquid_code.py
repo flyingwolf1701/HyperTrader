@@ -364,7 +364,7 @@ if __name__ == "__main__":
         # 1. Initialize Client
         # ==========================================
         wallet_address = os.getenv("HYPERLIQUID_WALLET_ADDRESS")
-        private_key = os.getenv("HYPERLIQUID_PRIVATE_KEY")
+        private_key = os.getenv("HYPERLIQUID_TESTNET_PRIVATE_KEY")
         client = HyperliquidClient(wallet_address, private_key)
 
         # ==========================================

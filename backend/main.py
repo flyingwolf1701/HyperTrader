@@ -314,12 +314,12 @@ def check_positions():
         base_url = "https://api.hyperliquid-testnet.xyz" if settings.hyperliquid_testnet else "https://api.hyperliquid.xyz"
         
         # Use sub-wallet credentials if available, otherwise fall back to main wallet
-        wallet_key = (settings.hyperliquid_testnet_subwallet_long 
-                     if settings.hyperliquid_testnet_subwallet_long 
+        wallet_key = (settings.HYPERLIQUID_TESTNET_SUB_WALLET_LONG 
+                     if settings.HYPERLIQUID_TESTNET_SUB_WALLET_LONG 
                      else settings.hyperliquid_wallet_key)
-        private_key = (settings.hyperliquid_testnet_subwallet_long_private 
-                      if settings.hyperliquid_testnet_subwallet_long_private 
-                      else settings.hyperliquid_private_key)
+        private_key = (settings.HYPERLIQUID_TESTNET_SUB_WALLET_LONG_private 
+                      if settings.HYPERLIQUID_TESTNET_SUB_WALLET_LONG_private 
+                      else settings.HYPERLIQUID_TESTNET_PRIVATE_KEY)
         
         exchange = HyperliquidSDK(
             api_key=wallet_key,
@@ -367,12 +367,12 @@ def close_position(symbol: str):
         base_url = "https://api.hyperliquid-testnet.xyz" if settings.hyperliquid_testnet else "https://api.hyperliquid.xyz"
         
         # Use sub-wallet credentials if available, otherwise fall back to main wallet
-        wallet_key = (settings.hyperliquid_testnet_subwallet_long 
-                     if settings.hyperliquid_testnet_subwallet_long 
+        wallet_key = (settings.HYPERLIQUID_TESTNET_SUB_WALLET_LONG 
+                     if settings.HYPERLIQUID_TESTNET_SUB_WALLET_LONG 
                      else settings.hyperliquid_wallet_key)
-        private_key = (settings.hyperliquid_testnet_subwallet_long_private 
-                      if settings.hyperliquid_testnet_subwallet_long_private 
-                      else settings.hyperliquid_private_key)
+        private_key = (settings.HYPERLIQUID_TESTNET_SUB_WALLET_LONG_private 
+                      if settings.HYPERLIQUID_TESTNET_SUB_WALLET_LONG_private 
+                      else settings.HYPERLIQUID_TESTNET_PRIVATE_KEY)
         
         exchange = HyperliquidSDK(
             api_key=wallet_key,
