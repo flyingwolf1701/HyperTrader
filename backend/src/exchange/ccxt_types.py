@@ -143,3 +143,6 @@ class OrderResult:
     usd_received: Optional[Decimal] = None
     usd_cost: Optional[Decimal] = None
     status: Optional[str] = None
+    leverage: Optional[int] = None
+    margin_used: Optional[Decimal] = None
+    info: Optional[Dict[str, Any]] = None
