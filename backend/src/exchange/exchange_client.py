@@ -1,6 +1,5 @@
 """
 CCXT Exchange Client for Hyperliquid
-Stage 3: Exchange Integration
 """
 import ccxt
 from decimal import Decimal
@@ -8,10 +7,7 @@ from typing import Dict, List, Optional
 from loguru import logger
 from .ccxt_types import Market, Balance, Position, Order, OrderResult
 
-try:
-    from ..utils import settings
-except ImportError:
-    from utils.config import settings
+from src.utils import settings
 
 
 class HyperliquidExchangeClient:

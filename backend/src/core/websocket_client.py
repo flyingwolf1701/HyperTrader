@@ -10,12 +10,8 @@ from datetime import datetime
 from typing import Optional
 from loguru import logger
 
-try:
-    from .models import UnitTracker
-    from ..utils import settings
-except ImportError:
-    from core.models import UnitTracker
-    from utils.config import settings
+from src.core.models import UnitTracker
+from src.utils import settings
 
 
 class HyperliquidWebSocketClient:
