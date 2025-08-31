@@ -1,480 +1,635 @@
 """
-CCXT Exchange Client for Hyperliquid
+Native Hyperliquid Exchange Client - Complete Implementation
+Replaces CCXT with direct Hyperliquid API integration
+Based on official Hyperliquid Python SDK patterns
 """
-import ccxt
+import json
+import time
+import hashlib
+import requests
 from decimal import Decimal
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any, Union
+from dataclasses import dataclass
+from enum import Enum
 from loguru import logger
-from .ccxt_types import Market, Balance, Position, Order, OrderResult
 
-from src.utils import settings
+import eth_account
+from eth_account import Account
+from eth_account.signers.local import LocalAccount
+from eth_account.messages import encode_typed_data
 
+
+# ============================================================================
+# DATA TYPES (replaces ccxt_types.py)
+# ============================================================================
+
+class OrderSide(Enum):
+    BUY = "buy"
+    SELL = "sell"
+
+class OrderType(Enum):
+    MARKET = "market"
+    LIMIT = "limit"
+
+class TimeInForce(Enum):
+    GTC = "Gtc"  # Good Till Canceled
+    IOC = "Ioc"  # Immediate or Cancel
+    ALO = "Alo"  # Add Liquidity Only (Post Only)
+
+
+@dataclass
+class Balance:
+    """Account balance information"""
+    currency: str
+    available: Decimal
+    total: Decimal
+    
+    @property
+    def free(self) -> Decimal:
+        return self.available
+    
+    @property
+    def used(self) -> Decimal:
+        return self.total - self.available
+
+
+@dataclass
+class Position:
+    """Trading position information"""
+    symbol: str
+    side: str  # "long" or "short" 
+    size: Decimal  # Position size in contracts
+    entry_price: Decimal
+    mark_price: Decimal
+    unrealized_pnl: Decimal
+    margin_used: Decimal
+    
+    # Compatibility aliases for existing code
+    @property
+    def contracts(self) -> Decimal:
+        return self.size
+    
+    @property
+    def entryPrice(self) -> Decimal:
+        return self.entry_price
+    
+    @property
+    def unrealizedPnl(self) -> Decimal:
+        return self.unrealized_pnl
+
+
+@dataclass
+class OrderResult:
+    """Result of order execution"""
+    id: str = ""
+    type: str = ""
+    price: Decimal = Decimal("0")
+    coin_amount: Optional[Decimal] = None
+    usd_amount: Optional[Decimal] = None
+    usd_received: Optional[Decimal] = None
+    usd_cost: Optional[Decimal] = None
+    status: Optional[str] = None
+    leverage: Optional[int] = None
+    margin_used: Optional[Decimal] = None
+    info: Optional[Dict] = None
+
+
+# ============================================================================
+# SIGNING UTILITIES (replaces signing.py)
+# ============================================================================
+
+def get_timestamp_ms() -> int:
+    """Get current timestamp in milliseconds"""
+    return int(time.time() * 1000)
+
+
+def sign_l1_action(
+    wallet: LocalAccount,
+    action: Dict[str, Any],
+    active_pool: Optional[str],
+    nonce: int,
+    expires_after: Optional[int],
+    is_mainnet: bool = False
+) -> str:
+    """Sign L1 action using EIP-712"""
+    
+    # Create the structured data for signing
+    structured_data = {
+        "types": {
+            "EIP712Domain": [
+                {"name": "name", "type": "string"},
+                {"name": "version", "type": "string"},
+                {"name": "chainId", "type": "uint256"},
+                {"name": "verifyingContract", "type": "address"}
+            ],
+            "HyperliquidTransaction:UserAction": [
+                {"name": "hyperliquidChain", "type": "string"},
+                {"name": "signatureChainId", "type": "uint256"},
+                {"name": "action", "type": "string"}
+            ]
+        },
+        "primaryType": "HyperliquidTransaction:UserAction",
+        "domain": {
+            "name": "HyperliquidSignTransaction", 
+            "version": "1",
+            "chainId": 42161,
+            "verifyingContract": "0x0000000000000000000000000000000000000000"
+        },
+        "message": {
+            "hyperliquidChain": "Mainnet" if is_mainnet else "Testnet",
+            "signatureChainId": 42161,
+            "action": json.dumps({
+                "action": action,
+                "nonce": nonce,
+                **({"expiresAfter": expires_after} if expires_after else {})
+            }, separators=(',', ':'))
+        }
+    }
+    
+    # Sign the structured data
+    encoded_data = encode_typed_data(structured_data)
+    signature = wallet.sign_message(encoded_data)
+    return signature.signature.hex()
+
+
+# ============================================================================
+# MAIN HYPERLIQUID CLIENT
+# ============================================================================
 
 class HyperliquidExchangeClient:
-    """CCXT client for interacting with Hyperliquid exchange"""
+    """
+    Native Hyperliquid Exchange Client
+    Replaces CCXT implementation with direct API calls
+    """
     
     def __init__(self, testnet: bool = True):
-        """
-        Initialize Hyperliquid exchange client.
-        
-        Args:
-            testnet: Whether to use testnet (True) or mainnet (False)
-        """
+        """Initialize client from settings"""
         self.testnet = testnet
-        self.exchange: Optional[ccxt.Exchange] = None
-        self.markets: Dict[str, Market] = {}
-        self._initialize_exchange()
+        self.base_url = (
+            "https://api.hyperliquid-testnet.xyz" if testnet 
+            else "https://api.hyperliquid.xyz"
+        )
         
-    def _initialize_exchange(self):
-        """Initialize CCXT exchange connection"""
+        # Get credentials from settings
         try:
-            # Get credentials from settings
-            wallet_address = settings.hyperliquid_wallet_key
-            private_key = settings.HYPERLIQUID_TESTNET_PRIVATE_KEY
+            from src.utils import settings
             
-            if not wallet_address or not private_key:
-                raise ValueError("Wallet address and private key are required")
+            self.wallet_address = settings.hyperliquid_wallet_key
+            private_key = settings.hyperliquid_private_key
+        except ImportError:
+            # Fallback for standalone usage
+            import os
+            self.wallet_address = os.getenv("HYPERLIQUID_WALLET_KEY")
+            private_key = os.getenv("HYPERLIQUID_PRIVATE_KEY")
+        
+        if not self.wallet_address or not private_key:
+            raise ValueError("Hyperliquid credentials not configured")
+        
+        # Initialize wallet for signing
+        self.wallet: LocalAccount = Account.from_key(private_key)
+        
+        # Verify wallet address matches
+        if self.wallet.address.lower() != self.wallet_address.lower():
+            raise ValueError(
+                f"Private key address {self.wallet.address.lower()} "
+                f"does not match configured address {self.wallet_address.lower()}"
+            )
+        
+        # Initialize HTTP session
+        self.session = requests.Session()
+        self.session.headers.update({"Content-Type": "application/json"})
+        
+        # Cache for market data
+        self._meta_cache = {}
+        self._meta_cache_time = 0
+        
+        logger.info(f"Initialized Hyperliquid {'testnet' if testnet else 'mainnet'} client")
+    
+    def _post_request(self, endpoint: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Make POST request to Hyperliquid API"""
+        url = f"{self.base_url}{endpoint}"
+        
+        try:
+            response = self.session.post(url, json=payload)
             
-            # Initialize exchange
-            self.exchange = ccxt.hyperliquid({
-                "walletAddress": wallet_address,
-                "privateKey": private_key,
-                "enableRateLimit": True,
-            })
+            if response.status_code != 200:
+                raise Exception(f"HTTP {response.status_code}: {response.text}")
             
-            # Set testnet if needed
-            if self.testnet:
-                self.exchange.set_sandbox_mode(True)
-            
-            # Load markets
-            self._load_markets()
-            
-            logger.info(f"Initialized Hyperliquid {'testnet' if self.testnet else 'mainnet'} exchange client")
+            return response.json()
             
         except Exception as e:
-            logger.error(f"Failed to initialize exchange: {e}")
+            logger.error(f"Request failed: {e}")
             raise
     
-    def _load_markets(self):
-        """Load market data from the exchange"""
-        try:
-            if not self.exchange:
-                raise ValueError("Exchange not initialized")
-            raw_markets = self.exchange.load_markets()
-            self.markets = {}
-            for symbol, market_data in raw_markets.items():
-                self.markets[symbol] = Market.from_ccxt_market(market_data)
-            logger.info(f"Loaded {len(self.markets)} markets")
-        except Exception as e:
-            logger.error(f"Failed to load markets: {e}")
-            raise
-    
-    def get_market(self, symbol: str) -> Optional[Market]:
-        """
-        Get market information for a specific symbol.
+    def _get_meta(self) -> Dict[str, Any]:
+        """Get market metadata with caching"""
+        current_time = time.time()
         
-        Args:
-            symbol: Trading pair symbol (e.g., "ETH/USDC:USDC")
-            
-        Returns:
-            Market object or None if not found
-        """
-        return self.markets.get(symbol)
+        # Cache for 30 seconds
+        if current_time - self._meta_cache_time < 30 and self._meta_cache:
+            return self._meta_cache
+        
+        payload = {"type": "meta"}
+        result = self._post_request("/info", payload)
+        
+        self._meta_cache = result
+        self._meta_cache_time = current_time
+        
+        return result
+    
+    def _symbol_to_asset_id(self, symbol: str) -> int:
+        """Convert symbol to Hyperliquid asset ID"""
+        base_currency = symbol.split("/")[0] if "/" in symbol else symbol
+        
+        meta = self._get_meta()
+        universe = meta.get("universe", [])
+        
+        for i, asset in enumerate(universe):
+            if asset.get("name") == base_currency:
+                return i
+        
+        raise ValueError(f"Asset {base_currency} not found")
+    
+    # ========================================================================
+    # ACCOUNT & POSITION METHODS (replaces CCXT methods)
+    # ========================================================================
     
     def get_balance(self, currency: str = "USDC") -> Balance:
-        """
-        Fetch account balance for a specific currency.
+        """Get account balance - replaces fetch_balance()"""
+        payload = {
+            "type": "clearinghouseState",
+            "user": self.wallet_address
+        }
         
-        Args:
-            currency: Currency to fetch balance for (default: USDC)
-            
-        Returns:
-            Balance object with free, used, and total amounts
-        """
-        try:
-            if not self.exchange:
-                raise ValueError("Exchange not initialized")
-            balance = self.exchange.fetch_balance()
-            
-            if currency in balance:
-                return Balance.from_ccxt_balance(currency, balance[currency])
-            else:
-                return Balance.empty(currency)
-                
-        except Exception as e:
-            logger.error(f"Failed to fetch balance: {e}")
-            raise
+        result = self._post_request("/info", payload)
+        
+        withdrawable = Decimal(str(result.get("withdrawable", "0")))
+        margin_summary = result.get("marginSummary", {})
+        total_margin_used = Decimal(str(margin_summary.get("totalMarginUsed", "0")))
+        
+        return Balance(
+            currency=currency,
+            available=withdrawable,
+            total=withdrawable + total_margin_used
+        )
     
     def get_position(self, symbol: str) -> Optional[Position]:
-        """
-        Fetch position information for a specific symbol.
+        """Get position for symbol - replaces fetch_positions()"""
+        payload = {
+            "type": "clearinghouseState",
+            "user": self.wallet_address
+        }
         
-        Args:
-            symbol: Trading pair (e.g., "ETH/USDC:USDC")
+        result = self._post_request("/info", payload)
+        
+        # Get asset info
+        meta = self._get_meta()
+        universe = meta.get("universe", [])
+        
+        asset_positions = result.get("assetPositions", [])
+        
+        for pos_data in asset_positions:
+            position_info = pos_data.get("position", {})
+            szi = position_info.get("szi", "0")
             
-        Returns:
-            Position object or None if no position
-        """
-        try:
-            if not self.exchange:
-                raise ValueError("Exchange not initialized")
-            positions = self.exchange.fetch_positions([symbol])
+            if not szi or szi == "0":
+                continue
             
-            # Filter for active positions (contracts != 0)
-            active_positions = [pos for pos in positions if float(pos.get("contracts", 0)) != 0]
+            # Get asset info
+            asset_idx = pos_data.get("assetIdx", 0)
+            if asset_idx < len(universe):
+                asset_name = universe[asset_idx].get("name", f"ASSET_{asset_idx}")
+                pos_symbol = f"{asset_name}/USDC:USDC"
+            else:
+                pos_symbol = f"ASSET_{asset_idx}/USDC:USDC"
             
-            if active_positions:
-                return Position.from_ccxt_position(active_positions[0])
+            # Check if this is the requested symbol
+            if pos_symbol != symbol:
+                continue
             
-            return None
+            # Extract position data
+            size = Decimal(str(abs(float(szi))))
+            side = "long" if float(szi) > 0 else "short"
+            entry_price = Decimal(str(position_info.get("entryPx", "0")))
+            unrealized_pnl = Decimal(str(position_info.get("unrealizedPnl", "0")))
+            margin_used = Decimal(str(position_info.get("marginUsed", "0")))
             
-        except Exception as e:
-            logger.error(f"Failed to fetch position for {symbol}: {e}")
-            raise
+            # Get current mark price
+            mark_price = self.get_current_price(symbol)
+            
+            return Position(
+                symbol=symbol,
+                side=side,
+                size=size,
+                entry_price=entry_price,
+                mark_price=mark_price,
+                unrealized_pnl=unrealized_pnl,
+                margin_used=margin_used
+            )
+        
+        return None
     
     def get_current_price(self, symbol: str) -> Decimal:
-        """
-        Get current market price for a symbol.
+        """Get current price - replaces fetch_ticker()"""
+        meta = self._get_meta()
+        universe = meta.get("universe", [])
         
-        Args:
-            symbol: Trading pair (e.g., "ETH/USDC:USDC")
-            
-        Returns:
-            Current market price as Decimal
-        """
-        try:
-            if symbol in self.markets:
-                market = self.markets[symbol]
-                if market.info and "midPx" in market.info:
-                    return Decimal(str(market.info["midPx"]))
-            
-            # Fallback to ticker
-            if not self.exchange:
-                raise ValueError("Exchange not initialized")
-            ticker = self.exchange.fetch_ticker(symbol)
-            return Decimal(str(ticker["last"]))
-            
-        except Exception as e:
-            logger.error(f"Failed to get price for {symbol}: {e}")
-            raise
+        base_currency = symbol.split("/")[0] if "/" in symbol else symbol
+        
+        # Get mark price from universe
+        for asset in universe:
+            if asset.get("name") == base_currency:
+                mark_px = asset.get("markPx")
+                if mark_px:
+                    return Decimal(str(mark_px))
+        
+        raise ValueError(f"Could not get price for {symbol}")
     
-    def set_leverage(self, symbol: str, leverage: Optional[int]) -> bool:
-        """
-        Set leverage for a symbol.
+    # ========================================================================
+    # ORDER EXECUTION METHODS (replaces CCXT create_order)
+    # ========================================================================
+    
+    def place_order(
+        self,
+        symbol: str,
+        side: str,
+        size: Decimal,
+        order_type: str = "limit",
+        price: Optional[Decimal] = None,
+        reduce_only: bool = False
+    ) -> OrderResult:
+        """Place order - replaces create_order()"""
         
-        Args:
-            symbol: Trading pair
-            leverage: Leverage multiplier
-            
-        Returns:
-            True if successful
-        """
-        try:
-            if leverage is None:
-                return False
-            if self.exchange:
-                self.exchange.set_leverage(leverage, symbol)
+        # Get asset ID
+        asset_id = self._symbol_to_asset_id(symbol)
+        
+        # Handle market orders
+        if order_type.lower() == "market" and not price:
+            current_price = self.get_current_price(symbol)
+            buffer = current_price * Decimal("0.01")  # 1% buffer
+            if side.lower() == "buy":
+                price = current_price + buffer
             else:
-                return False
-            logger.info(f"Set leverage to {leverage}x for {symbol}")
-            return True
+                price = current_price - buffer
+        
+        if not price:
+            raise ValueError("Price is required")
+        
+        # Create order wire
+        order_wire = {
+            "a": asset_id,
+            "b": side.lower() == "buy",
+            "p": str(price),
+            "s": str(size),
+            "r": reduce_only,
+            "t": {
+                "limit": {
+                    "tif": "Ioc" if order_type.lower() == "market" else "Gtc"
+                }
+            }
+        }
+        
+        # Sign the action
+        nonce = get_timestamp_ms()
+        action = {
+            "type": "order",
+            "orders": [order_wire]
+        }
+        
+        signature = sign_l1_action(
+            self.wallet,
+            action,
+            None,
+            nonce,
+            None,
+            not self.testnet
+        )
+        
+        # Make request
+        payload = {
+            "action": action,
+            "nonce": nonce,
+            "signature": signature
+        }
+        
+        result = self._post_request("/exchange", payload)
+        
+        # Parse response
+        status_data = result.get("response", {}).get("data", {})
+        statuses = status_data.get("statuses", [])
+        
+        if not statuses:
+            return OrderResult(status="rejected", info=result)
+        
+        status = statuses[0]
+        
+        if "filled" in status:
+            filled_data = status["filled"]
+            return OrderResult(
+                id=str(filled_data.get("oid", "")),
+                type="filled",
+                price=Decimal(str(filled_data.get("avgPx", "0"))),
+                coin_amount=size,
+                usd_amount=size * price if side.lower() == "buy" else None,
+                usd_received=size * price if side.lower() == "sell" else None,
+                status="filled",
+                info=result
+            )
+        elif "resting" in status:
+            return OrderResult(
+                id=str(status["resting"].get("oid", "")),
+                type="open",
+                price=price,
+                status="open",
+                info=result
+            )
+        else:
+            return OrderResult(status="rejected", info=result)
+    
+    # ========================================================================
+    # STRATEGY-SPECIFIC METHODS (your USD buy/coin sell pattern)
+    # ========================================================================
+    
+    async def buy_long_usd(
+        self, 
+        symbol: str, 
+        usd_amount: Decimal, 
+        leverage: Optional[int] = None
+    ) -> OrderResult:
+        """Buy long position using USD amount"""
+        if leverage:
+            self.set_leverage(symbol, leverage)
+        
+        current_price = self.get_current_price(symbol)
+        coin_size = usd_amount / current_price
+        
+        # Extract coin name for logging
+        coin_name = symbol.split("/")[0] if "/" in symbol else symbol
+        
+        logger.info(f"🟢 BUYING LONG: ${usd_amount} → {coin_size:.6f} {coin_name} @ ${current_price}")
+        
+        result = self.place_order(
+            symbol=symbol,
+            side="buy",
+            size=coin_size,
+            order_type="market",
+            reduce_only=False
+        )
+        
+        # Add amounts to result
+        result.usd_amount = usd_amount
+        result.coin_amount = coin_size
+        result.leverage = leverage
+        result.margin_used = usd_amount / Decimal(leverage) if leverage else None
+        
+        return result
+    
+    async def open_short_usd(
+        self, 
+        symbol: str, 
+        usd_amount: Decimal, 
+        leverage: Optional[int] = None
+    ) -> OrderResult:
+        """Open short position using USD amount"""
+        if leverage:
+            self.set_leverage(symbol, leverage)
+        
+        current_price = self.get_current_price(symbol)
+        coin_size = usd_amount / current_price
+        
+        # Extract coin name for logging
+        coin_name = symbol.split("/")[0] if "/" in symbol else symbol
+        
+        logger.info(f"🔴 OPENING SHORT: ${usd_amount} → {coin_size:.6f} {coin_name} @ ${current_price}")
+        
+        result = self.place_order(
+            symbol=symbol,
+            side="sell",
+            size=coin_size,
+            order_type="market",
+            reduce_only=False
+        )
+        
+        result.usd_amount = usd_amount
+        result.coin_amount = coin_size
+        result.leverage = leverage
+        result.margin_used = usd_amount / Decimal(leverage) if leverage else None
+        
+        return result
+    
+    async def sell_long_coin(
+        self, 
+        symbol: str, 
+        coin_amount: Decimal, 
+        reduce_only: bool = True
+    ) -> OrderResult:
+        """Sell long position using coin amount"""
+        current_price = self.get_current_price(symbol)
+        usd_value = coin_amount * current_price
+        
+        # Extract coin name for logging
+        coin_name = symbol.split("/")[0] if "/" in symbol else symbol
+        
+        logger.info(f"🟡 SELLING LONG: {coin_amount:.6f} {coin_name} → ${usd_value:.2f} @ ${current_price}")
+        
+        result = self.place_order(
+            symbol=symbol,
+            side="sell", 
+            size=coin_amount,
+            order_type="market",
+            reduce_only=reduce_only
+        )
+        
+        result.coin_amount = coin_amount
+        result.usd_received = usd_value
+        
+        return result
+    
+    async def close_short_coin(
+        self, 
+        symbol: str, 
+        coin_amount: Decimal
+    ) -> OrderResult:
+        """Close short position using coin amount"""
+        current_price = self.get_current_price(symbol)
+        usd_cost = coin_amount * current_price
+        
+        # Extract coin name for logging
+        coin_name = symbol.split("/")[0] if "/" in symbol else symbol
+        
+        logger.info(f"🟢 CLOSING SHORT: {coin_amount:.6f} {coin_name} → ${usd_cost:.2f} @ ${current_price}")
+        
+        result = self.place_order(
+            symbol=symbol,
+            side="buy",
+            size=coin_amount,
+            order_type="market",
+            reduce_only=True
+        )
+        
+        result.coin_amount = coin_amount
+        result.usd_cost = usd_cost
+        
+        return result
+    
+    def set_leverage(self, symbol: str, leverage: int) -> bool:
+        """Set leverage for symbol"""
+        try:
+            asset_id = self._symbol_to_asset_id(symbol)
+            
+            action = {
+                "type": "updateLeverage",
+                "asset": asset_id,
+                "isCross": True,
+                "leverage": leverage
+            }
+            
+            nonce = get_timestamp_ms()
+            signature = sign_l1_action(
+                self.wallet,
+                action,
+                None,
+                nonce,
+                None,
+                not self.testnet
+            )
+            
+            payload = {
+                "action": action,
+                "nonce": nonce,
+                "signature": signature
+            }
+            
+            result = self._post_request("/exchange", payload)
+            logger.info(f"Set leverage {leverage}x for {symbol}")
+            
+            return "success" in result.get("status", "").lower()
+            
         except Exception as e:
             logger.error(f"Failed to set leverage: {e}")
             return False
     
-    def place_market_order(
-        self,
-        symbol: str,
-        side: str,
-        amount: Decimal,
-        reduce_only: bool = False
-    ) -> Order:
-        """
-        Place a market order.
+    def close_position(self, symbol: str) -> Optional[OrderResult]:
+        """Close entire position"""
+        position = self.get_position(symbol)
         
-        Args:
-            symbol: Trading pair (e.g., "ETH/USDC:USDC")
-            side: "buy" or "sell"
-            amount: Order size in contracts as Decimal
-            reduce_only: If True, order will only reduce position
-            
-        Returns:
-            Order execution details
-        """
-        try:
-            # Convert Decimal to float for CCXT
-            amount_float = float(amount)
-            
-            # Format amount to exchange precision
-            if not self.exchange:
-                raise ValueError("Exchange not initialized")
-            formatted_amount = float(self.exchange.amount_to_precision(symbol, amount_float))
-            
-            # Get current price for the order
-            current_price = float(self.get_current_price(symbol))
-            if not self.exchange:
-                raise ValueError("Exchange not initialized")
-            formatted_price = float(self.exchange.price_to_precision(symbol, current_price))
-            
-            # Prepare parameters
-            params = {"reduceOnly": reduce_only}
-            
-            logger.info(
-                f"Placing market {side} order: {formatted_amount} {symbol} "
-                f"at ~${formatted_price} (reduce_only={reduce_only})"
-            )
-            
-            # Place the order
-            if not self.exchange:
-                raise ValueError("Exchange not initialized")
-            order = self.exchange.create_order(
-                symbol=symbol,
-                type="market",
-                side=side,
-                amount=formatted_amount,
-                price=formatted_price,
-                params=params
-            )
-            
-            logger.info(f"Order placed successfully: {order['id']}")
-            
-            return Order.from_ccxt_order(order)
-            
-        except Exception as e:
-            logger.error(f"Failed to place market order: {e}")
-            raise
-    
-    
-    def close_position(self, symbol: str) -> Optional[Order]:
-        """
-        Close an existing position.
+        if not position:
+            logger.info(f"No position to close for {symbol}")
+            return None
         
-        Args:
-            symbol: Trading pair
-            
-        Returns:
-            Order details if position was closed, None if no position
-        """
-        try:
-            position = self.get_position(symbol)
-            
-            if not position:
-                logger.info(f"No position to close for {symbol}")
-                return None
-            
-            # Determine close side (opposite of position side)
-            close_side = "sell" if position.side == "long" else "buy"
-            amount = abs(position.contracts)
-            
-            logger.info(f"Closing {position.side} position: {amount} {symbol}")
-            
-            # Place reduce-only order to close
-            return self.place_market_order(
-                symbol=symbol,
-                side=close_side,
-                amount=amount,
-                reduce_only=True
-            )
-            
-        except Exception as e:
-            logger.error(f"Failed to close position: {e}")
-            raise
-    
-    # ================================================================================
-    # CORRECTED METHODS: USD Buy, ETH Sell Pattern for HyperTrader Strategy
-    # ================================================================================
-    
-    async def buy_long_usd(self, symbol: str, usd_amount: Decimal, leverage: int = 25) -> OrderResult:
-        """
-        CORRECTED: Buy long position using USD amount
-        Perfect for: Initial entries, recovery purchases, position scaling
-        """
-        try:
-            if leverage:
-                self.set_leverage(symbol, leverage)
-            
-            current_price = self.get_current_price(symbol)
-            margin_needed = usd_amount / Decimal(leverage)
-            eth_amount = usd_amount / current_price
-            
-            logger.info(f"🟢 BUYING LONG (USD-based):")
-            logger.info(f"  USD Amount: ${usd_amount}")
-            logger.info(f"  Current Price: ${current_price}")
-            logger.info(f"  ETH Amount: {eth_amount:.6f} ETH")
-            logger.info(f"  Leverage: {leverage}x")
-            logger.info(f"  Margin Needed: ${margin_needed}")
-            
-            # Use create_order for market orders (Hyperliquid requires price)
-            # CRITICAL: Use reduceOnly: False to ensure we open a NEW long position
-            if not self.exchange:
-                raise ValueError("Exchange not initialized")
-            order = self.exchange.create_order(
-                symbol=symbol,
-                type='market',
-                side='buy',
-                amount=float(eth_amount),  # ETH amount to buy
-                price=float(current_price),  # Pass price directly for Hyperliquid
-                params={'reduceOnly': False}  # CRITICAL: This opens new long position instead of reducing short
-            )
-            
-            logger.success("✅ Long position opened:")
-            logger.success(f"   ${usd_amount} → {eth_amount:.6f} ETH")
-            
-            return OrderResult(
-                id=order.get("id", ""),
-                type="buy_long_usd",
-                usd_amount=usd_amount,
-                eth_amount=eth_amount,
-                price=current_price,
-                leverage=leverage,
-                margin_used=margin_needed,
-                status=order.get("status"),
-                info=order.get("info", {})
-            )
-            
-        except Exception as e:
-            logger.error(f"Failed to buy long with USD: {e}")
-            raise
-    
-    async def open_short_usd(self, symbol: str, usd_amount: Decimal, leverage: int = 25) -> OrderResult:
-        """
-        CORRECTED: Open short position using USD amount
-        Perfect for: Consistent short position sizing during retracement
-        """
-        try:
-            if leverage:
-                self.set_leverage(symbol, leverage)
-            
-            current_price = self.get_current_price(symbol)
-            margin_needed = usd_amount / Decimal(leverage)
-            eth_amount = usd_amount / current_price
-            
-            logger.info(f"🔴 OPENING SHORT (USD-based):")
-            logger.info(f"  USD Amount: ${usd_amount}")
-            logger.info(f"  Current Price: ${current_price}")
-            logger.info(f"  ETH Amount: {eth_amount:.6f} ETH")
-            logger.info(f"  Leverage: {leverage}x")
-            logger.info(f"  Margin Needed: ${margin_needed}")
-            
-            # Use create_order for market orders (Hyperliquid requires price)
-            # CRITICAL: Use reduceOnly: False to ensure we open a NEW short position
-            if not self.exchange:
-                raise ValueError("Exchange not initialized")
-            order = self.exchange.create_order(
-                symbol=symbol,
-                type='market',
-                side='sell',
-                amount=float(eth_amount),  # ETH amount to short
-                price=float(current_price),  # Pass price directly for Hyperliquid
-                params={'reduceOnly': False}  # CRITICAL: This opens new short position instead of reducing long
-            )
-            
-            logger.success("✅ Short position opened:")
-            logger.success(f"   ${usd_amount} → {eth_amount:.6f} ETH short")
-            
-            return OrderResult(
-                id=order.get("id", ""),
-                type="open_short_usd",
-                usd_amount=usd_amount,
-                eth_amount=eth_amount,
-                price=current_price,
-                leverage=leverage,
-                margin_used=margin_needed,
-                status=order.get("status"),
-                info=order.get("info", {})
-            )
-            
-        except Exception as e:
-            logger.error(f"Failed to open short with USD: {e}")
-            raise
-    
-    async def sell_long_eth(self, symbol: str, eth_amount: Decimal, reduce_only: bool = True) -> OrderResult:
-        """
-        CORRECTED: Sell long position using ETH amount
-        Perfect for: RETRACEMENT scaling - sell same ETH amount regardless of price
-        """
-        try:
-            current_price = self.get_current_price(symbol)
-            usd_value = eth_amount * current_price
-            
-            logger.info(f"🟡 SELLING LONG (ETH-based):")
-            logger.info(f"  ETH Amount: {eth_amount:.6f} ETH")
-            logger.info(f"  Current Price: ${current_price}")  
-            logger.info(f"  USD Value: ${usd_value:.2f}")
-            logger.info(f"  Reduce Only: {reduce_only}")
-            
-            # Use create_order for market orders (Hyperliquid requires price)
-            params = {'reduceOnly': reduce_only} if reduce_only else {}
-            if not self.exchange:
-                raise ValueError("Exchange not initialized")
-            order = self.exchange.create_order(
-                symbol=symbol,
-                type='market',
-                side='sell',
-                amount=float(eth_amount),  # Specific ETH amount to sell
-                price=float(current_price),  # Pass price directly for Hyperliquid
-                params=params
-            )
-            
-            logger.success("✅ Long position reduced:")
-            logger.success(f"   {eth_amount:.6f} ETH → ${usd_value:.2f}")
-            
-            return OrderResult(
-                id=order.get("id", ""),
-                type="sell_long_eth",
-                eth_amount=eth_amount,
-                usd_received=usd_value,
-                price=current_price,
-                reduce_only=reduce_only,
-                status=order.get("status"),
-                info=order.get("info", {})
-            )
-            
-        except Exception as e:
-            logger.error(f"Failed to sell long with ETH: {e}")
-            raise
-    
-    async def close_short_eth(self, symbol: str, eth_amount: Decimal) -> OrderResult:
-        """
-        CORRECTED: Close short position using ETH amount
-        Perfect for: RECOVERY phase - close whatever ETH amount the hedge fragment represents
-        """
-        try:
-            current_price = self.get_current_price(symbol)
-            usd_cost = eth_amount * current_price
-            
-            logger.info(f"🟢 CLOSING SHORT (ETH-based):")
-            logger.info(f"  ETH Amount: {eth_amount:.6f} ETH")
-            logger.info(f"  Current Price: ${current_price}")
-            logger.info(f"  USD Cost: ${usd_cost:.2f}")
-            
-            # Use create_order for market orders (Hyperliquid requires price)
-            if not self.exchange:
-                raise ValueError("Exchange not initialized")
-            order = self.exchange.create_order(
-                symbol=symbol,
-                type='market',
-                side='buy',
-                amount=float(eth_amount),  # Specific ETH amount to buy back
-                price=float(current_price),  # Pass price directly for Hyperliquid
-                params={'reduceOnly': True}
-            )
-            
-            logger.success("✅ Short position closed:")
-            logger.success(f"   {eth_amount:.6f} ETH closed for ${usd_cost:.2f}")
-            
-            return OrderResult(
-                id=order.get("id", ""),
-                type="close_short_eth",
-                eth_amount=eth_amount,
-                usd_cost=usd_cost,
-                price=current_price,
-                status=order.get("status"),
-                info=order.get("info", {})
-            )
-            
-        except Exception as e:
-            logger.error(f"Failed to close short with ETH: {e}")
-            raise
-    
+        # Determine close side
+        close_side = "sell" if position.side == "long" else "buy"
+        
+        logger.info(f"Closing {position.side} position: {position.size} {symbol}")
+        
+        return self.place_order(
+            symbol=symbol,
+            side=close_side,
+            size=position.size,
+            order_type="market",
+            reduce_only=True
+        )
 
+
+# Backward compatibility alias
+HyperliquidSDK = HyperliquidExchangeClient

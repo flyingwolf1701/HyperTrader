@@ -17,7 +17,7 @@ import argparse
 sys.path.append(str(Path(__file__).parent / "src"))
 
 from src.core import HyperliquidWebSocketClient
-from src.exchange.hyperliquid_sdk import HyperliquidSDK
+from src.exchange import HyperliquidSDK
 from src.strategy.strategy_manager import StrategyManager
 from src.utils import settings
 
