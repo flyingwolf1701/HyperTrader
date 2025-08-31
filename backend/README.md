@@ -41,7 +41,7 @@ scaling and compound growth logic.
 uv run python main.py check
 
 # Start trading strategy (testnet)
-uv run python main.py trade ETH/USDC:USDC 2500 2.5 --leverage 25
+then
 
 # Track prices with unit detection (no trading)
 uv run python main.py track --symbol ETH --unit-size 5

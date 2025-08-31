@@ -174,26 +174,23 @@ class HyperliquidExchangeClient:
         try:
             from src.utils import settings
             
+            # Use the configured wallet address
             self.wallet_address = settings.hyperliquid_wallet_key
-            private_key = settings.hyperliquid_private_key
+            private_key = settings.HYPERLIQUID_TESTNET_PRIVATE_KEY
         except ImportError:
             # Fallback for standalone usage
             import os
             self.wallet_address = os.getenv("HYPERLIQUID_WALLET_KEY")
-            private_key = os.getenv("HYPERLIQUID_PRIVATE_KEY")
+            private_key = os.getenv("HYPERLIQUID_TESTNET_PRIVATE_KEY")
         
         if not self.wallet_address or not private_key:
             raise ValueError("Hyperliquid credentials not configured")
         
-        # Initialize wallet for signing
+        # Initialize wallet for signing (but use configured address for API calls)
         self.wallet: LocalAccount = Account.from_key(private_key)
         
-        # Verify wallet address matches
-        if self.wallet.address.lower() != self.wallet_address.lower():
-            raise ValueError(
-                f"Private key address {self.wallet.address.lower()} "
-                f"does not match configured address {self.wallet_address.lower()}"
-            )
+        logger.info(f"Using wallet address: {self.wallet_address}")
+        logger.debug(f"Private key derives to: {self.wallet.address}")
         
         # Initialize HTTP session
         self.session = requests.Session()
@@ -331,17 +328,17 @@ class HyperliquidExchangeClient:
     
     def get_current_price(self, symbol: str) -> Decimal:
         """Get current price - replaces fetch_ticker()"""
-        meta = self._get_meta()
-        universe = meta.get("universe", [])
-        
         base_currency = symbol.split("/")[0] if "/" in symbol else symbol
         
-        # Get mark price from universe
-        for asset in universe:
-            if asset.get("name") == base_currency:
-                mark_px = asset.get("markPx")
-                if mark_px:
-                    return Decimal(str(mark_px))
+        # Get prices from allMids endpoint
+        payload = {"type": "allMids"}
+        result = self._post_request("/info", payload)
+        
+        # Check if the currency is in the result
+        if base_currency in result:
+            price = result.get(base_currency)
+            if price is not None:
+                return Decimal(str(price))
         
         raise ValueError(f"Could not get price for {symbol}")
     
