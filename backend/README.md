@@ -4,7 +4,8 @@
 
 HyperTrader implements an automated long-only strategy that scales positions during market volatility through four phases (ADVANCE, RETRACEMENT, DECLINE, RECOVERY) with an automatic RESET mechanism to compound profits.
 
-**Key Simplification**: This version removes all short position complexity while preserving the core retracement scaling and compound growth logic.
+**Key Simplification**: This version removes all short position complexity while preserving the core retracement 
+scaling and compound growth logic.
 
 ## Quick Start Guide
 
@@ -40,7 +41,7 @@ HyperTrader implements an automated long-only strategy that scales positions dur
 uv run python main.py check
 
 # Start trading strategy (testnet)
-uv run python main.py trade ETH/USDC:USDC 2500 5 --leverage 25
+uv run python main.py trade ETH/USDC:USDC 2500 2.5 --leverage 25
 
 # Track prices with unit detection (no trading)
 uv run python main.py track --symbol ETH --unit-size 5
