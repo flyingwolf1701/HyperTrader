@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     # HyperLiquid Sub-Wallet Configuration
     HYPERLIQUID_TESTNET_SUB_WALLET_LONG: Optional[str] = None
     HYPERLIQUID_TESTNET_SUB_WALLET_LONG_private: Optional[str] = None
+    HYPERLIQUID_TESTNET_SUBWALLET_LONG: Optional[str] = None  # Alternative naming
     
     # WebSocket Configuration
     hyperliquid_ws_url: str = "wss://api.hyperliquid-testnet.xyz/ws"
