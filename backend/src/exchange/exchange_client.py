@@ -12,8 +12,7 @@ from loguru import logger
 
 from eth_account import Account
 from eth_account.signers.local import LocalAccount
-from eth_account.messages import encode_defunct
-from web3 import Web3
+from hyperliquid.utils import signing
 
 # ============================================================================
 # DATA TYPES
@@ -106,28 +105,38 @@ class HyperliquidExchangeClient:
         try:
             from src.utils import settings
             private_key = settings.HYPERLIQUID_TESTNET_PRIVATE_KEY
-            self.master_address = settings.hyperliquid_wallet_key
+            # Create wallet from private key (this is the API key)
+            self.wallet: LocalAccount = Account.from_key(private_key)
             
-            if use_vault and hasattr(settings, 'HYPERLIQUID_TESTNET_SUB_WALLET_LONG'):
-                self.wallet_address = settings.HYPERLIQUID_TESTNET_SUB_WALLET_LONG
-                self.is_vault = True
-                logger.info("Using sub-account (vault).")
+            # Check if this is an API key setup (agent trading for main wallet)
+            # The main wallet address is configured, API key signs for it
+            self.master_address = settings.hyperliquid_wallet_key
+            self.agent_address = self.wallet.address
+            
+            # If the derived address doesn't match configured address, it's an API key
+            if self.agent_address.lower() != self.master_address.lower():
+                # API key setup: agent signs, master wallet trades
+                self.wallet_address = self.master_address
+                self.is_vault = True  # Treat as vault since agent is trading for main
+                self.vault_address = self.master_address
+                logger.info(f"Using API agent {self.agent_address[:8]}... for wallet {self.master_address[:8]}...")
             else:
+                # Direct wallet setup
                 self.wallet_address = self.master_address
                 self.is_vault = False
-                logger.info("Using master account.")
+                self.vault_address = None
+                logger.info(f"Using direct wallet: {self.wallet_address[:8]}...")
                 
         except ImportError:
             import os
             private_key = os.getenv("HYPERLIQUID_TESTNET_PRIVATE_KEY")
+            if not private_key:
+                raise ValueError("Hyperliquid private key not configured")
+            self.wallet: LocalAccount = Account.from_key(private_key)
+            # Use configured wallet address from env
             self.wallet_address = os.getenv("HYPERLIQUID_WALLET_KEY")
             self.master_address = self.wallet_address
             self.is_vault = False
-        
-        if not private_key:
-            raise ValueError("Hyperliquid private key not configured")
-        
-        self.wallet: LocalAccount = Account.from_key(private_key)
         
         self.session = requests.Session()
         self.session.headers.update({"Content-Type": "application/json"})
@@ -174,41 +183,33 @@ class HyperliquidExchangeClient:
         raise ValueError(f"Asset {base_currency} not found in metadata universe")
 
     def _sign_l1_action(self, action: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        [CORRECTED] This function now implements the official signing mechanism from the SDK.
-        """
         nonce = int(time.time() * 1000)
         
-        # The connectionId is a hash of the action object itself
-        action_hash = Web3.solidity_keccak(["string"], [json.dumps(action)])
+        # Use vaultAddress only if we're in vault mode
+        vault_address = self.vault_address if self.is_vault else None
         
-        # The agent object defines the context for the signature
-        agent = {
-            "source": "https://hyperliquid.com",
-            "connectionId": action_hash.hex(),
-            "timestamp": nonce,
-        }
+        # Use the official SDK's signing method
+        signature = signing.sign_l1_action(
+            self.wallet,
+            action,
+            vault_address,
+            nonce,
+            expires_after=None,
+            is_mainnet=(not self.testnet)
+        )
         
-        # This is the hash that must be signed
-        hash_to_sign = Web3.solidity_keccak(["string"], [json.dumps(agent)])
-        
-        # Sign the hash with the private key
-        signed_hash = self.wallet.signHash(hash_to_sign)
-        
-        signature = {
-            "r": "0x" + signed_hash.r.to_bytes(32, "big").hex(),
-            "s": "0x" + signed_hash.s.to_bytes(32, "big").hex(),
-            "v": signed_hash.v,
-        }
-
         payload = {
             "action": action,
             "nonce": nonce,
             "signature": signature
         }
-
-        if self.is_vault:
-             payload["vaultAddress"] = self.wallet_address
+        
+        # Always include the signer's address
+        payload["address"] = self.wallet.address
+        
+        # Include vaultAddress if this is an agent trading for a main wallet
+        if vault_address:
+            payload["vaultAddress"] = vault_address
 
         return payload
 
