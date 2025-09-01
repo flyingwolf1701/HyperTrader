@@ -1,7 +1,8 @@
 """Exchange integration module"""
-from .exchange_client import HyperliquidExchangeClient
+from .hyperliquid_sdk import HyperliquidClient
 
-# Backward compatibility alias
-HyperliquidSDK = HyperliquidExchangeClient
+# Backward compatibility aliases
+HyperliquidExchangeClient = HyperliquidClient
+HyperliquidSDK = HyperliquidClient
 
-__all__ = ['HyperliquidExchangeClient', 'HyperliquidSDK']
+__all__ = ['HyperliquidClient', 'HyperliquidExchangeClient', 'HyperliquidSDK']
