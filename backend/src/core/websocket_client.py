@@ -10,9 +10,7 @@ from datetime import datetime
 from typing import Optional
 from loguru import logger
 
-from backend.src.core.unitTracker import UnitTracker
-from src.utils import settings
-
+from .unitTracker import UnitTracker
 
 class HyperliquidWebSocketClient:
     """WebSocket client with CORRECT Hyperliquid heartbeat implementation"""

@@ -77,10 +77,14 @@ class HyperliquidClient:
         
     def _initialize_clients(self):
         """Initialize the SDK clients and wallet"""
-        # Get credentials from settings
-        private_key = settings.HYPERLIQUID_TESTNET_PRIVATE_KEY
-        self.main_wallet_address = settings.hyperliquid_wallet_key
-        self.sub_wallet_address = settings.HYPERLIQUID_TESTNET_SUB_WALLET_LONG
+        # Get credentials from environment variables
+        import os
+        from dotenv import load_dotenv
+        load_dotenv()
+        
+        private_key = os.getenv("HYPERLIQUID_TESTNET_PRIVATE_KEY")
+        self.main_wallet_address = os.getenv("HYPERLIQUID_WALLET_KEY")
+        self.sub_wallet_address = os.getenv("HYPERLIQUID_TESTNET_SUB_WALLET_HEDGE")
         
         # Create wallet from private key (this is the agent/API key)
         self.wallet: LocalAccount = Account.from_key(private_key)
