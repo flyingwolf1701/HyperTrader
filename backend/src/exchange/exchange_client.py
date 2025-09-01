@@ -16,7 +16,7 @@ from loguru import logger
 import eth_account
 from eth_account import Account
 from eth_account.signers.local import LocalAccount
-from eth_account.messages import encode_typed_data
+from eth_account.messages import encode_typed_data, encode_defunct
 
 
 # ============================================================================
@@ -113,8 +113,31 @@ def sign_l1_action(
 ) -> str:
     """Sign L1 action using EIP-712"""
     
-    # Create the structured data for signing
-    structured_data = {
+    # Build the action payload
+    action_payload = {
+        "action": action,
+        "nonce": nonce
+    }
+    if expires_after:
+        action_payload["expiresAfter"] = expires_after
+    
+    # Create signing message following Hyperliquid format
+    action_string = json.dumps(action_payload, separators=(',', ':'))
+    
+    # Create the typed data following eth-account's expected format
+    typed_data = {
+        "domain": {
+            "name": "HyperliquidSignTransaction",
+            "version": "1", 
+            "chainId": 42161,
+            "verifyingContract": "0x0000000000000000000000000000000000000000"
+        },
+        "message": {
+            "hyperliquidChain": "Mainnet" if is_mainnet else "Testnet",
+            "signatureChainId": 42161,
+            "action": action_string
+        },
+        "primaryType": "HyperliquidTransaction:UserAction",
         "types": {
             "EIP712Domain": [
                 {"name": "name", "type": "string"},
@@ -127,29 +150,24 @@ def sign_l1_action(
                 {"name": "signatureChainId", "type": "uint256"},
                 {"name": "action", "type": "string"}
             ]
-        },
-        "primaryType": "HyperliquidTransaction:UserAction",
-        "domain": {
-            "name": "HyperliquidSignTransaction", 
-            "version": "1",
-            "chainId": 42161,
-            "verifyingContract": "0x0000000000000000000000000000000000000000"
-        },
-        "message": {
-            "hyperliquidChain": "Mainnet" if is_mainnet else "Testnet",
-            "signatureChainId": 42161,
-            "action": json.dumps({
-                "action": action,
-                "nonce": nonce,
-                **({"expiresAfter": expires_after} if expires_after else {})
-            }, separators=(',', ':'))
         }
     }
     
-    # Sign the structured data
-    encoded_data = encode_typed_data(structured_data)
-    signature = wallet.sign_message(encoded_data)
-    return signature.signature.hex()
+    try:
+        # Try using encode_typed_data
+        from eth_account.messages import encode_typed_data
+        encoded_data = encode_typed_data(typed_data)
+        signature = wallet.sign_message(encoded_data)
+        return signature.signature.hex()
+    except Exception as e:
+        # Fallback to direct signing if EIP-712 fails
+        logger.debug(f"EIP-712 signing failed: {e}, using direct signing")
+        
+        # Use direct message signing as fallback
+        from eth_account.messages import encode_defunct
+        message = encode_defunct(text=action_string)
+        signature = wallet.sign_message(message)
+        return signature.signature.hex()
 
 
 # ============================================================================
@@ -162,7 +180,7 @@ class HyperliquidExchangeClient:
     Replaces CCXT implementation with direct API calls
     """
     
-    def __init__(self, testnet: bool = True):
+    def __init__(self, testnet: bool = True, use_vault: bool = False):
         """Initialize client from settings"""
         self.testnet = testnet
         self.base_url = (
@@ -173,24 +191,36 @@ class HyperliquidExchangeClient:
         # Get credentials from settings
         try:
             from src.utils import settings
-            
-            # Use the configured wallet address
-            self.wallet_address = settings.hyperliquid_wallet_key
             private_key = settings.HYPERLIQUID_TESTNET_PRIVATE_KEY
+            
+            # Store the master account address (which holds the funds)
+            self.master_address = settings.hyperliquid_wallet_key
+            
+            # Check if we should use vault/sub-account
+            if use_vault and hasattr(settings, 'HYPERLIQUID_TESTNET_SUB_WALLET_LONG'):
+                # Use sub-account address for API calls
+                self.wallet_address = settings.HYPERLIQUID_TESTNET_SUB_WALLET_LONG
+                self.is_vault = True
+                logger.info(f"Using sub-account (vault): {self.wallet_address}")
+            else:
+                # Use master account
+                self.wallet_address = self.master_address
+                self.is_vault = False
+                logger.info(f"Using master account: {self.wallet_address}")
+                
         except ImportError:
             # Fallback for standalone usage
             import os
-            self.wallet_address = os.getenv("HYPERLIQUID_WALLET_KEY")
             private_key = os.getenv("HYPERLIQUID_TESTNET_PRIVATE_KEY")
+            self.wallet_address = os.getenv("HYPERLIQUID_WALLET_KEY")
+            self.is_vault = False
         
-        if not self.wallet_address or not private_key:
-            raise ValueError("Hyperliquid credentials not configured")
+        if not private_key:
+            raise ValueError("Hyperliquid private key not configured")
         
-        # Initialize wallet for signing (but use configured address for API calls)
+        # Initialize wallet for signing (always use master account private key)
         self.wallet: LocalAccount = Account.from_key(private_key)
-        
-        logger.info(f"Using wallet address: {self.wallet_address}")
-        logger.debug(f"Private key derives to: {self.wallet.address}")
+        logger.debug(f"Signer address: {self.wallet.address}")
         
         # Initialize HTTP session
         self.session = requests.Session()
@@ -393,10 +423,14 @@ class HyperliquidExchangeClient:
             "orders": [order_wire]
         }
         
+        # Include vault address if using sub-account
+        if self.is_vault:
+            action["vaultAddress"] = self.wallet_address
+        
         signature = sign_l1_action(
             self.wallet,
             action,
-            None,
+            self.wallet_address if self.is_vault else None,
             nonce,
             None,
             not self.testnet
@@ -409,6 +443,11 @@ class HyperliquidExchangeClient:
             "signature": signature
         }
         
+        # If signer is different from wallet, we're using an agent
+        if self.wallet.address.lower() != self.wallet_address.lower():
+            payload["vaultAddress"] = self.wallet_address
+        
+        logger.debug(f"Sending order payload: {json.dumps(payload, indent=2)}")
         result = self._post_request("/exchange", payload)
         
         # Parse response
@@ -581,11 +620,15 @@ class HyperliquidExchangeClient:
                 "leverage": leverage
             }
             
+            # Include vault address if using sub-account
+            if self.is_vault:
+                action["vaultAddress"] = self.wallet_address
+            
             nonce = get_timestamp_ms()
             signature = sign_l1_action(
                 self.wallet,
                 action,
-                None,
+                self.wallet_address if self.is_vault else None,
                 nonce,
                 None,
                 not self.testnet

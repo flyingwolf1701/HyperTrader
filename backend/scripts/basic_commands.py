@@ -21,10 +21,11 @@ from src.exchange.exchange_client import HyperliquidExchangeClient
 class BasicTrader:
     """Simple trading interface using direct exchange client"""
     
-    def __init__(self, testnet: bool = True):
+    def __init__(self, testnet: bool = True, use_vault: bool = False):
         """Initialize with exchange client"""
         self.testnet = testnet
-        self.client = HyperliquidExchangeClient(testnet=testnet)
+        self.use_vault = use_vault
+        self.client = HyperliquidExchangeClient(testnet=testnet, use_vault=use_vault)
         
         # Configure logging
         logger.remove()
@@ -89,13 +90,13 @@ class BasicTrader:
                     logger.info("Trade cancelled")
                     return
             
-            # Set leverage
+            # Set leverage (optional - skip if it fails)
             if leverage:
                 logger.info(f"Setting leverage to {leverage}x...")
                 leverage_set = self.client.set_leverage(formatted_symbol, leverage)
                 if not leverage_set:
-                    logger.error("Failed to set leverage")
-                    return
+                    logger.warning("Failed to set leverage, continuing with default")
+                    # Don't return - continue with trade
             
             # Calculate coin amount
             coin_amount = position_size / current_price
@@ -344,6 +345,7 @@ Examples:
     trade_parser.add_argument("--order-type", choices=["market", "limit"], default="market", 
                             help="Order type (default: market)")
     trade_parser.add_argument("--limit-price", type=float, help="Limit price for limit orders")
+    trade_parser.add_argument("--vault", action="store_true", help="Use sub-account/vault")
     trade_parser.add_argument("--mainnet", action="store_true", help="Use mainnet (default: testnet)")
     
     # Close command
@@ -352,11 +354,13 @@ Examples:
     close_parser.add_argument("--order-type", choices=["market", "limit"], default="market",
                             help="Order type (default: market)")
     close_parser.add_argument("--limit-price", type=float, help="Limit price for limit orders")
+    close_parser.add_argument("--vault", action="store_true", help="Use sub-account/vault")
     close_parser.add_argument("--mainnet", action="store_true", help="Use mainnet (default: testnet)")
     
     # Status command
     status_parser = subparsers.add_parser("status", help="Check account and position status")
     status_parser.add_argument("symbol", nargs="?", help="Specific symbol to check (optional)")
+    status_parser.add_argument("--vault", action="store_true", help="Use sub-account/vault")
     status_parser.add_argument("--mainnet", action="store_true", help="Use mainnet (default: testnet)")
     
     args = parser.parse_args()
@@ -379,8 +383,9 @@ Examples:
             return
         testnet = False
     
-    # Initialize trader
-    trader = BasicTrader(testnet=testnet)
+    # Initialize trader with vault option if specified
+    use_vault = hasattr(args, 'vault') and args.vault
+    trader = BasicTrader(testnet=testnet, use_vault=use_vault)
     
     # Execute command
     try:
