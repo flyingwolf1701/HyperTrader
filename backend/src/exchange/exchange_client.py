@@ -173,16 +173,27 @@ class HyperliquidExchangeClient:
         
         raise ValueError(f"Asset {base_currency} not found in metadata universe")
 
-    def _sign_and_build_payload(self, action: Dict[str, Any]) -> Dict[str, Any]:
+    def _sign_l1_action(self, action: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        [CORRECTED] This function now implements the official signing mechanism from the SDK.
+        """
         nonce = int(time.time() * 1000)
         
-        connection_id = Web3.solidity_keccak(
-            ["bytes"],
-            [Web3.to_bytes(text=str((action, nonce)))],
-        )
+        # The connectionId is a hash of the action object itself
+        action_hash = Web3.solidity_keccak(["string"], [json.dumps(action)])
         
-        # [FIXED] Use Account.sign_hash directly and pass the private key
-        signed_hash = Account.sign_hash(connection_id, self.wallet.key)
+        # The agent object defines the context for the signature
+        agent = {
+            "source": "https://hyperliquid.com",
+            "connectionId": action_hash.hex(),
+            "timestamp": nonce,
+        }
+        
+        # This is the hash that must be signed
+        hash_to_sign = Web3.solidity_keccak(["string"], [json.dumps(agent)])
+        
+        # Sign the hash with the private key
+        signed_hash = self.wallet.signHash(hash_to_sign)
         
         signature = {
             "r": "0x" + signed_hash.r.to_bytes(32, "big").hex(),
@@ -248,7 +259,7 @@ class HyperliquidExchangeClient:
                     size=size,
                     entry_price=Decimal(position_info.get("entryPx", "0")),
                     mark_price=self.get_current_price(symbol),
-                    unrealized_pnl=Decimal(pos_data["unrealizedPnl"]),
+                    unrealized_pnl=Decimal(pos_data.get("unrealizedPnl", "0")),
                     margin_used=Decimal(position_info.get("marginUsed", "0"))
                 )
         return None
@@ -305,7 +316,7 @@ class HyperliquidExchangeClient:
             "grouping": "na"
         }
         
-        payload = self._sign_and_build_payload(action)
+        payload = self._sign_l1_action(action)
         result = self._post_request("/exchange", payload)
         
         if result.get("status") == "ok":
@@ -343,7 +354,7 @@ class HyperliquidExchangeClient:
                 "isCross": True,
                 "leverage": leverage
             }
-            payload = self._sign_and_build_payload(action)
+            payload = self._sign_l1_action(action)
             result = self._post_request("/exchange", payload)
             
             if result.get("status") == "ok":
