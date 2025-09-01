@@ -1,274 +1,284 @@
-# HyperTrader - Simplified Long-Only Strategy v2.0
+# HyperTrader - Professional Hyperliquid Trading CLI
 
 ## Overview
 
-HyperTrader implements an automated long-only strategy that scales positions during market volatility through four phases (ADVANCE, RETRACEMENT, DECLINE, RECOVERY) with an automatic RESET mechanism to compound profits.
+HyperTrader is a professional command-line interface for trading on the Hyperliquid decentralized exchange. Built with the official Hyperliquid SDK, it provides reliable trading operations with support for both main wallet and sub-wallet management.
 
-**Key Simplification**: This version removes all short position complexity while preserving the core retracement 
-scaling and compound growth logic.
+## Features
 
-## Quick Start Guide
+- **Full Trading Operations**: Open long/short positions with leverage
+- **Multi-Wallet Support**: Trade on main wallet or sub-wallets
+- **Real-time Market Data**: Get current prices and position tracking
+- **Position Management**: Monitor and close positions with detailed PnL
+- **Testnet/Mainnet**: Safe testing environment with mainnet support
+
+## Quick Start
 
 ### Prerequisites
 
-1. **Python Environment**
+```bash
+# Install UV package manager
+pip install uv
 
-   ```bash
-   # Ensure UV is installed
-   pip install uv
+# Install dependencies
+cd backend
+uv sync
+```
 
-   # Install dependencies
-   uv sync
-   ```
+### Configuration
 
-2. **Environment Configuration**
-   Create a `.env` file in the backend directory:
+Create a `.env` file in the backend directory:
 
-   ```env
-   HYPERLIQUID_WALLET_KEY=your_wallet_address
-   HYPERLIQUID_TESTNET_PRIVATE_KEY=your_private_key
-   HYPERLIQUID_TESTNET=true
-   ```
+```env
+# Wallet Configuration
+HYPERLIQUID_WALLET_KEY=0x329C49392608175A071fC9AF982fF625f119fFAE
+HYPERLIQUID_TESTNET_PRIVATE_KEY=your_private_key_here
 
-3. **Network Selection**
-   - **Testnet**: Use for testing (default, recommended)
-   - **Mainnet**: Only after thorough testing
+# Sub-wallet (optional)
+HYPERLIQUID_TESTNET_SUB_WALLET_LONG=0x672e85f00bda872dcf16b9d65d35d4271e2610cb
 
-### Basic Commands
+# Network
+HYPERLIQUID_TESTNET=true
+```
+
+## Commands
+
+### Check Account Status
 
 ```bash
-# Check current positions and balance
-uv run python main.py check
+# View main wallet status
+uv run python main.py status
 
-# Start trading strategy (testnet)
-then
+# View sub-wallet status  
+uv run python main.py status --sub-wallet
 
-# Track prices with unit detection (no trading)
-uv run python main.py track --symbol ETH --unit-size 5
+# Output shows:
+# - Network (testnet/mainnet)
+# - Wallet address
+# - Account balance (total, margin used, available)
+# - Open positions with PnL
+```
 
+### Open Trading Positions
+
+```bash
+# Open a long position
+uv run python main.py trade ETH 100 --leverage 10
+
+# Open a short position
+uv run python main.py trade ETH 100 --short --leverage 10
+
+# Trade on sub-wallet
+uv run python main.py trade ETH 100 --sub-wallet --leverage 10
+
+# Parameters:
+# - Symbol: ETH, BTC, SOL, etc.
+# - Amount: Position size in USD
+# - --leverage: 1-25x (default: 10)
+# - --short: Open short position (default: long)
+# - --sub-wallet: Use sub-wallet
+```
+
+### Close Positions
+
+```bash
 # Close a position
-uv run python main.py close ETH/USDC:USDC
+uv run python main.py close ETH
 
-# Monitor running strategies
-uv run python main.py monitor
+# Close without confirmation prompt
+uv run python main.py close ETH --force
+
+# Close on sub-wallet
+uv run python main.py close ETH --sub-wallet
 ```
 
-## Testing Configuration
-
-For your current testing setup:
-
-- **Symbol**: ETH/USDC:USDC
-- **Position Size**: $2500
-- **Unit Size**: $25 (smaller for testing)
-- **Leverage**: 25x
-- **Margin Required**: $100 ($2500 ÷ 25x)
-
-### Start Your Test Trade
+### Get Market Prices
 
 ```bash
-# Start the simplified strategy
-uv run python main.py trade ETH/USDC:USDC 2500 25 --leverage 25
+# Get current price for a symbol
+uv run python main.py price ETH
+uv run python main.py price BTC
 ```
 
-This will:
-
-1. Open a $2500 long position with 25x leverage
-2. Start real-time price monitoring
-3. Execute simplified scaling strategy automatically as price moves
-
-## Simplified Strategy Logic
-
-### Core Concept
-
-Instead of complex long+short hedging, this version simply **scales the long position up and down** based on market movements:
-
-- **Rising markets**: Hold 100% long position
-- **Falling markets**: Sell fragments to reduce exposure (25% at a time)
-- **Recovery**: Buy back fragments to rebuild position
-- **Compound growth**: RESET mechanism captures gains for next cycle
-
-## Strategy Phases Explained
-
-### 1. ADVANCE Phase
-
-- **Trigger**: Price increases by one unit ($25)
-- **Action**: Track peaks, lock 25% fragments when new peak reached
-- **Portfolio**: 100% Long
-
-### 2. RETRACEMENT Phase
-
-- **Trigger**: Price drops from peak
-- **Actions by units from peak**:
-  - `-1`: Hold position (no action)
-  - `-2`: Sell 25% fragment (reduce exposure)
-  - `-3`: Sell 25% fragment (reduce exposure)
-  - `-4`: Sell 25% fragment (reduce exposure)
-  - `-5`: Sell remaining position → 100% cash
-
-### 3. VALLEY TRACKING
-
-- **Condition**: Portfolio is 100% cash
-- **Action**: Track lowest point (valley) for recovery signal
-
-### 4. RECOVERY Phase
-
-- **Trigger**: Price rises +2 units from valley
-- **Actions**:
-  - `+2`: Buy back 25% fragment
-  - `+3`: Buy back 25% fragment
-  - `+4`: Buy back 25% fragment
-  - `+5`: Buy back final 25% → 100% long → RESET
-
-### 5. RESET Mechanism
-
-- **Trigger**: Position becomes 100% long after complete cycle
-- **Action**: Lock in profits as new baseline, restart with larger position
-
-## Alternative Testing Methods
-
-### Using cURL (Direct API Testing)
-
-If you want to test individual components without the full strategy:
+### Switch Wallets
 
 ```bash
-# Check account balance
-curl -X POST https://api.hyperliquid-testnet.xyz/info \
-  -H "Content-Type: application/json" \
-  -d '{"type": "clearinghouseState", "user": "YOUR_WALLET_ADDRESS"}'
+# Switch to sub-wallet
+uv run python main.py switch sub
 
-# Get current ETH price
-curl -X POST https://api.hyperliquid-testnet.xyz/info \
-  -H "Content-Type: application/json" \
-  -d '{"type": "allMids"}'
-
-# Place a market order (requires signature)
-# Note: Direct API orders require proper signing - use the Python client instead
+# Switch back to main wallet
+uv run python main.py switch main
 ```
 
-### Manual Position Management
+### Global Options
 
 ```bash
-# Check current position
-uv run python main.py check
+# Enable verbose logging
+uv run python main.py -v status
 
-# If you need to close a position manually
-uv run python main.py close ETH/USDC:USDC
-
-# Start fresh strategy
-uv run python main.py trade ETH/USDC:USDC 2500 2 --leverage 25
+# Use mainnet (CAREFUL - real funds!)
+uv run python main.py --mainnet status
 ```
 
-## Monitoring Your Strategy
-
-### Real-time Monitoring
+## Example Trading Session
 
 ```bash
-# Start monitoring in separate terminal
-uv run python main.py monitor
+# 1. Check initial status
+uv run python main.py status
+
+# 2. Get current ETH price
+uv run python main.py price ETH
+
+# 3. Open a long position with 10x leverage
+uv run python main.py trade ETH 100 --leverage 10
+
+# 4. Monitor position
+uv run python main.py status
+
+# 5. Close position when profitable
+uv run python main.py close ETH
 ```
 
-### Log Files
+## Sub-Wallet Trading
 
-Strategy logs are saved to `logs/hypertrader_{timestamp}.log`
+Sub-wallets allow isolated position management:
 
-### Key Metrics to Watch
+```bash
+# Check sub-wallet status
+uv run python main.py status --sub-wallet
 
-- **Current Phase**: Which phase the strategy is in
-- **Current Unit**: Distance from entry price in units
-- **Peak/Valley Units**: Historical extremes
-- **Position Value**: Current position worth
-- **Unrealized PnL**: Current profit/loss
+# Open position on sub-wallet
+uv run python main.py trade ETH 50 --sub-wallet --leverage 5
+
+# Close sub-wallet position
+uv run python main.py close ETH --sub-wallet
+```
+
+## Architecture
+
+### Core Components
+
+- **`hyperliquid_sdk.py`**: Clean wrapper around official Hyperliquid SDK
+- **`main.py`**: CLI application with command routing
+- **`hl_commands.py`**: Legacy command implementation (reference)
+
+### SDK Features
+
+The `HyperliquidClient` class provides:
+
+- Account balance retrieval
+- Position management (open/close/monitor)
+- Market data access
+- Leverage configuration
+- Multi-wallet support
+
+## Safety Features
+
+- **Testnet by Default**: Safe testing environment
+- **Confirmation Prompts**: Requires confirmation for mainnet trades
+- **Position Validation**: Checks for existing positions before operations
+- **Error Handling**: Comprehensive error messages and recovery
 
 ## Troubleshooting
 
 ### Common Issues
 
-1. **"No existing position" Error**
+1. **"No module named 'requests'"**
+   ```bash
+   uv add requests
+   ```
 
-   - Make sure you have an open position before running certain commands
-   - Use `python main.py check` to verify
+2. **"No position to close"**
+   - Verify position exists: `uv run python main.py status`
+   - Check correct wallet (main vs sub)
 
-2. **WebSocket Connection Issues**
+3. **Authentication Errors**
+   - Verify private key in `.env`
+   - Ensure wallet address matches private key
+   - Check testnet/mainnet setting
 
-   - Check internet connection
-   - Verify Hyperliquid API status
-   - Restart the strategy
+4. **Insufficient Balance**
+   - Check available balance: `uv run python main.py status`
+   - Reduce position size or leverage
 
-3. **API Authentication Errors**
+### API Key vs Direct Wallet
 
-   - Verify wallet address and private key in `.env`
-   - Ensure testnet setting matches your credentials
+The system automatically detects if you're using:
+- **Direct Wallet**: Private key matches wallet address
+- **API Key**: Private key is an agent that trades on behalf of main wallet
 
-4. **Position Size Errors**
-   - Check available balance with `python main.py check`
-   - Reduce position size if insufficient margin
+## Testing
 
-### Emergency Procedures
+### Testnet Testing
 
 ```bash
-# Emergency stop - close all positions
-uv run python main.py close ETH/USDC:USDC
+# Safe testing with testnet funds
+uv run python main.py trade ETH 100 --leverage 10
 
-# Check status after emergency stop
-uv run python main.py check
+# Monitor results
+uv run python main.py status
 ```
 
-## Configuration Files
+### Production Deployment
 
-- **`.env`**: API credentials and network settings
-- **`config.yaml`**: Strategy parameters (optional)
-- **`logs/`**: Strategy execution logs
-- **`state/`**: Strategy state persistence (auto-created)
-
-## Safety Features
-
-- **Testnet by default**: Safe testing environment
-- **Position limits**: Configurable maximum position sizes
-- **Error handling**: Comprehensive error recovery
-- **State persistence**: Automatic strategy state saving
-- **Emergency stop**: Manual position closure capability
-
-## Development and Testing
+⚠️ **WARNING**: Only use mainnet after thorough testing
 
 ```bash
-# Run in demo mode (no real trades)
-uv run python main.py track --symbol ETH --unit-size 25 --duration 5
-
-# Test specific functionality
-uv run python -m pytest tests/ -v
+# Mainnet trading (requires confirmation)
+uv run python main.py --mainnet trade ETH 1000 --leverage 5
 ```
 
-## Production Deployment
+## Advanced Usage
 
-⚠️ **WARNING**: Only use mainnet after extensive testnet validation
+### Verbose Logging
 
 ```bash
-# For mainnet (CAREFUL!)
-uv run python main.py trade ETH/USDC:USDC 2500 25 --leverage 25 --mainnet
+# Enable detailed logging
+uv run python main.py -v trade ETH 100
+```
+
+### Programmatic Usage
+
+```python
+from src.exchange.hyperliquid_sdk import HyperliquidClient
+
+# Initialize client
+client = HyperliquidClient(use_testnet=True)
+
+# Get balance
+balance = client.get_balance()
+print(f"Available: ${balance.available}")
+
+# Open position
+result = client.open_position(
+    symbol="ETH",
+    usd_amount=Decimal("100"),
+    is_long=True,
+    leverage=10
+)
 ```
 
 ## Support
 
-- **Logs**: Check `logs/` directory for detailed execution logs
-- **State**: Strategy state is auto-saved for crash recovery
-- **Monitoring**: Use monitor command for real-time status
+### Logs
+- Console output with timestamps
+- Color-coded log levels
+- Verbose mode for debugging
 
-## Strategy Performance
+### State Management
+- Positions tracked in real-time
+- Automatic PnL calculation
+- Multi-wallet state isolation
 
-The simplified strategy aims to:
+## Performance
 
-- **Profit during uptrends**: Hold 100% long positions during ADVANCE phase
-- **Reduce risk during retracements**: Scale down position by selling fragments
-- **Preserve capital during declines**: Hold cash during valley periods
-- **Capitalize on recovery**: Rebuild position during RECOVERY phase
-- **Compound returns**: RESET mechanism captures gains and starts next cycle with larger base
+The new architecture provides:
+- ✅ Fast execution with official SDK
+- ✅ Reliable order placement
+- ✅ Accurate position tracking
+- ✅ Clean error handling
+- ✅ Professional CLI interface
 
-**Key Benefits of Simplification**:
+## License
 
-- ✅ No position netting issues (single wallet, long-only)
-- ✅ Easier to understand and monitor
-- ✅ Preserves core compound growth mechanism
-- ✅ Works perfectly with Hyperliquid's position management
-- ✅ Still provides risk management through position scaling
-
-Expected outcome: Steady compound growth through market cycles with reduced complexity and operational risk.
+Private repository - All rights reserved

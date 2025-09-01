@@ -10,7 +10,7 @@ from datetime import datetime
 from typing import Optional
 from loguru import logger
 
-from src.core.models import UnitTracker
+from backend.src.core.unitTracker import UnitTracker
 from src.utils import settings
 
 
