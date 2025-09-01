@@ -1,7 +1,5 @@
 """
-Native Hyperliquid Exchange Client - Complete Implementation
-Replaces CCXT with direct Hyperliquid API integration
-Based on official Hyperliquid Python SDK patterns
+Native Hyperliquid Exchange Client with direct API integration.
 """
 import json
 import time
@@ -15,9 +13,10 @@ from loguru import logger
 from eth_account import Account
 from eth_account.signers.local import LocalAccount
 from eth_account.messages import encode_defunct
+from web3 import Web3
 
 # ============================================================================
-# DATA TYPES (replaces ccxt_types.py)
+# DATA TYPES
 # ============================================================================
 
 class OrderSide(Enum):
@@ -33,10 +32,9 @@ class TimeInForce(Enum):
     IOC = "Ioc"  # Immediate or Cancel
     ALO = "Alo"  # Add Liquidity Only (Post Only)
 
-
 @dataclass
 class Balance:
-    """Account balance information"""
+    """Account balance information."""
     currency: str
     available: Decimal
     total: Decimal
@@ -51,10 +49,10 @@ class Balance:
 
 @dataclass
 class Position:
-    """Trading position information"""
+    """Trading position information."""
     symbol: str
     side: str  # "long" or "short" 
-    size: Decimal  # Position size in contracts
+    size: Decimal
     entry_price: Decimal
     mark_price: Decimal
     unrealized_pnl: Decimal
@@ -74,7 +72,7 @@ class Position:
 
 @dataclass
 class OrderResult:
-    """Result of order execution"""
+    """Result of an order execution."""
     id: str = ""
     type: str = ""
     price: Decimal = Decimal("0")
@@ -94,19 +92,17 @@ class OrderResult:
 
 class HyperliquidExchangeClient:
     """
-    Native Hyperliquid Exchange Client
-    Replaces CCXT implementation with direct API calls
+    A native Python client for interacting with the Hyperliquid exchange API.
     """
     
     def __init__(self, testnet: bool = True, use_vault: bool = False):
-        """Initialize client from settings"""
+        """Initializes the client from application settings."""
         self.testnet = testnet
         self.base_url = (
             "https://api.hyperliquid-testnet.xyz" if testnet 
             else "https://api.hyperliquid.xyz"
         )
         
-        # This section for loading settings is kept as is
         try:
             from src.utils import settings
             private_key = settings.HYPERLIQUID_TESTNET_PRIVATE_KEY
@@ -115,11 +111,11 @@ class HyperliquidExchangeClient:
             if use_vault and hasattr(settings, 'HYPERLIQUID_TESTNET_SUB_WALLET_LONG'):
                 self.wallet_address = settings.HYPERLIQUID_TESTNET_SUB_WALLET_LONG
                 self.is_vault = True
-                logger.info("Using sub-account (vault)")
+                logger.info("Using sub-account (vault).")
             else:
                 self.wallet_address = self.master_address
                 self.is_vault = False
-                logger.info("Using master account")
+                logger.info("Using master account.")
                 
         except ImportError:
             import os
@@ -132,7 +128,6 @@ class HyperliquidExchangeClient:
             raise ValueError("Hyperliquid private key not configured")
         
         self.wallet: LocalAccount = Account.from_key(private_key)
-        # Removed address logging for security
         
         self.session = requests.Session()
         self.session.headers.update({"Content-Type": "application/json"})
@@ -172,29 +167,27 @@ class HyperliquidExchangeClient:
         meta = self._get_meta()
         universe = meta.get("universe", [])
         
-        for i, asset in enumerate(universe):
-            if asset.get("name") == base_currency:
-                # Return the index as the asset ID
+        for i, asset_data in enumerate(universe):
+            if asset_data.get("name") == base_currency:
                 return i
         
         raise ValueError(f"Asset {base_currency} not found in metadata universe")
 
     def _sign_and_build_payload(self, action: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        [CORRECTED] This function now correctly signs the action and builds the final payload.
-        """
         nonce = int(time.time() * 1000)
         
-        # The signature is derived from a hash of a tuple of the action items
-        # This is a critical step that differs from simple message signing
-        action_tuple = tuple(action.items())
-        hash_obj = Account.sign_message(encode_defunct(text=str(action_tuple)), self.wallet.key)
+        connection_id = Web3.solidity_keccak(
+            ["bytes"],
+            [Web3.to_bytes(text=str((action, nonce)))],
+        )
         
-        # The API expects r, s, v as separate components of the signature
+        # [FIXED] Use Account.sign_hash directly and pass the private key
+        signed_hash = Account.sign_hash(connection_id, self.wallet.key)
+        
         signature = {
-            "r": "0x" + hash_obj.r.to_bytes(32, 'big').hex(),
-            "s": "0x" + hash_obj.s.to_bytes(32, 'big').hex(),
-            "v": hash_obj.v,
+            "r": "0x" + signed_hash.r.to_bytes(32, "big").hex(),
+            "s": "0x" + signed_hash.s.to_bytes(32, "big").hex(),
+            "v": signed_hash.v,
         }
 
         payload = {
@@ -203,7 +196,6 @@ class HyperliquidExchangeClient:
             "signature": signature
         }
 
-        # If trading on behalf of a sub-account/vault, add its address
         if self.is_vault:
              payload["vaultAddress"] = self.wallet_address
 
@@ -212,14 +204,13 @@ class HyperliquidExchangeClient:
     # --- PUBLIC API METHODS ---
 
     def get_balance(self, currency: str = "USDC") -> Balance:
-        """Get account balance - replaces fetch_balance()"""
+        """Gets the account balance."""
         payload = {
             "type": "clearinghouseState",
             "user": self.wallet_address
         }
         result = self._post_request("/info", payload)
         
-        # Using accountValue for total, and marginSummary for available/used calculation
         margin_summary = result.get("marginSummary", {})
         total_value = Decimal(str(margin_summary.get("accountValue", "0")))
         total_margin_used = Decimal(str(margin_summary.get("totalMarginUsed", "0")))
@@ -231,19 +222,19 @@ class HyperliquidExchangeClient:
         )
 
     def get_position(self, symbol: str) -> Optional[Position]:
-        """Get position for symbol - replaces fetch_positions()"""
+        """Gets the open position for a specific symbol."""
         payload = {
             "type": "clearinghouseState",
             "user": self.wallet_address
         }
         result = self._post_request("/info", payload)
         
-        asset_id = self._symbol_to_asset_id(symbol)
+        clean_symbol = symbol.split("/")[0]
         
         for pos_data in result.get("assetPositions", []):
-            if pos_data.get("position", {}).get("coin") == symbol.split("/")[0]:
-                position_info = pos_data["position"]
-                szi = Decimal(position_info["szi"])
+            position_info = pos_data.get("position", {})
+            if position_info.get("coin") == clean_symbol:
+                szi = Decimal(position_info.get("szi", "0"))
                 
                 if szi.is_zero():
                     continue
@@ -255,15 +246,15 @@ class HyperliquidExchangeClient:
                     symbol=symbol,
                     side=side,
                     size=size,
-                    entry_price=Decimal(position_info["entryPx"]),
-                    mark_price=self.get_current_price(symbol), # Fetches current price
+                    entry_price=Decimal(position_info.get("entryPx", "0")),
+                    mark_price=self.get_current_price(symbol),
                     unrealized_pnl=Decimal(pos_data["unrealizedPnl"]),
-                    margin_used=Decimal(position_info["marginUsed"])
+                    margin_used=Decimal(position_info.get("marginUsed", "0"))
                 )
         return None
     
     def get_current_price(self, symbol: str) -> Decimal:
-        """Get current price - replaces fetch_ticker()"""
+        """Gets the current mid-market price for a symbol."""
         base_currency = symbol.split("/")[0] if "/" in symbol else symbol
         payload = {"type": "allMids"}
         result = self._post_request("/info", payload)
@@ -282,15 +273,13 @@ class HyperliquidExchangeClient:
         price: Optional[Decimal] = None,
         reduce_only: bool = False
     ) -> OrderResult:
-        """Place order - replaces create_order()"""
+        """Places a new order on the exchange."""
         asset_id = self._symbol_to_asset_id(symbol)
-        
         is_buy = side.lower() == "buy"
         
-        # For market orders, Hyperliquid requires a limit price far enough away to guarantee execution
         if order_type.lower() == "market":
             current_price = self.get_current_price(symbol)
-            slippage_fraction = Decimal("0.05") # 5% slippage for safety
+            slippage_fraction = Decimal("0.05")
             if is_buy:
                 price = current_price * (Decimal("1") + slippage_fraction)
             else:
@@ -301,7 +290,6 @@ class HyperliquidExchangeClient:
                 raise ValueError("Price is required for limit orders")
             order_type_payload = {"limit": {"tif": "Gtc"}}
 
-        # [CORRECTED] Payload structure must match API docs exactly
         action = {
             "type": "order",
             "orders": [
@@ -309,7 +297,7 @@ class HyperliquidExchangeClient:
                     "asset": asset_id,
                     "isBuy": is_buy,
                     "reduceOnly": reduce_only,
-                    "limitPx": f"{price:.2f}", # Price as a string with 2 decimal places
+                    "limitPx": f"{price:.2f}",
                     "sz": str(size),
                     "orderType": order_type_payload,
                 }
@@ -318,40 +306,41 @@ class HyperliquidExchangeClient:
         }
         
         payload = self._sign_and_build_payload(action)
-        logger.debug(f"Sending order payload: {json.dumps(payload, indent=2)}")
         result = self._post_request("/exchange", payload)
         
         if result.get("status") == "ok":
-            status_data = result['data']
-            if status_data['type'] == 'order':
-                status = status_data['statuses'][0]
-                if "filled" in status:
-                    filled = status['filled']
-                    return OrderResult(
-                        id=str(filled['oid']),
-                        status='filled',
-                        price=Decimal(filled['avgPx']),
-                        coin_amount=Decimal(filled['totalSz']),
-                        info=result
-                    )
-                elif "resting" in status:
-                    return OrderResult(
-                        id=str(status['resting']['oid']),
-                        status='open',
-                        price=price,
-                        info=result
-                    )
+            status_data = result.get('data', {})
+            if status_data.get('type') == 'order':
+                statuses = status_data.get('statuses', [])
+                if statuses:
+                    status = statuses[0]
+                    if "filled" in status:
+                        filled = status['filled']
+                        return OrderResult(
+                            id=str(filled.get('oid')),
+                            status='filled',
+                            price=Decimal(filled.get('avgPx')),
+                            coin_amount=Decimal(filled.get('totalSz')),
+                            info=result
+                        )
+                    elif "resting" in status:
+                        return OrderResult(
+                            id=str(status['resting'].get('oid')),
+                            status='open',
+                            price=price,
+                            info=result
+                        )
         
         return OrderResult(status="rejected", info=result)
     
     def set_leverage(self, symbol: str, leverage: int) -> bool:
-        """Set leverage for a specific asset."""
+        """Sets the leverage for a specific asset."""
         try:
             asset_id = self._symbol_to_asset_id(symbol)
             action = {
                 "type": "updateLeverage",
                 "asset": asset_id,
-                "isCross": True, # Hyperliquid mainly uses cross margin
+                "isCross": True,
                 "leverage": leverage
             }
             payload = self._sign_and_build_payload(action)
@@ -369,7 +358,7 @@ class HyperliquidExchangeClient:
             return False
 
     def close_position(self, symbol: str) -> Optional[OrderResult]:
-        """Close entire position for a given symbol."""
+        """Closes the entire open position for a given symbol."""
         position = self.get_position(symbol)
         if not position:
             logger.info(f"No position to close for {symbol}")
@@ -387,18 +376,19 @@ class HyperliquidExchangeClient:
         )
 
     # --- STRATEGY-SPECIFIC METHODS ---
-
+    
     async def buy_long_usd(
         self, 
         symbol: str, 
         usd_amount: Decimal, 
         leverage: Optional[int] = None
     ) -> OrderResult:
+        """Buys a long position calculated from a USD amount."""
         if leverage:
-            await self.set_leverage(symbol, leverage)
+            self.set_leverage(symbol, leverage)
         
         current_price = self.get_current_price(symbol)
-        coin_size = (usd_amount * Decimal(leverage)) / current_price
+        coin_size = (usd_amount * Decimal(leverage)) / current_price if leverage else usd_amount / current_price
         
         coin_name = symbol.split("/")[0]
         logger.info(f"🟢 BUYING LONG: ${usd_amount} ({leverage}x) → {coin_size:.6f} {coin_name} @ ${current_price}")
@@ -414,11 +404,12 @@ class HyperliquidExchangeClient:
         usd_amount: Decimal, 
         leverage: Optional[int] = None
     ) -> OrderResult:
+        """Opens a short position calculated from a USD amount."""
         if leverage:
-            await self.set_leverage(symbol, leverage)
+            self.set_leverage(symbol, leverage)
         
         current_price = self.get_current_price(symbol)
-        coin_size = (usd_amount * Decimal(leverage)) / current_price
+        coin_size = (usd_amount * Decimal(leverage)) / current_price if leverage else usd_amount / current_price
 
         coin_name = symbol.split("/")[0]
         logger.info(f"🔴 OPENING SHORT: ${usd_amount} ({leverage}x) → {coin_size:.6f} {coin_name} @ ${current_price}")
@@ -434,6 +425,7 @@ class HyperliquidExchangeClient:
         coin_amount: Decimal, 
         reduce_only: bool = True
     ) -> OrderResult:
+        """Sells a long position using a coin amount."""
         current_price = self.get_current_price(symbol)
         usd_value = coin_amount * current_price
         coin_name = symbol.split("/")[0]
@@ -448,6 +440,7 @@ class HyperliquidExchangeClient:
         symbol: str, 
         coin_amount: Decimal
     ) -> OrderResult:
+        """Closes a short position using a coin amount."""
         current_price = self.get_current_price(symbol)
         usd_cost = coin_amount * current_price
         coin_name = symbol.split("/")[0]
