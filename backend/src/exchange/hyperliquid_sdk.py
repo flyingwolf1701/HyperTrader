@@ -13,9 +13,6 @@ from eth_account.signers.local import LocalAccount
 from hyperliquid.exchange import Exchange
 from hyperliquid.info import Info
 
-from ..utils import settings
-
-
 @dataclass
 class Position:
     """Represents an open position"""
