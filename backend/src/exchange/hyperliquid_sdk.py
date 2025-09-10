@@ -8,10 +8,11 @@ from decimal import Decimal
 from dataclasses import dataclass
 from loguru import logger
 
-from eth_account import Account
-from eth_account.signers.local import LocalAccount
 from hyperliquid.exchange import Exchange
 from hyperliquid.info import Info
+from hyperliquid.utils.signing import Account
+
+from .asset_config import get_tick_size, get_max_leverage, round_to_tick, is_valid_leverage
 
 @dataclass
 class Position:
@@ -83,8 +84,8 @@ class HyperliquidClient:
         self.main_wallet_address = os.getenv("HYPERLIQUID_WALLET_KEY")
         self.sub_wallet_address = os.getenv("HYPERLIQUID_TESTNET_SUB_WALLET_HEDGE")
         
-        # Create wallet from private key (this is the agent/API key)
-        self.wallet: LocalAccount = Account.from_key(private_key)
+        # Create LocalAccount from private key
+        wallet = Account.from_key(private_key)
         
         # Initialize Info client for read operations
         self.info = Info(self.base_url, skip_ws=True)
@@ -94,7 +95,7 @@ class HyperliquidClient:
             # Trade on sub-wallet using vault_address
             self.trading_wallet_address = self.sub_wallet_address
             self.exchange = Exchange(
-                wallet=self.wallet,
+                wallet=wallet,  # Pass LocalAccount object
                 base_url=self.base_url,
                 vault_address=self.sub_wallet_address
             )
@@ -103,10 +104,19 @@ class HyperliquidClient:
             # Trade on main wallet
             self.trading_wallet_address = self.main_wallet_address
             self.exchange = Exchange(
-                wallet=self.wallet,
+                wallet=wallet,  # Pass LocalAccount object
                 base_url=self.base_url
             )
             logger.info(f"Initialized with main wallet {self.main_wallet_address[:8]}...")
+    
+    def get_user_address(self) -> str:
+        """
+        Get the current trading wallet address.
+        
+        Returns:
+            The wallet address being used for trading
+        """
+        return self.trading_wallet_address
     
     def switch_wallet(self, use_sub_wallet: bool):
         """
@@ -216,19 +226,23 @@ class HyperliquidClient:
     
     def get_market_info(self, symbol: str) -> Dict[str, Any]:
         """
-        Get market metadata for a symbol.
+        Get market metadata for a symbol including tickSize and szDecimals.
         
         Args:
             symbol: Trading symbol
             
         Returns:
-            Market information including decimals, leverage limits, etc.
+            Market information including tickSize, szDecimals, etc.
         """
         try:
             meta = self.info.meta()
-            for asset in meta.get("universe", []):
+            # The asset details are in the 'universe' key
+            assets = meta.get("universe", [])
+            
+            for asset in assets:
                 if asset.get("name") == symbol:
                     return asset
+            
             raise ValueError(f"Market info not found for {symbol}")
         except Exception as e:
             logger.error(f"Failed to get market info: {e}")
@@ -280,7 +294,7 @@ class HyperliquidClient:
         
         # Get market info for decimals
         market_info = self.get_market_info(symbol)
-        sz_decimals = market_info.get("szDecimals", 4)
+        sz_decimals = int(market_info["szDecimals"])
         
         # Calculate and round to appropriate decimals
         size = usd_amount / current_price
@@ -308,8 +322,14 @@ class HyperliquidClient:
             OrderResult with execution details
         """
         try:
-            # Set leverage if specified
+            # Validate and set leverage if specified
             if leverage:
+                if not is_valid_leverage(symbol, leverage):
+                    max_lev = get_max_leverage(symbol)
+                    return OrderResult(
+                        success=False,
+                        error_message=f"Invalid leverage {leverage} for {symbol}. Max allowed: {max_lev}"
+                    )
                 self.set_leverage(symbol, leverage)
             
             # Calculate position size
@@ -438,3 +458,179 @@ class HyperliquidClient:
             results[symbol] = self.close_position(symbol)
         
         return results
+    
+    def place_limit_order(
+        self,
+        symbol: str,
+        is_buy: bool,
+        price: Decimal,
+        size: Decimal,
+        reduce_only: bool = False,
+        post_only: bool = True
+    ) -> OrderResult:
+        """
+        Place a limit order.
+        
+        Args:
+            symbol: Trading symbol (e.g., "ETH")
+            is_buy: True for buy, False for sell
+            price: Limit price
+            size: Order size in base currency
+            reduce_only: If True, order can only reduce position
+            post_only: If True, order will only make (not take)
+            
+        Returns:
+            OrderResult with order details
+        """
+        try:
+            # Get market info for proper decimal formatting
+            market_info = self.get_market_info(symbol)
+            sz_decimals = int(market_info.get("szDecimals", 4))
+            
+            # Get tick size from our config (since testnet doesn't provide it)
+            tick_size = float(get_tick_size(symbol))
+            
+            # Round price to the nearest tick size
+            rounded_price = round(float(price) / tick_size) * tick_size
+            
+            # Round size to appropriate decimals
+            rounded_size = round(float(size), sz_decimals)
+            
+            logger.info(
+                f"Placing {'BUY' if is_buy else 'SELL'} limit order: "
+                f"{rounded_size} {symbol} @ ${rounded_price:.2f}"
+            )
+            
+            # Create order request
+            order = {
+                "a": 1,  # Asset ID (1 for perp)
+                "b": is_buy,
+                "p": str(rounded_price),
+                "s": str(rounded_size),
+                "r": reduce_only,
+                "t": {"limit": {"tif": "Gtc"}},  # Good till cancelled
+                "c": None  # No client order ID for now
+            }
+            
+            if post_only:
+                order["t"]["limit"]["tif"] = "Alo"  # Add liquidity only
+            
+            # Place the order with rounded price
+            result = self.exchange.order(symbol, is_buy, rounded_size, rounded_price, 
+                                        {"limit": {"tif": "Gtc"}}, reduce_only=reduce_only)
+            
+            # Parse result
+            if result.get("status") == "ok":
+                response = result.get("response", {})
+                data = response.get("data", {})
+                statuses = data.get("statuses", [])
+                
+                if statuses and "resting" in statuses[0]:
+                    resting = statuses[0]["resting"]
+                    return OrderResult(
+                        success=True,
+                        order_id=str(resting.get("oid")),
+                        filled_size=Decimal("0"),  # Not filled yet
+                        average_price=Decimal(str(price))
+                    )
+                elif statuses and "filled" in statuses[0]:
+                    filled = statuses[0]["filled"]
+                    return OrderResult(
+                        success=True,
+                        order_id=str(filled.get("oid")),
+                        filled_size=Decimal(str(filled.get("totalSz", 0))),
+                        average_price=Decimal(str(filled.get("avgPx", 0)))
+                    )
+                elif statuses and "error" in statuses[0]:
+                    return OrderResult(
+                        success=False,
+                        error_message=statuses[0]["error"]
+                    )
+            
+            return OrderResult(
+                success=False,
+                error_message=f"Unexpected response: {result}"
+            )
+            
+        except Exception as e:
+            logger.error(f"Failed to place limit order: {e}")
+            return OrderResult(
+                success=False,
+                error_message=str(e)
+            )
+    
+    def cancel_order(self, symbol: str, order_id: str) -> bool:
+        """
+        Cancel an open order.
+        
+        Args:
+            symbol: Trading symbol
+            order_id: Order ID to cancel
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            result = self.exchange.cancel(symbol, int(order_id))
+            
+            if result.get("status") == "ok":
+                logger.info(f"Cancelled order {order_id} for {symbol}")
+                return True
+            else:
+                logger.warning(f"Failed to cancel order: {result}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error cancelling order: {e}")
+            return False
+    
+    def cancel_all_orders(self, symbol: str) -> int:
+        """
+        Cancel all open orders for a symbol.
+        
+        Args:
+            symbol: Trading symbol
+            
+        Returns:
+            Number of orders cancelled
+        """
+        try:
+            result = self.exchange.cancel_by_coin(symbol)
+            
+            if result.get("status") == "ok":
+                response = result.get("response", {})
+                data = response.get("data", {})
+                statuses = data.get("statuses", [])
+                cancelled_count = len([s for s in statuses if "canceled" in s])
+                logger.info(f"Cancelled {cancelled_count} orders for {symbol}")
+                return cancelled_count
+            else:
+                logger.warning(f"Failed to cancel orders: {result}")
+                return 0
+                
+        except Exception as e:
+            logger.error(f"Error cancelling all orders: {e}")
+            return 0
+    
+    def get_open_orders(self, symbol: Optional[str] = None) -> list:
+        """
+        Get all open orders.
+        
+        Args:
+            symbol: Optional symbol to filter by
+            
+        Returns:
+            List of open orders
+        """
+        try:
+            user_state = self.info.user_state(self.trading_wallet_address)
+            open_orders = user_state.get("openOrders", [])
+            
+            if symbol:
+                open_orders = [o for o in open_orders if o.get("coin") == symbol]
+            
+            return open_orders
+            
+        except Exception as e:
+            logger.error(f"Failed to get open orders: {e}")
+            return []

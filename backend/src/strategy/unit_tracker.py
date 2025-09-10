@@ -1,229 +1,290 @@
 """
-UnitTracker Implementation - Clean boundary detection using position map
+UnitTracker Implementation - Sliding Window Order Management v9.2.6
+Aligned with Advanced Hedging Strategy sliding window approach
 """
 from decimal import Decimal
 from datetime import datetime
-from typing import Optional, Dict
+from typing import Optional, Dict, List, Set
 from enum import Enum
 from loguru import logger
-from dataclasses import dataclass
-from position_map import add_unit_level
+from dataclasses import dataclass, field
 
 
 class Phase(Enum):
-    """Trading strategy phases"""
-    ADVANCE = "ADVANCE"
-    RETRACEMENT = "RETRACEMENT"
-    DECLINE = "DECLINE"
-    RECOVERY = "RECOVERY"
+    """Trading strategy phases based on order composition"""
+    ADVANCE = "ADVANCE"        # 100% long, all sell orders
+    RETRACEMENT = "RETRACEMENT" # Mixed position, mix of buy/sell orders
+    DECLINE = "DECLINE"        # 100% cash, all buy orders
+    RECOVER = "RECOVER"        # Mixed position, mix of buy/sell orders
+    RESET = "RESET"           # Transitioning to new cycle
 
 
 @dataclass
 class UnitChangeEvent:
     """Event triggered when unit boundary is crossed"""
-    old_unit: int
-    new_unit: int
     price: Decimal
-    direction: str  # "UP" or "DOWN"
     phase: Phase
     units_from_peak: int
     units_from_valley: int
     timestamp: datetime
+    direction: str  # 'up' or 'down'
+    
+@dataclass
+class SlidingWindow:
+    """Manages the 4-order sliding window"""
+    sell_orders: List[int] = field(default_factory=list)  # Unit levels with sell orders
+    buy_orders: List[int] = field(default_factory=list)   # Unit levels with buy orders
+    
+    def total_orders(self) -> int:
+        return len(self.sell_orders) + len(self.buy_orders)
+    
+    def is_all_sells(self) -> bool:
+        return len(self.sell_orders) == 4 and len(self.buy_orders) == 0
+    
+    def is_all_buys(self) -> bool:
+        return len(self.buy_orders) == 4 and len(self.sell_orders) == 0
+    
+    def is_mixed(self) -> bool:
+        return len(self.sell_orders) > 0 and len(self.buy_orders) > 0
 
 
 class UnitTracker:
     """
-    Tracks unit changes using position map for boundary detection.
-    Clean boundary detection - no mathematical calculation needed.
+    Tracks unit changes and manages sliding window order system.
+    Implements v9.2.6 sliding window strategy.
     """
     
     def __init__(self, 
-                 position_state,  # PositionState instance
-                 position_map: Dict[int, any],  # Dict[unit -> PositionConfig]
-                 phase: Phase = Phase.ADVANCE):
+                 position_state,
+                 position_map: Dict[int, any],
+                 wallet_type: str = "long"):
         """
-        Initialize unit tracker with existing position map.
+        Initialize unit tracker with sliding window management.
         
         Args:
-            position_state: PositionState instance with entry_price, unit_size, etc.
-            position_map: Dictionary mapping unit -> PositionConfig
-            phase: Current strategy phase
+            position_state: Static position configuration
+            position_map: Dynamic unit-based order tracking
+            wallet_type: 'long' or 'hedge' wallet
         """
         self.position_state = position_state
         self.position_map = position_map
-        self.phase = phase
-        
-        # Unit tracking state
-        self.current_unit = 0  # Start at entry (Unit 0)
+        self.wallet_type = wallet_type
+        self.current_unit = 0
         self.peak_unit = 0
         self.valley_unit = 0
         
-        # Ensure Unit 0 exists in position map
-        if 0 not in self.position_map:
-            logger.error("Position map must contain Unit 0 (entry level)")
-            raise ValueError("Unit 0 missing from position map")
+        # Sliding window management
+        self.window = SlidingWindow()
+        self.executed_orders: Set[int] = set()  # Track which units have executed
         
-        logger.info(f"📍 UnitTracker initialized at Unit {self.current_unit}")
-        self._log_current_boundaries()
+        # Initialize with 4 sell orders for long wallet
+        if wallet_type == "long":
+            self._initialize_long_window()
+        else:
+            self._initialize_hedge_window()
+        
+        if 0 not in self.position_map:
+            raise ValueError("Unit 0 missing from position map")
+    
+    def _initialize_long_window(self):
+        """Initialize long wallet with 4 sell orders"""
+        self.window.sell_orders = [-4, -3, -2, -1]
+        self.phase = Phase.ADVANCE
+        logger.info(f"Long wallet initialized with sells at {self.window.sell_orders}")
+    
+    def _initialize_hedge_window(self):
+        """Initialize hedge wallet for short strategy"""
+        # Hedge starts with 1 sell to exit long, then shorts
+        self.window.sell_orders = [-1]  # To exit long position
+        self.phase = Phase.ADVANCE
+        logger.info(f"Hedge wallet initialized with sell at {self.window.sell_orders}")
     
     def calculate_unit_change(self, current_price: Decimal) -> Optional[UnitChangeEvent]:
         """
-        Check if price has crossed a unit boundary using position map lookup.
-        
-        Args:
-            current_price: Current market price
-            
-        Returns:
-            UnitChangeEvent if boundary crossed, None otherwise
+        Check if price has crossed a unit boundary and manage sliding window.
         """
-        old_unit = self.current_unit
-        new_unit = self.current_unit
-        
-        # Ensure we have enough units ahead in the direction we might move
         self._ensure_sufficient_units()
         
-        # Check if we need to move UP to next unit
+        previous_unit = self.current_unit
+        direction = None
+        
+        # Check UP boundary
         next_unit_up = self.current_unit + 1
         if next_unit_up in self.position_map:
             price_threshold_up = self.position_map[next_unit_up].price
-            
             if current_price >= price_threshold_up:
-                new_unit = next_unit_up
-                logger.info(f"📈 Price ${current_price} crossed UP threshold ${price_threshold_up}")
+                self.current_unit = next_unit_up
+                direction = 'up'
         
-        # Check if we need to move DOWN to previous unit
+        # Check DOWN boundary
         next_unit_down = self.current_unit - 1
         if next_unit_down in self.position_map:
             price_threshold_down = self.position_map[next_unit_down].price
-            
             if current_price <= price_threshold_down:
-                new_unit = next_unit_down
-                logger.info(f"📉 Price ${current_price} crossed DOWN threshold ${price_threshold_down}")
+                self.current_unit = next_unit_down
+                direction = 'down'
         
-        # Check if unit actually changed
-        if new_unit == old_unit:
-            return None  # No boundary crossed
-        
-        # Unit boundary was crossed!
-        self.current_unit = new_unit
-        direction = "UP" if new_unit > old_unit else "DOWN"
-        
-        # Check if we need to move UP to next unit
-        next_unit_up = self.current_unit + 1
-        if next_unit_up in self.position_map:
-            price_threshold_up = self.position_map[next_unit_up].price
+        # If unit changed, manage sliding window
+        if self.current_unit != previous_unit:
+            self._slide_window(direction)
+            self._update_peak_valley_tracking()
+            self._detect_phase_transition()
             
-            if current_price >= price_threshold_up:
-                new_unit = next_unit_up
-                logger.info(f"📈 Price ${current_price} crossed UP threshold ${price_threshold_up}")
-        else:
-            # Need to extend position map upward
-            logger.warning(f"Unit {next_unit_up} missing from position map - extending")
-            self._extend_position_map_up(next_unit_up)
-            return self.calculate_unit_change(current_price)  # Retry after extension
+            return UnitChangeEvent(
+                price=current_price,
+                phase=self.phase,
+                units_from_peak=self.get_units_from_peak(),
+                units_from_valley=self.get_units_from_valley(),
+                timestamp=datetime.now(),
+                direction=direction
+            )
         
-        # Check if we need to move DOWN to previous unit
-        next_unit_down = self.current_unit - 1
-        if next_unit_down in self.position_map:
-            price_threshold_down = self.position_map[next_unit_down].price
+        return None
+    
+    def _slide_window(self, direction: str):
+        """
+        Slide the 4-order window based on price movement.
+        Implements the sliding window logic from v9.2.6.
+        """
+        if direction == 'up':
+            # In trending up phases (ADVANCE), slide sell window up
+            if self.phase == Phase.ADVANCE and self.window.is_all_sells():
+                # Add new sell at current-1, remove sell at current-5
+                new_sell = self.current_unit - 1
+                old_sell = self.current_unit - 5
+                
+                if new_sell not in self.window.sell_orders:
+                    self.window.sell_orders.append(new_sell)
+                    self.window.sell_orders.sort()
+                
+                if old_sell in self.window.sell_orders:
+                    self.window.sell_orders.remove(old_sell)
+                
+                logger.debug(f"Slid sell window up: {self.window.sell_orders}")
+        
+        elif direction == 'down':
+            # In trending down phases (DECLINE), slide buy window down
+            if self.phase == Phase.DECLINE and self.window.is_all_buys():
+                # Add new buy at current+1, remove buy at current+5
+                new_buy = self.current_unit + 1
+                old_buy = self.current_unit + 5
+                
+                if new_buy not in self.window.buy_orders:
+                    self.window.buy_orders.append(new_buy)
+                    self.window.buy_orders.sort()
+                
+                if old_buy in self.window.buy_orders:
+                    self.window.buy_orders.remove(old_buy)
+                
+                logger.debug(f"Slid buy window down: {self.window.buy_orders}")
+    
+    def handle_order_execution(self, executed_unit: int, order_type: str):
+        """
+        Handle order execution and replace with opposite type.
+        Implements the order replacement logic from v9.2.6.
+        
+        Args:
+            executed_unit: The unit level where order executed
+            order_type: 'sell' or 'buy'
+        """
+        self.executed_orders.add(executed_unit)
+        
+        if order_type == 'sell':
+            # Remove from sell window
+            if executed_unit in self.window.sell_orders:
+                self.window.sell_orders.remove(executed_unit)
             
-            if current_price <= price_threshold_down:
-                new_unit = next_unit_down
-                logger.info(f"📉 Price ${current_price} crossed DOWN threshold ${price_threshold_down}")
-        else:
-            # Need to extend position map downward
-            logger.warning(f"Unit {next_unit_down} missing from position map - extending")
-            self._extend_position_map_down(next_unit_down)
-            return self.calculate_unit_change(current_price)  # Retry after extension
+            # Add buy order at current+1 (one unit ahead)
+            replacement_unit = self.current_unit + 1
+            if replacement_unit not in self.window.buy_orders:
+                self.window.buy_orders.append(replacement_unit)
+                self.window.buy_orders.sort()
+            
+            logger.info(f"Sell executed at {executed_unit}, placed buy at {replacement_unit}")
         
-        # Check if unit actually changed
-        if new_unit == old_unit:
-            return None  # No boundary crossed
+        elif order_type == 'buy':
+            # Remove from buy window
+            if executed_unit in self.window.buy_orders:
+                self.window.buy_orders.remove(executed_unit)
+            
+            # Add sell order at current-1 (one unit behind)
+            replacement_unit = self.current_unit - 1
+            if replacement_unit not in self.window.sell_orders:
+                self.window.sell_orders.append(replacement_unit)
+                self.window.sell_orders.sort()
+            
+            logger.info(f"Buy executed at {executed_unit}, placed sell at {replacement_unit}")
         
-        # Unit boundary was crossed!
-        self.current_unit = new_unit
-        direction = "UP" if new_unit > old_unit else "DOWN"
+        # Detect phase transition after execution
+        self._detect_phase_transition()
+    
+    def _detect_phase_transition(self):
+        """
+        Detect phase based on order composition.
+        Simplified phase detection per v9.2.6.
+        """
+        previous_phase = self.phase
         
-        # Update peak/valley tracking
-        self._update_peak_valley_tracking()
+        # Determine phase based on window composition
+        if self.window.is_all_sells():
+            self.phase = Phase.ADVANCE
+        elif self.window.is_all_buys():
+            self.phase = Phase.DECLINE
+        elif self.window.is_mixed():
+            # Mixed orders indicate transitional phases
+            if previous_phase == Phase.ADVANCE:
+                self.phase = Phase.RETRACEMENT
+            elif previous_phase == Phase.DECLINE:
+                self.phase = Phase.RECOVER
+            # Stay in current mixed phase if already there
         
-        # Create and log unit change event
-        event = UnitChangeEvent(
-            old_unit=old_unit,
-            new_unit=new_unit,
-            price=current_price,
-            direction=direction,
-            phase=self.phase,
-            units_from_peak=self.get_units_from_peak(),
-            units_from_valley=self.get_units_from_valley(),
-            timestamp=datetime.now()
-        )
+        # Check for RESET trigger
+        if self._should_reset():
+            self.phase = Phase.RESET
         
-        # Prominent logging
-        logger.warning(f"🚨 UNIT BOUNDARY CROSSED! {direction}")
-        logger.warning(f"   Unit: {old_unit} → {new_unit}")
-        logger.warning(f"   Price: ${current_price:.2f}")
-        logger.warning(f"   Phase: {self.phase.value}")
-        logger.warning(f"   From Peak: {event.units_from_peak} | From Valley: {event.units_from_valley}")
+        if self.phase != previous_phase:
+            logger.info(f"Phase transition: {previous_phase} → {self.phase}")
+    
+    def _should_reset(self) -> bool:
+        """
+        Check if RESET conditions are met.
+        RESET when returning to 100% long from mixed phases.
+        """
+        # For long wallet: All buys executed in RECOVER phase
+        if self.wallet_type == "long":
+            if self.phase == Phase.RECOVER and self.window.is_all_sells():
+                return True
+            if self.phase == Phase.RETRACEMENT and self.window.is_all_sells():
+                return True
         
-        self._log_current_boundaries()
+        # For hedge wallet: All covers executed, ready for long entry
+        elif self.wallet_type == "hedge":
+            # This would be detected by position state, not just orders
+            pass
         
-        return event
+        return False
     
     def _update_peak_valley_tracking(self):
-        """Update peak and valley based on current unit and phase"""
-        # Update peak (always track new highs)
+        """Update peak and valley based on current unit"""
         if self.current_unit > self.peak_unit:
-            old_peak = self.peak_unit
             self.peak_unit = self.current_unit
-            logger.warning(f"🎯 NEW PEAK REACHED: Unit {old_peak} → {self.peak_unit}")
+            logger.debug(f"New peak unit: {self.peak_unit}")
         
-        # Update valley (only during DECLINE phase)
-        if self.phase == Phase.DECLINE and self.current_unit < self.valley_unit:
-            old_valley = self.valley_unit
+        if self.current_unit < self.valley_unit:
             self.valley_unit = self.current_unit
-            logger.warning(f"📉 NEW VALLEY REACHED: Unit {old_valley} → {self.valley_unit}")
+            logger.debug(f"New valley unit: {self.valley_unit}")
     
     def _ensure_sufficient_units(self):
         """
-        Ensure we have the 4th unit ahead in the direction we might move.
-        Only extends during ADVANCE (upward) or DECLINE (downward) phases.
+        Ensure we have units for the sliding window (4 ahead and 4 behind).
         """
+        from .position_map import add_unit_level
         
-        if self.phase == Phase.ADVANCE:
-            # In ADVANCE, check if we have 4 units ahead (upward)
-            target_unit = self.current_unit + 4
+        # Ensure we have 5 units ahead and behind for window management
+        for offset in range(-5, 6):
+            target_unit = self.current_unit + offset
             if target_unit not in self.position_map:
-                success = add_unit_level(self.position_state, self.position_map, target_unit)
-                if success:
-                    logger.debug(f"➕ Added Unit {target_unit} for ADVANCE phase")
-        
-        elif self.phase == Phase.DECLINE:
-            # In DECLINE, check if we have 4 units ahead (downward)
-            target_unit = self.current_unit - 4
-            if target_unit not in self.position_map:
-                success = add_unit_level(self.position_state, self.position_map, target_unit)
-                if success:
-                    logger.debug(f"➕ Added Unit {target_unit} for DECLINE phase")
-    
-
-    
-    def _log_current_boundaries(self):
-        """Log current unit and its price boundaries"""
-        current_price = self.position_map[self.current_unit].price
-        
-        # Get adjacent boundaries
-        up_boundary = "N/A"
-        down_boundary = "N/A"
-        
-        if (self.current_unit + 1) in self.position_map:
-            up_boundary = f"${self.position_map[self.current_unit + 1].price:.2f}"
-        
-        if (self.current_unit - 1) in self.position_map:
-            down_boundary = f"${self.position_map[self.current_unit - 1].price:.2f}"
-        
-        logger.info(f"📍 Current: Unit {self.current_unit} @ ${current_price:.2f}")
-        logger.info(f"   Next boundaries: UP {up_boundary} | DOWN {down_boundary}")
+                add_unit_level(self.position_state, self.position_map, target_unit)
     
     def get_units_from_peak(self) -> int:
         """Get the number of units from peak (for RETRACEMENT phase)"""
@@ -233,69 +294,54 @@ class UnitTracker:
         """Get the number of units from valley (for RECOVERY phase)"""
         return self.current_unit - self.valley_unit
     
-    def set_phase(self, new_phase: Phase):
-        """Update the current strategy phase"""
-        if new_phase != self.phase:
-            logger.info(f"🔄 Phase transition: {self.phase.value} → {new_phase.value}")
-            self.phase = new_phase
+    def get_window_state(self) -> Dict:
+        """
+        Get current sliding window state for monitoring.
+        """
+        return {
+            'current_unit': self.current_unit,
+            'phase': self.phase.value,
+            'sell_orders': self.window.sell_orders,
+            'buy_orders': self.window.buy_orders,
+            'total_orders': self.window.total_orders(),
+            'peak_unit': self.peak_unit,
+            'valley_unit': self.valley_unit,
+            'executed_orders': list(self.executed_orders)
+        }
     
     def reset_for_new_cycle(self, new_entry_price: Optional[Decimal] = None):
         """
-        Reset unit tracking for a new strategy cycle.
+        Reset unit tracking and sliding window for a new strategy cycle.
+        Implements RESET mechanism from v9.2.6.
         
         Args:
             new_entry_price: Optional new entry price for the cycle
         """
-        logger.warning("🔄 RESET: Starting new strategy cycle")
+        logger.info("Executing RESET mechanism for new cycle")
         
-        # Reset unit tracking
+        # Reset unit counters
         self.current_unit = 0
         self.peak_unit = 0
         self.valley_unit = 0
-        self.phase = Phase.ADVANCE
         
-        # Update entry price if provided
+        # Clear execution history
+        self.executed_orders.clear()
+        
+        # Reinitialize sliding window
+        if self.wallet_type == "long":
+            self.window.sell_orders = [-4, -3, -2, -1]
+            self.window.buy_orders = []
+            self.phase = Phase.ADVANCE
+            logger.info(f"Reset long wallet with sells at {self.window.sell_orders}")
+        else:
+            # Hedge wallet reset logic
+            self.window.sell_orders = [-1]
+            self.window.buy_orders = []
+            self.phase = Phase.ADVANCE
+            logger.info(f"Reset hedge wallet with sell at {self.window.sell_orders}")
+        
         if new_entry_price:
             self.position_state.entry_price = new_entry_price
-            logger.info(f"📍 New entry price: ${new_entry_price:.2f}")
+            logger.info(f"Updated entry price: ${new_entry_price:.2f}")
         
-        # Log reset completion
-        logger.warning("✅ Reset complete - ready for new cycle")
-        self._log_current_boundaries()
-    
-    def get_status_summary(self) -> Dict:
-        """Get current unit tracker status for debugging/monitoring"""
-        return {
-            "current_unit": self.current_unit,
-            "peak_unit": self.peak_unit,
-            "valley_unit": self.valley_unit,
-            "phase": self.phase.value,
-            "units_from_peak": self.get_units_from_peak(),
-            "units_from_valley": self.get_units_from_valley(),
-            "entry_price": float(self.position_state.entry_price),
-            "unit_size": float(self.position_state.unit_size_usd)
-        }
-
-
-# Usage example for integration
-if __name__ == "__main__":
-    # Example of how this would be used with existing systems
-    
-    # Assuming you have position_state and position_map from existing code
-    # position_state = PositionState(...)
-    # position_map = calculate_initial_position_map(...)
-    
-    # Initialize unit tracker
-    # unit_tracker = UnitTracker(position_state, position_map)
-    
-    # In WebSocket price handler:
-    # async def handle_price_update(price: Decimal):
-    #     event = unit_tracker.calculate_unit_change(price)
-    #     
-    #     if event:
-    #         logger.warning(f"Unit change: {event.old_unit} → {event.new_unit}")
-    #         
-    #         # Trigger strategy actions based on event
-    #         await strategy.handle_unit_change(event)
-    
-    pass
+        logger.info(f"RESET complete - captured compound growth into new cycle")
