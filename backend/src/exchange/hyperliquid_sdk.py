@@ -459,6 +459,91 @@ class HyperliquidClient:
         
         return results
     
+    def place_stop_order(
+        self,
+        symbol: str,
+        is_buy: bool,
+        size: Decimal,
+        trigger_price: Decimal,
+        reduce_only: bool = True
+    ) -> OrderResult:
+        """
+        Place a stop loss order that triggers at specified price.
+        
+        Args:
+            symbol: Trading symbol
+            is_buy: True for stop buy, False for stop sell
+            size: Order size in base currency
+            trigger_price: Price that triggers the stop
+            reduce_only: If True, only reduces position (default True for stops)
+            
+        Returns:
+            OrderResult with order details
+        """
+        try:
+            # Round trigger price to tick size
+            tick_size = float(get_tick_size(symbol))
+            rounded_trigger = round(float(trigger_price) / tick_size) * tick_size
+            
+            logger.info(
+                f"Placing {'BUY' if is_buy else 'SELL'} stop order: "
+                f"{size} {symbol} triggers @ ${rounded_trigger:.2f}"
+            )
+            
+            # Create stop loss order type
+            order_type = {
+                "trigger": {
+                    "triggerPx": rounded_trigger,
+                    "isMarket": True,  # Execute as market when triggered
+                    "tpsl": "sl"  # Stop loss type
+                }
+            }
+            
+            # Use trigger price * 0.9 for sells, * 1.1 for buys as worst-case limit
+            limit_px = rounded_trigger * Decimal("0.9") if not is_buy else rounded_trigger * Decimal("1.1")
+            
+            result = self.exchange.order(
+                name=symbol,
+                is_buy=is_buy,
+                sz=float(size),
+                limit_px=float(limit_px),
+                order_type=order_type,
+                reduce_only=reduce_only
+            )
+            
+            # Parse result
+            if result.get("status") == "ok":
+                response = result.get("response", {})
+                data = response.get("data", {})
+                statuses = data.get("statuses", [])
+                
+                if statuses and "resting" in statuses[0]:
+                    resting = statuses[0]["resting"]
+                    return OrderResult(
+                        success=True,
+                        order_id=str(resting.get("oid")),
+                        filled_size=Decimal("0"),  # Not filled yet
+                        average_price=Decimal(str(rounded_trigger))
+                    )
+                else:
+                    return OrderResult(
+                        success=False,
+                        error_message=f"Unexpected response: {statuses}"
+                    )
+            else:
+                error_msg = result.get("response", "Unknown error")
+                return OrderResult(
+                    success=False,
+                    error_message=f"Stop order failed: {error_msg}"
+                )
+                
+        except Exception as e:
+            logger.error(f"Failed to place stop order: {e}")
+            return OrderResult(
+                success=False,
+                error_message=str(e)
+            )
+    
     def place_limit_order(
         self,
         symbol: str,

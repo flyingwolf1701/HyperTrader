@@ -171,20 +171,16 @@ class HyperTrader:
         logger.info(f"Position initialized with sliding window: {self.unit_tracker.get_window_state()}")
     
     async def _place_window_orders(self):
-        """Place orders for the current sliding window"""
+        """Place stop loss orders for the sliding window"""
         window_state = self.unit_tracker.get_window_state()
         
-        # Place sell orders
+        # Place stop losses at negative units below current price
+        # These protect the position by triggering when price drops
         for unit in window_state['sell_orders']:
             if unit in self.position_map and not self.position_map[unit].is_active:
-                await self._place_limit_order(unit, "sell")
+                await self._place_stop_loss_order(unit)
         
-        # Place buy orders
-        for unit in window_state['buy_orders']:
-            if unit in self.position_map and not self.position_map[unit].is_active:
-                await self._place_limit_order(unit, "buy")
-        
-        logger.info(f"Placed window orders - Sells: {window_state['sell_orders']}, Buys: {window_state['buy_orders']}")
+        logger.info(f"Placed stop losses at units: {window_state['sell_orders']}")
     
     async def _place_limit_order(self, unit: int, side: str) -> Optional[str]:
         """Place a limit order at a specific unit"""
@@ -212,6 +208,30 @@ class HyperTrader:
             logger.error(f"Failed to place {side} order at unit {unit}: {result.error_message}")
             return None
     
+    async def _place_stop_loss_order(self, unit: int) -> Optional[str]:
+        """Place a stop loss order at a specific unit (for negative units only)"""
+        if unit >= 0:
+            logger.error(f"Stop loss orders should only be placed at negative units, got unit {unit}")
+            return None
+            
+        config = self.position_map[unit]
+        trigger_price = config.price
+        
+        # Stop losses are always sells that reduce the long position
+        size = self.position_state.long_fragment_asset
+        
+        # Place stop order via SDK
+        result = await self._sdk_place_stop_order("sell", trigger_price, size)
+        
+        if result.success:
+            # Update position map
+            config.set_active_order(result.order_id, OrderType.LIMIT_SELL, in_window=True)
+            logger.info(f"Placed STOP LOSS at unit {unit}: {size:.6f} {self.symbol} triggers @ ${trigger_price:.2f}")
+            return result.order_id
+        else:
+            logger.error(f"Failed to place stop loss at unit {unit}: {result.error_message}")
+            return None
+    
     async def _sdk_place_limit_order(self, side: str, price: Decimal, size: Decimal) -> OrderResult:
         """Place limit order via SDK"""
         is_buy = (side.lower() == "buy")
@@ -222,6 +242,17 @@ class HyperTrader:
             size=size,
             reduce_only=False,
             post_only=True  # Maker orders only to avoid fees
+        )
+    
+    async def _sdk_place_stop_order(self, side: str, trigger_price: Decimal, size: Decimal) -> OrderResult:
+        """Place stop loss order via SDK"""
+        is_buy = (side.lower() == "buy")
+        return self.sdk_client.place_stop_order(
+            symbol=self.symbol,
+            is_buy=is_buy,
+            size=size,
+            trigger_price=trigger_price,
+            reduce_only=True  # Stop losses always reduce position
         )
     
     async def _place_market_order(self, side: str, size: Decimal) -> OrderResult:
