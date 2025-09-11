@@ -195,10 +195,9 @@ class UnitChangeEvent:
     price: Decimal
     phase: Phase
     current_unit: int
-    units_from_peak: int
-    units_from_valley: int
     timestamp: datetime
     direction: str  # 'up' or 'down'
+    window_composition: str  # e.g., "4S/0B" for 4 stops, 0 buys
 
 
 @dataclass

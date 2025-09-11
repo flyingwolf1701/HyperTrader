@@ -142,22 +142,41 @@ class HyperTrader:
             logger.info(f"Loaded existing position: {asset_size} {self.symbol} @ ${entry_price:.2f}")
         else:
             # Create new position
-            entry_price = self.current_price
-            asset_size = self.initial_position_size / entry_price
-            logger.info(f"Creating new position: {asset_size:.6f} {self.symbol} @ ${entry_price:.2f}")
+            estimated_price = self.current_price
+            estimated_size = self.initial_position_size / estimated_price
+            logger.info(f"Creating new position: ~{estimated_size:.6f} {self.symbol} @ ~${estimated_price:.2f}")
             
             # Place initial market buy order (for long wallet)
             if self.wallet_type == "long":
-                result = await self._place_market_order("buy", asset_size)
+                result = await self._place_market_order("buy", estimated_size)
                 if not result.success:
                     raise Exception(f"Failed to create initial position: {result.error_message}")
+                
+                # CRITICAL: Wait for position to be fully established
+                logger.info("⏳ Waiting for initial position to be fully established...")
+                
+                # Poll for position with timeout
+                max_attempts = 10
+                for attempt in range(max_attempts):
+                    await asyncio.sleep(1)
+                    positions = self.sdk_client.get_positions()
+                    if self.symbol in positions:
+                        logger.info(f"Position found after {attempt + 1} second(s)")
+                        break
+                else:
+                    raise Exception(f"Position not found after {max_attempts} seconds")
+                
+                position = positions[self.symbol]
+                entry_price = position.entry_price  # Use ACTUAL average fill price
+                asset_size = position.size  # Use ACTUAL position size
+                logger.info(f"✅ Position established: {asset_size:.6f} {self.symbol} @ ${entry_price:.2f} (actual fill price)")
         
-        # Initialize position map
+        # Initialize position map with ACTUAL entry price
         self.position_state, self.position_map = calculate_initial_position_map(
             entry_price=entry_price,
             unit_size_usd=self.unit_size_usd,
             asset_size=asset_size,
-            position_value_usd=self.initial_position_size,
+            position_value_usd=asset_size * entry_price,  # Use actual position value
             unit_range=20  # Pre-calculate more units for sliding window
         )
         
@@ -289,58 +308,129 @@ class HyperTrader:
         """Handle unit boundary crossing"""
         logger.info(f"Unit changed to {self.unit_tracker.current_unit} - Direction: {event.direction} - Phase: {event.phase}")
         
-        # Slide window if in trending phase
-        if event.phase in [Phase.ADVANCE, Phase.DECLINE]:
-            await self._slide_window(event.direction)
+        # PROACTIVE STRATEGY: Place orders immediately on unit crossing
+        current_unit = self.unit_tracker.current_unit
+        
+        if event.direction == 'down':
+            # When price drops to a new unit, immediately place limit buy at current+1
+            # This assumes the stop-loss at this level will/has triggered
+            replacement_unit = current_unit + 1
+            
+            # Ensure unit exists in position map
+            if replacement_unit not in self.position_map:
+                add_unit_level(self.position_state, self.position_map, replacement_unit)
+            
+            # Check if we already have an active order at this unit
+            if not self.position_map[replacement_unit].is_active:
+                logger.warning(f"🚀 PROACTIVE: Price dropped to unit {current_unit}, placing limit buy at unit {replacement_unit}")
+                
+                # Place limit buy order immediately
+                order_id = await self._place_limit_buy_order(replacement_unit)
+                if order_id:
+                    logger.info(f"✅ PROACTIVE limit buy placed at unit {replacement_unit}")
+                else:
+                    logger.error(f"❌ Failed to place PROACTIVE limit buy at unit {replacement_unit}")
+            else:
+                logger.debug(f"Already have active order at unit {replacement_unit}, skipping proactive placement")
+                
+        elif event.direction == 'up':
+            # When price rises to a new unit, immediately place stop-loss at current-1
+            # This assumes a limit buy at this level will/has filled
+            replacement_unit = current_unit - 1
+            
+            # Ensure unit exists in position map
+            if replacement_unit not in self.position_map:
+                add_unit_level(self.position_state, self.position_map, replacement_unit)
+            
+            # Check if we already have an active order at this unit
+            if not self.position_map[replacement_unit].is_active:
+                logger.warning(f"🚀 PROACTIVE: Price rose to unit {current_unit}, placing stop-loss at unit {replacement_unit}")
+                
+                # Place stop-loss order immediately
+                order_id = await self._place_stop_loss_order(replacement_unit)
+                if order_id:
+                    logger.info(f"✅ PROACTIVE stop-loss placed at unit {replacement_unit}")
+                else:
+                    logger.error(f"❌ Failed to place PROACTIVE stop-loss at unit {replacement_unit}")
+            else:
+                logger.debug(f"Already have active order at unit {replacement_unit}, skipping proactive placement")
+        
+        # Always slide window on unit changes (more aggressive)
+        await self._slide_window(event.direction)
     
     async def _slide_window(self, direction: str):
         """Slide the order window incrementally based on price movement"""
         current_unit = self.unit_tracker.current_unit
         phase = self.unit_tracker.phase
+        window_state = self.unit_tracker.get_window_state()
         
-        if direction == 'up' and phase == Phase.ADVANCE:
-            # ADVANCE phase: Add stop-loss at (current-1), cancel at (current-5)
-            new_unit = current_unit - 1  
-            old_unit = current_unit - 5
-            
-            logger.info(f"Sliding window up: will add stop-loss at unit {new_unit}, cancel at unit {old_unit}")
-            
-            # Cancel the old order first
-            if old_unit in self.position_map and self.position_map[old_unit].is_active:
-                await self._cancel_order(old_unit)
-            
-            # Place new stop-loss order
-            order_id = await self._place_stop_loss_order(new_unit)
-            if order_id:
-                logger.info(f"✅ Slid window up: Added stop-loss at unit {new_unit}")
+        # MORE AGGRESSIVE: Slide based on direction and window composition
+        # Don't strictly require specific phases
+        
+        if direction == 'up':
+            # Moving up: Maintain stop-loss window
+            # Check if we have mostly sells (stop-losses) in window
+            if len(window_state['sell_orders']) >= 2:  # At least half are sells
+                # Add stop-loss at (current-1), cancel at (current-5)
+                new_unit = current_unit - 1  
+                old_unit = current_unit - 5
+                
+                logger.info(f"📈 Sliding window UP (phase={phase}): adding stop-loss at unit {new_unit}, cancelling at unit {old_unit}")
+                
+                # Ensure new unit exists
+                if new_unit not in self.position_map:
+                    add_unit_level(self.position_state, self.position_map, new_unit)
+                
+                # Cancel the old order first
+                if old_unit in self.position_map and self.position_map[old_unit].is_active:
+                    success = await self._cancel_order(old_unit)
+                    if success:
+                        logger.info(f"✅ Cancelled old stop-loss at unit {old_unit}")
+                
+                # Place new stop-loss order (if not already placed by proactive logic)
+                if not self.position_map[new_unit].is_active:
+                    order_id = await self._place_stop_loss_order(new_unit)
+                    if order_id:
+                        logger.info(f"✅ Slid window up: Added stop-loss at unit {new_unit}")
+                    else:
+                        logger.error(f"❌ Failed to place stop-loss at unit {new_unit}")
             else:
-                logger.error(f"❌ Failed to place stop-loss at unit {new_unit}")
+                logger.debug(f"Not sliding up: only {len(window_state['sell_orders'])} sell orders in window")
         
-        elif direction == 'down' and phase == Phase.DECLINE:
-            # DECLINE phase: Add limit buy at (current+1), cancel at (current+5)
-            new_unit = current_unit + 1
-            old_unit = current_unit + 5
-            
-            logger.info(f"Sliding window down: will add limit buy at unit {new_unit}, cancel at unit {old_unit}")
-            
-            # Cancel the old order first  
-            if old_unit in self.position_map and self.position_map[old_unit].is_active:
-                await self._cancel_order(old_unit)
-            
-            # Place new limit buy order
-            order_id = await self._place_limit_buy_order(new_unit)
-            if order_id:
-                logger.info(f"✅ Slid window down: Added limit buy at unit {new_unit}")
+        elif direction == 'down':
+            # Moving down: Maintain limit buy window
+            # Check if we have mostly buys in window
+            if len(window_state['buy_orders']) >= 2:  # At least half are buys
+                # Add limit buy at (current+1), cancel at (current+5)
+                new_unit = current_unit + 1
+                old_unit = current_unit + 5
+                
+                logger.info(f"📉 Sliding window DOWN (phase={phase}): adding limit buy at unit {new_unit}, cancelling at unit {old_unit}")
+                
+                # Ensure new unit exists
+                if new_unit not in self.position_map:
+                    add_unit_level(self.position_state, self.position_map, new_unit)
+                
+                # Cancel the old order first  
+                if old_unit in self.position_map and self.position_map[old_unit].is_active:
+                    success = await self._cancel_order(old_unit)
+                    if success:
+                        logger.info(f"✅ Cancelled old limit buy at unit {old_unit}")
+                
+                # Place new limit buy order (if not already placed by proactive logic)
+                if not self.position_map[new_unit].is_active:
+                    order_id = await self._place_limit_buy_order(new_unit)
+                    if order_id:
+                        logger.info(f"✅ Slid window down: Added limit buy at unit {new_unit}")
+                    else:
+                        logger.error(f"❌ Failed to place limit buy at unit {new_unit}")
             else:
-                logger.error(f"❌ Failed to place limit buy at unit {new_unit}")
-        
-        else:
-            logger.warning(f"No sliding needed for direction={direction}, phase={phase}")
+                logger.debug(f"Not sliding down: only {len(window_state['buy_orders'])} buy orders in window")
             
         window_state = self.unit_tracker.get_window_state()
         logger.info(f"Window after slide: {window_state}")
     
-    async def _cancel_order(self, unit: int):
+    async def _cancel_order(self, unit: int) -> bool:
         """Cancel an order at a specific unit"""
         config = self.position_map[unit]
         if config.order_id:
@@ -349,8 +439,11 @@ class HyperTrader:
             if success:
                 config.mark_cancelled()
                 logger.info(f"Cancelled order at unit {unit}")
+                return True
             else:
                 logger.error(f"Failed to cancel order at unit {unit}")
+                return False
+        return False
     
     async def handle_order_fill(self, order_id: str, filled_price: Decimal, filled_size: Decimal):
         """Handle order fill notification"""

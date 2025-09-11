@@ -426,10 +426,10 @@ class HyperliquidWebSocketClient:
     
     def _log_phase_info(self, coin: str, tracker: UnitTracker):
         """Log phase-relevant information after unit change"""
+        window_state = tracker.get_window_state()
         logger.info(
             f"{coin} Phase Info - "
             f"Phase: {tracker.phase.value} | "
-            f"Peak: {tracker.peak_unit} | Valley: {tracker.valley_unit} | "
-            f"Units from Peak: {tracker.get_units_from_peak()} | "
-            f"Units from Valley: {tracker.get_units_from_valley()}"
+            f"Current Unit: {tracker.current_unit} | "
+            f"Window: {len(window_state['sell_orders'])}S/{len(window_state['buy_orders'])}B"
         )

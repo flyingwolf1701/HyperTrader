@@ -57,8 +57,7 @@ class UnitTracker:
         self.position_map = position_map
         self.wallet_type = wallet_type
         self.current_unit = 0
-        self.peak_unit = 0
-        self.valley_unit = 0
+        self.previous_phase = Phase.ADVANCE  # Track last phase for transitions
         
         # Sliding window management
         self.window = SlidingWindow()
@@ -114,16 +113,18 @@ class UnitTracker:
         # If unit changed, manage sliding window
         if self.current_unit != previous_unit:
             self._slide_window(direction)
-            self._update_peak_valley_tracking()
             self._detect_phase_transition()
+            
+            # Create window composition string
+            window_comp = f"{len(self.window.sell_orders)}S/{len(self.window.buy_orders)}B"
             
             return UnitChangeEvent(
                 price=current_price,
                 phase=self.phase,
-                units_from_peak=self.get_units_from_peak(),
-                units_from_valley=self.get_units_from_valley(),
+                current_unit=self.current_unit,
                 timestamp=datetime.now(),
-                direction=direction
+                direction=direction,
+                window_composition=window_comp
             )
         
         return None
@@ -208,29 +209,38 @@ class UnitTracker:
     def _detect_phase_transition(self):
         """
         Detect phase based on order composition.
-        Simplified phase detection per v9.2.6.
+        Uses previous phase to determine correct mixed state.
         """
-        previous_phase = self.phase
+        new_phase = self.phase
         
         # Determine phase based on window composition
         if self.window.is_all_sells():
-            self.phase = Phase.ADVANCE
+            # 4 stop-loss orders = ADVANCE
+            new_phase = Phase.ADVANCE
         elif self.window.is_all_buys():
-            self.phase = Phase.DECLINE
+            # 4 limit buy orders = DECLINE
+            new_phase = Phase.DECLINE
         elif self.window.is_mixed():
-            # Mixed orders indicate transitional phases
-            if previous_phase == Phase.ADVANCE:
-                self.phase = Phase.RETRACEMENT
-            elif previous_phase == Phase.DECLINE:
-                self.phase = Phase.RECOVER
-            # Stay in current mixed phase if already there
+            # Mixed orders: use previous phase to determine which transition
+            if self.previous_phase == Phase.ADVANCE:
+                # Coming from ADVANCE → RETRACEMENT
+                new_phase = Phase.RETRACEMENT
+            elif self.previous_phase == Phase.DECLINE:
+                # Coming from DECLINE → RECOVER
+                new_phase = Phase.RECOVER
+            # If already in mixed phase, stay there
+            elif self.phase in [Phase.RETRACEMENT, Phase.RECOVER]:
+                new_phase = self.phase
         
         # Check for RESET trigger
         if self._should_reset():
-            self.phase = Phase.RESET
+            new_phase = Phase.RESET
         
-        if self.phase != previous_phase:
-            logger.info(f"Phase transition: {previous_phase} → {self.phase}")
+        # Update phases
+        if new_phase != self.phase:
+            logger.info(f"Phase transition: {self.phase} → {new_phase}")
+            self.previous_phase = self.phase  # Store the old phase
+            self.phase = new_phase
     
     def _should_reset(self) -> bool:
         """
@@ -251,15 +261,6 @@ class UnitTracker:
         
         return False
     
-    def _update_peak_valley_tracking(self):
-        """Update peak and valley based on current unit"""
-        if self.current_unit > self.peak_unit:
-            self.peak_unit = self.current_unit
-            logger.debug(f"New peak unit: {self.peak_unit}")
-        
-        if self.current_unit < self.valley_unit:
-            self.valley_unit = self.current_unit
-            logger.debug(f"New valley unit: {self.valley_unit}")
     
     def _ensure_sufficient_units(self):
         """
@@ -273,13 +274,6 @@ class UnitTracker:
             if target_unit not in self.position_map:
                 add_unit_level(self.position_state, self.position_map, target_unit)
     
-    def get_units_from_peak(self) -> int:
-        """Get the number of units from peak (for RETRACEMENT phase)"""
-        return self.current_unit - self.peak_unit
-    
-    def get_units_from_valley(self) -> int:
-        """Get the number of units from valley (for RECOVERY phase)"""
-        return self.current_unit - self.valley_unit
     
     def get_window_state(self) -> Dict:
         """
