@@ -232,7 +232,26 @@ class HyperTrader:
     
     async def _place_limit_buy_order(self, unit: int) -> Optional[str]:
         """Place a limit buy order at a specific unit"""
-        return await self._place_limit_order(unit, "buy")
+        logger.warning(f"📊 ATTEMPTING TO PLACE LIMIT BUY at unit {unit}")
+        
+        if unit not in self.position_map:
+            logger.error(f"❌ Unit {unit} not in position map!")
+            return None
+            
+        config = self.position_map[unit]
+        price = config.price
+        size = self.position_state.long_fragment_usd / price
+        
+        logger.info(f"📊 Limit buy details: Unit {unit}, Price ${price:.2f}, Size {size:.6f} BTC, Value ${self.position_state.long_fragment_usd:.2f}")
+        
+        result = await self._place_limit_order(unit, "buy")
+        
+        if result:
+            logger.warning(f"✅ LIMIT BUY SUCCESSFULLY PLACED at unit {unit}")
+        else:
+            logger.error(f"❌ LIMIT BUY FAILED at unit {unit}")
+            
+        return result
     
     async def _place_stop_loss_order(self, unit: int) -> Optional[str]:
         """Place a stop loss order at a specific unit"""
@@ -258,14 +277,29 @@ class HyperTrader:
     async def _sdk_place_limit_order(self, side: str, price: Decimal, size: Decimal) -> OrderResult:
         """Place limit order via SDK"""
         is_buy = (side.lower() == "buy")
-        return self.sdk_client.place_limit_order(
+        
+        # For buy orders, check if price is below market to avoid rejection
+        if is_buy:
+            current_market_price = await self._get_current_price()
+            if price >= current_market_price:
+                logger.warning(f"⚠️ Limit buy price ${price:.2f} >= market ${current_market_price:.2f}, adjusting to ${current_market_price - 1:.2f}")
+                price = current_market_price - Decimal("1")  # Place $1 below market
+        
+        logger.info(f"📝 Placing {side} limit order: {size:.6f} @ ${price:.2f}")
+        
+        result = self.sdk_client.place_limit_order(
             symbol=self.symbol,
             is_buy=is_buy,
             price=price,
             size=size,
             reduce_only=False,
-            post_only=True  # Maker orders only to avoid fees
+            post_only=False  # Changed to False to ensure order goes through
         )
+        
+        if not result.success:
+            logger.error(f"❌ SDK limit order failed: {result.error_message}")
+            
+        return result
     
     async def _sdk_place_stop_order(self, side: str, trigger_price: Decimal, size: Decimal) -> OrderResult:
         """Place stop loss order via SDK"""
