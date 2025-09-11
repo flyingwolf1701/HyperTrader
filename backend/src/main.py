@@ -209,10 +209,7 @@ class HyperTrader:
             return None
     
     async def _place_stop_loss_order(self, unit: int) -> Optional[str]:
-        """Place a stop loss order at a specific unit (for negative units only)"""
-        if unit >= 0:
-            logger.error(f"Stop loss orders should only be placed at negative units, got unit {unit}")
-            return None
+        """Place a stop loss order at a specific unit"""
             
         config = self.position_map[unit]
         trigger_price = config.price
@@ -290,19 +287,51 @@ class HyperTrader:
             await self._slide_window(event.direction)
     
     async def _slide_window(self, direction: str):
-        """Slide the order window based on price movement"""
+        """Slide the order window incrementally based on price movement"""
+        current_unit = self.unit_tracker.current_unit
+        phase = self.unit_tracker.phase
+        
+        if direction == 'up' and phase == Phase.ADVANCE:
+            # ADVANCE phase: Add stop-loss at (current-1), cancel at (current-5)
+            new_unit = current_unit - 1  
+            old_unit = current_unit - 5
+            
+            logger.info(f"Sliding window up: will add stop-loss at unit {new_unit}, cancel at unit {old_unit}")
+            
+            # Cancel the old order first
+            if old_unit in self.position_map and self.position_map[old_unit].is_active:
+                await self._cancel_order(old_unit)
+            
+            # Place new stop-loss order
+            order_id = await self._place_stop_loss_order(new_unit)
+            if order_id:
+                logger.info(f"✅ Slid window up: Added stop-loss at unit {new_unit}")
+            else:
+                logger.error(f"❌ Failed to place stop-loss at unit {new_unit}")
+        
+        elif direction == 'down' and phase == Phase.DECLINE:
+            # DECLINE phase: Add limit buy at (current+1), cancel at (current+5)
+            new_unit = current_unit + 1
+            old_unit = current_unit + 5
+            
+            logger.info(f"Sliding window down: will add limit buy at unit {new_unit}, cancel at unit {old_unit}")
+            
+            # Cancel the old order first  
+            if old_unit in self.position_map and self.position_map[old_unit].is_active:
+                await self._cancel_order(old_unit)
+            
+            # Place new limit buy order
+            order_id = await self._place_limit_buy_order(new_unit)
+            if order_id:
+                logger.info(f"✅ Slid window down: Added limit buy at unit {new_unit}")
+            else:
+                logger.error(f"❌ Failed to place limit buy at unit {new_unit}")
+        
+        else:
+            logger.warning(f"No sliding needed for direction={direction}, phase={phase}")
+            
         window_state = self.unit_tracker.get_window_state()
-        
-        # Cancel orders that moved out of window
-        for unit, config in self.position_map.items():
-            if config.is_active and config.in_window:
-                if unit not in window_state['sell_orders'] and unit not in window_state['buy_orders']:
-                    await self._cancel_order(unit)
-        
-        # Place new orders for units that entered window
-        await self._place_window_orders()
-        
-        logger.info(f"Slid window {direction}: {window_state}")
+        logger.info(f"Window after slide: {window_state}")
     
     async def _cancel_order(self, unit: int):
         """Cancel an order at a specific unit"""
@@ -364,10 +393,15 @@ class HyperTrader:
             # Reset unit tracker with new position value
             self.unit_tracker.reset_for_new_cycle(self.current_price)
             
-            # Update position state with new values
+            # Update position state with new values for fresh cycle
             self.position_state.position_value_usd = new_position_value
             self.position_state.asset_size = position.size
-            self.position_state.__post_init__()  # Recalculate fragments
+            # Update original sizes for the new cycle (compound growth)
+            self.position_state.original_asset_size = position.size
+            self.position_state.original_position_value_usd = new_position_value
+            # Recalculate fragments based on new original sizes
+            self.position_state.long_fragment_usd = new_position_value / Decimal("4")
+            self.position_state.long_fragment_asset = position.size / Decimal("4")
             
             # Cancel all existing orders
             for unit, config in self.position_map.items():

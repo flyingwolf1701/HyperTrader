@@ -66,6 +66,10 @@ class UnitTracker:
             position_map: Dynamic unit-based order tracking
             wallet_type: 'long' or 'hedge' wallet
         """
+        # Validate wallet_type
+        if wallet_type not in ["long", "hedge"]:
+            raise ValueError(f"wallet_type must be 'long' or 'hedge', got '{wallet_type}'")
+        
         self.position_state = position_state
         self.position_map = position_map
         self.wallet_type = wallet_type

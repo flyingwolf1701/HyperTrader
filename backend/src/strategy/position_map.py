@@ -38,24 +38,34 @@ class PositionState:
     """
     entry_price: Decimal                # The average price we paid for our asset (unit 0)
     unit_size_usd: Decimal             # USD price movement per unit ($5, $25, etc.)
-    asset_size: Decimal                # Total amount of asset we purchased
-    position_value_usd: Decimal        # Total USD value of the position at entry
+    asset_size: Decimal                # Current amount of asset we have (changes with fills)
+    position_value_usd: Decimal        # Current USD value of the position
     
-    # Fragment values (calculated once at peak and locked for entire cycle)
-    long_fragment_usd: Decimal         # 25% of position value in USD (for buying)
-    long_fragment_asset: Decimal       # 25% of asset_size (for selling)
-    short_fragment_usd: Decimal        # 25% of position value in USD (for shorting)
+    # Original position size (locked for entire cycle to calculate consistent fragments)
+    original_asset_size: Decimal       # Original asset amount at cycle start
+    original_position_value_usd: Decimal # Original USD value at cycle start
+    
+    # Fragment values (calculated once from original size and locked for entire cycle)
+    long_fragment_usd: Decimal         # 25% of original position value in USD (for buying)
+    long_fragment_asset: Decimal       # 25% of original asset_size (for selling)
+    short_fragment_usd: Decimal        # 25% of original position value in USD (for shorting)
     short_fragment_asset: Decimal      # 25% of short position asset amount (calculated after going short)
     
     def __post_init__(self):
         """Calculate standard fragments after initialization"""
-        # Long fragments are always 25% of original position
-        self.long_fragment_usd = self.position_value_usd / Decimal("4")
-        self.long_fragment_asset = self.asset_size / Decimal("4")
+        # If original sizes aren't set, set them from current values (first time initialization)
+        if not hasattr(self, 'original_asset_size') or self.original_asset_size == Decimal("0"):
+            self.original_asset_size = self.asset_size
+            self.original_position_value_usd = self.position_value_usd
         
-        # Short fragments start as same USD value (will be updated during strategy)
-        self.short_fragment_usd = self.position_value_usd / Decimal("4")
-        # short_fragment_asset will be calculated later when we have short positions
+        # Long fragments are always 25% of ORIGINAL position (never recalculated)
+        if self.long_fragment_asset == Decimal("0"):  # Only calculate once
+            self.long_fragment_usd = self.original_position_value_usd / Decimal("4")
+            self.long_fragment_asset = self.original_asset_size / Decimal("4")
+            
+            # Short fragments start as same USD value (will be updated during strategy)
+            self.short_fragment_usd = self.original_position_value_usd / Decimal("4")
+            # short_fragment_asset will be calculated later when we have short positions
 
     def get_price_for_unit(self, unit: int) -> Decimal:
         """Calculate price for any unit level"""
@@ -147,12 +157,24 @@ def calculate_initial_position_map(
     Returns:
         Tuple of (PositionState, Dict[unit -> PositionConfig])
     """
+    # Validate inputs
+    if unit_size_usd <= 0:
+        raise ValueError(f"unit_size_usd must be positive, got {unit_size_usd}")
+    if entry_price <= 0:
+        raise ValueError(f"entry_price must be positive, got {entry_price}")
+    if asset_size <= 0:
+        raise ValueError(f"asset_size must be positive, got {asset_size}")
+    if position_value_usd <= 0:
+        raise ValueError(f"position_value_usd must be positive, got {position_value_usd}")
+    
     # Create static configuration (shared across all units)
     position_state = PositionState(
         entry_price=entry_price,
         unit_size_usd=unit_size_usd,
         asset_size=asset_size,
         position_value_usd=position_value_usd,
+        original_asset_size=asset_size,    # Lock original size for consistent fragments
+        original_position_value_usd=position_value_usd,  # Lock original value
         long_fragment_usd=Decimal("0"),    # Will be calculated in __post_init__
         long_fragment_asset=Decimal("0"),  # Will be calculated in __post_init__
         short_fragment_usd=Decimal("0"),   # Will be calculated in __post_init__

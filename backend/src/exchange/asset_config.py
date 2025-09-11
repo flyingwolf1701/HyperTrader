@@ -218,7 +218,10 @@ def round_to_tick(price: Decimal, symbol: str) -> Decimal:
         Price rounded to nearest tick
     """
     tick_size = get_tick_size(symbol)
-    return Decimal(str(round(float(price) / float(tick_size)) * float(tick_size)))
+    # Use Decimal arithmetic to avoid floating point precision issues
+    multiplier = price / tick_size
+    rounded_multiplier = multiplier.quantize(Decimal('1'), rounding='ROUND_HALF_UP')
+    return rounded_multiplier * tick_size
 
 def get_all_symbols() -> list:
     """Get list of all configured symbols"""

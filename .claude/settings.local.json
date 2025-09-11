@@ -8,7 +8,9 @@
       "WebFetch(domain:hyperliquid.gitbook.io)",
       "Read(c:\\Users\\trini\\Pictures\\Screenshots/**)",
       "Bash(uv add:*)",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "Read(//c/Users/trini/Pictures/Screenshots/**)",
+      "Bash(pytest:*)"
     ],
     "deny": [],
     "ask": [],

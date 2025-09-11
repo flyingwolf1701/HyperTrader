@@ -279,7 +279,16 @@ class HyperliquidWebSocketClient:
     async def _process_message(self, message: str):
         """Process incoming WebSocket message with CORRECT pong handling"""
         try:
+            # Skip empty or non-string messages
+            if not message or not isinstance(message, str):
+                return
+                
             data = json.loads(message)
+            
+            # Ensure data is a dict
+            if not isinstance(data, dict):
+                logger.debug(f"Ignoring non-dict message: {type(data)} - {str(data)[:50]}")
+                return
             
             # Handle Hyperliquid pong response
             if data.get("channel") == "pong":
@@ -300,9 +309,10 @@ class HyperliquidWebSocketClient:
                 logger.info(f"Subscription confirmed: {data}")
                 
         except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse WebSocket message: {e}")
+            # Silently ignore incomplete JSON messages (common with WebSocket chunking)
+            logger.debug(f"Incomplete JSON message (likely chunked): {len(message)} chars")
         except Exception as e:
-            logger.error(f"Error processing message: {e}")
+            logger.error(f"Error processing message: {e} - Message: {message[:100]}")
     
     async def _handle_trades(self, data: dict):
         """Handle trade data and update unit tracking - RATE LIMITED VERSION"""
@@ -345,7 +355,7 @@ class HyperliquidWebSocketClient:
                     # Call price callback if registered and not None
                     if coin in self.price_callbacks and self.price_callbacks[coin] is not None:
                         logger.info(f"Calling strategy callback for {coin} at ${price}")
-                        asyncio.create_task(self.price_callbacks[coin](Decimal(str(price))))
+                        self.price_callbacks[coin](Decimal(str(price)))
                         
                 # Add periodic connection verification
                 if not hasattr(self, '_last_heartbeat_log'):
@@ -362,8 +372,30 @@ class HyperliquidWebSocketClient:
         if "data" not in data:
             return
         
-        fills = data["data"]
+        fills_data = data["data"]
+        
+        # Handle different data structures
+        if isinstance(fills_data, dict):
+            # Sometimes data comes as a dict with fills array
+            if "fills" in fills_data:
+                fills = fills_data["fills"]
+            else:
+                # Single fill as dict
+                fills = [fills_data]
+        elif isinstance(fills_data, list):
+            fills = fills_data
+        else:
+            logger.debug(f"Unexpected fills data type: {type(fills_data)}")
+            return
+        
+        # Ensure fills is a list and contains dicts
+        if not isinstance(fills, list):
+            return
+            
         for fill in fills:
+            if not isinstance(fill, dict):
+                logger.debug(f"Skipping non-dict fill: {type(fill)}")
+                continue
             # Extract fill information
             coin = fill.get("coin")
             px = fill.get("px")  # Execution price

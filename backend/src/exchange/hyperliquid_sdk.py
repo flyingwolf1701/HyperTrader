@@ -482,33 +482,41 @@ class HyperliquidClient:
         """
         try:
             # Round trigger price to tick size
-            tick_size = float(get_tick_size(symbol))
-            rounded_trigger = round(float(trigger_price) / tick_size) * tick_size
+            from .asset_config import round_to_tick
+            rounded_trigger = round_to_tick(trigger_price, symbol)
             
             logger.info(
                 f"Placing {'BUY' if is_buy else 'SELL'} stop order: "
                 f"{size} {symbol} triggers @ ${rounded_trigger:.2f}"
             )
+            logger.debug(f"Original trigger: ${trigger_price}, Rounded: ${rounded_trigger}, Tick size: ${get_tick_size(symbol)}")
             
-            # Create stop loss order type
+            # Create stop loss order type - try with isMarket: false and proper limit
             order_type = {
                 "trigger": {
-                    "triggerPx": rounded_trigger,
-                    "isMarket": True,  # Execute as market when triggered
+                    "triggerPx": float(rounded_trigger),
+                    "isMarket": False,  # Execute as limit when triggered
                     "tpsl": "sl"  # Stop loss type
                 }
             }
             
-            # Use trigger price * 0.9 for sells, * 1.1 for buys as worst-case limit
-            limit_px = rounded_trigger * Decimal("0.9") if not is_buy else rounded_trigger * Decimal("1.1")
+            # For stop orders, use the trigger price as the limit price
+            limit_px = rounded_trigger
+            
+            # Get market info for proper decimal formatting
+            market_info = self.get_market_info(symbol)
+            sz_decimals = int(market_info.get("szDecimals", 4))
+            
+            # Round size to appropriate decimals
+            rounded_size = round(float(size), sz_decimals)
             
             result = self.exchange.order(
-                name=symbol,
-                is_buy=is_buy,
-                sz=float(size),
-                limit_px=float(limit_px),
-                order_type=order_type,
-                reduce_only=reduce_only
+                symbol, 
+                is_buy, 
+                rounded_size, 
+                float(limit_px), 
+                order_type, 
+                reduce_only
             )
             
             # Parse result
@@ -523,7 +531,7 @@ class HyperliquidClient:
                         success=True,
                         order_id=str(resting.get("oid")),
                         filled_size=Decimal("0"),  # Not filled yet
-                        average_price=Decimal(str(rounded_trigger))
+                        average_price=rounded_trigger
                     )
                 else:
                     return OrderResult(
