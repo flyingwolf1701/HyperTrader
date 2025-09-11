@@ -417,20 +417,19 @@ class HyperliquidWebSocketClient:
                 # Call fill callback if registered
                 if coin in self.fill_callbacks and self.fill_callbacks[coin] is not None:
                     logger.info(f"Triggering fill callback for {coin}")
+                    # Call with only the parameters that handle_order_fill expects
                     await self.fill_callbacks[coin](
-                        order_id=oid,
-                        is_buy=is_buy,
-                        price=price,
-                        size=size,
-                        timestamp=time
+                        oid,           # order_id
+                        price,         # filled_price  
+                        size           # filled_size
                     )
     
     def _log_phase_info(self, coin: str, tracker: UnitTracker):
         """Log phase-relevant information after unit change"""
+        window_state = tracker.get_window_state()
         logger.info(
             f"{coin} Phase Info - "
             f"Phase: {tracker.phase.value} | "
-            f"Peak: {tracker.peak_unit} | Valley: {tracker.valley_unit} | "
-            f"Units from Peak: {tracker.get_units_from_peak()} | "
-            f"Units from Valley: {tracker.get_units_from_valley()}"
+            f"Current Unit: {tracker.current_unit} | "
+            f"Window: {len(window_state['sell_orders'])}S/{len(window_state['buy_orders'])}B"
         )

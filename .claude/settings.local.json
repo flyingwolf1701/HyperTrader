@@ -10,7 +10,8 @@
       "Bash(uv add:*)",
       "Bash(python:*)",
       "Read(//c/Users/trini/Pictures/Screenshots/**)",
-      "Bash(pytest:*)"
+      "Bash(pytest:*)",
+      "Read(//c/Users/trini/Downloads/**)"
     ],
     "deny": [],
     "ask": [],
