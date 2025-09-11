@@ -16,18 +16,21 @@ from dotenv import load_dotenv
 src_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, src_dir)
 
-# Import strategy components
-from strategy.position_map import (
-    PositionState, 
-    PositionConfig,
-    OrderType,
-    calculate_initial_position_map,
-    update_sliding_window,
-    handle_order_replacement,
-    get_window_orders,
-    get_active_orders
+# Import new strategy components
+from strategy.data_models import (
+    OrderType, Phase, ExecutionStatus, PositionState, 
+    WindowState, PositionConfig, UnitChangeEvent, OrderFillEvent
 )
-from strategy.unit_tracker import UnitTracker, Phase, UnitChangeEvent
+from strategy.strategy_engine import LongWalletStrategy
+from strategy.order_manager import OrderManager
+from strategy.position_tracker import PositionTracker
+from strategy.position_map import (
+    calculate_initial_position_map,
+    add_unit_level,
+    get_active_orders,
+    get_window_orders
+)
+from strategy.unit_tracker import UnitTracker  # For backward compatibility
 from exchange.hyperliquid_sdk import HyperliquidClient, OrderResult
 from core.websocket_client import HyperliquidWebSocketClient
 
@@ -190,7 +193,7 @@ class HyperTrader:
         # Determine size based on fragment type
         if side == "sell":
             size = self.position_state.long_fragment_asset
-            order_type = OrderType.LIMIT_SELL
+            order_type = OrderType.STOP_LOSS_SELL
         else:
             # Calculate size in asset terms from USD fragment
             size = self.position_state.long_fragment_usd / price
@@ -208,6 +211,10 @@ class HyperTrader:
             logger.error(f"Failed to place {side} order at unit {unit}: {result.error_message}")
             return None
     
+    async def _place_limit_buy_order(self, unit: int) -> Optional[str]:
+        """Place a limit buy order at a specific unit"""
+        return await self._place_limit_order(unit, "buy")
+    
     async def _place_stop_loss_order(self, unit: int) -> Optional[str]:
         """Place a stop loss order at a specific unit"""
             
@@ -222,7 +229,7 @@ class HyperTrader:
         
         if result.success:
             # Update position map
-            config.set_active_order(result.order_id, OrderType.LIMIT_SELL, in_window=True)
+            config.set_active_order(result.order_id, OrderType.STOP_LOSS_SELL, "stop_loss_orders")
             logger.info(f"Placed STOP LOSS at unit {unit}: {size:.6f} {self.symbol} triggers @ ${trigger_price:.2f}")
             return result.order_id
         else:
@@ -349,31 +356,54 @@ class HyperTrader:
         """Handle order fill notification"""
         # Find the unit that was filled
         filled_unit = None
-        order_type = None
+        filled_order_type = None
         
         for unit, config in self.position_map.items():
             if config.order_id == order_id:
                 filled_unit = unit
-                order_type = "sell" if config.order_type == OrderType.LIMIT_SELL else "buy"
+                filled_order_type = config.order_type
                 config.mark_filled(filled_price, filled_size)
                 break
         
         if filled_unit is not None:
-            logger.info(f"Order filled at unit {filled_unit}: {order_type} {filled_size:.6f} @ ${filled_price:.2f}")
+            logger.info(f"Order filled at unit {filled_unit}: {filled_order_type.value} {filled_size:.6f} @ ${filled_price:.2f}")
             
-            # Handle order replacement
-            self.unit_tracker.handle_order_execution(filled_unit, order_type)
+            # Update unit tracker
+            order_side = "sell" if filled_order_type == OrderType.STOP_LOSS_SELL else "buy"
+            self.unit_tracker.handle_order_execution(filled_unit, order_side)
             
-            # Place replacement order
-            replacement_unit = handle_order_replacement(
-                self.position_map,
-                filled_unit,
-                self.unit_tracker.current_unit,
-                order_type
-            )
+            # Determine replacement order based on strategy doc v9
+            current_unit = self.unit_tracker.current_unit
             
-            if replacement_unit:
-                await self._place_limit_order(replacement_unit, "buy" if order_type == "sell" else "sell")
+            if filled_order_type == OrderType.STOP_LOSS_SELL:
+                # Stop-loss filled: place limit buy at current+1
+                replacement_unit = current_unit + 1
+                
+                # Ensure unit exists in position map
+                if replacement_unit not in self.position_map:
+                    add_unit_level(self.position_state, self.position_map, replacement_unit)
+                
+                # Place limit buy order
+                order_id = await self._place_limit_buy_order(replacement_unit)
+                if order_id:
+                    logger.info(f"✅ Placed replacement limit buy at unit {replacement_unit}")
+                else:
+                    logger.error(f"❌ Failed to place replacement limit buy at unit {replacement_unit}")
+                    
+            elif filled_order_type == OrderType.LIMIT_BUY:
+                # Limit buy filled: place stop-loss at current-1
+                replacement_unit = current_unit - 1
+                
+                # Ensure unit exists in position map
+                if replacement_unit not in self.position_map:
+                    add_unit_level(self.position_state, self.position_map, replacement_unit)
+                
+                # Place stop-loss order
+                order_id = await self._place_stop_loss_order(replacement_unit)
+                if order_id:
+                    logger.info(f"✅ Placed replacement stop-loss at unit {replacement_unit}")
+                else:
+                    logger.error(f"❌ Failed to place replacement stop-loss at unit {replacement_unit}")
             
             # Check for phase transition
             window_state = self.unit_tracker.get_window_state()

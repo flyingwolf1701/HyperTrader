@@ -1,33 +1,16 @@
 """
-UnitTracker Implementation - Sliding Window Order Management v9.2.6
-Aligned with Advanced Hedging Strategy sliding window approach
+UnitTracker Implementation - Legacy compatibility layer
+Most functionality has been moved to strategy_engine.py and position_tracker.py
+This file is maintained for backward compatibility
 """
 from decimal import Decimal
 from datetime import datetime
 from typing import Optional, Dict, List, Set
-from enum import Enum
 from loguru import logger
 from dataclasses import dataclass, field
 
-
-class Phase(Enum):
-    """Trading strategy phases based on order composition"""
-    ADVANCE = "ADVANCE"        # 100% long, all sell orders
-    RETRACEMENT = "RETRACEMENT" # Mixed position, mix of buy/sell orders
-    DECLINE = "DECLINE"        # 100% cash, all buy orders
-    RECOVER = "RECOVER"        # Mixed position, mix of buy/sell orders
-    RESET = "RESET"           # Transitioning to new cycle
-
-
-@dataclass
-class UnitChangeEvent:
-    """Event triggered when unit boundary is crossed"""
-    price: Decimal
-    phase: Phase
-    units_from_peak: int
-    units_from_valley: int
-    timestamp: datetime
-    direction: str  # 'up' or 'down'
+# Import from centralized data models
+from .data_models import Phase, UnitChangeEvent
     
 @dataclass
 class SlidingWindow:
