@@ -151,9 +151,7 @@ class PositionConfig:
     execution_status: ExecutionStatus = ExecutionStatus.PENDING
     is_active: bool = False
     
-    # Window tracking
-    window_type: Optional[str] = None  # "stop_loss_orders" or "limit_buy_orders"
-    window_index: Optional[int] = None # Position within window (0-3)
+    # Window tracking removed - now using list-based tracking in UnitTracker
     
     # Execution tracking
     executed_at: Optional[datetime] = None
@@ -180,11 +178,10 @@ class PositionConfig:
         self.order_id = None
         self.order_type = None
     
-    def set_active_order(self, order_id: str, order_type: OrderType, window_type: str):
+    def set_active_order(self, order_id: str, order_type: OrderType, in_window: bool = True):
         """Set an active order for this unit"""
         self.order_id = order_id
         self.order_type = order_type
-        self.window_type = window_type
         self.is_active = True
         self.execution_status = ExecutionStatus.PENDING
 

@@ -28,16 +28,12 @@ from .position_map import (
     add_unit_level,
     get_active_orders,
     get_filled_orders,
-    get_window_orders,
     get_orders_by_type,
-    cancel_all_active_orders,
-    # Deprecated functions kept for backward compatibility
-    update_sliding_window,
-    handle_order_replacement
+    cancel_all_active_orders
 )
 
 # Import from unit tracker (for backward compatibility)
-from .unit_tracker import UnitTracker, SlidingWindow
+from .unit_tracker import UnitTracker
 
 # Import from config
 from .config import LongWalletConfig, TestnetConfig, MainnetConfig
