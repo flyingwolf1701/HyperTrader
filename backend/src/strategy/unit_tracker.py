@@ -121,45 +121,24 @@ class UnitTracker:
         DEPRECATED - Window sliding is now handled in main.py
         This method is kept for backward compatibility only.
         """
-        logger.debug(f"_slide_window called with direction={direction} - deprecated, sliding handled in main.py")
+        # Do nothing - sliding is handled in main.py
+        pass
         
     
     def handle_order_execution(self, executed_unit: int, order_type: str):
         """
-        Handle order execution and replace with opposite type.
-        Implements the order replacement logic from v9.2.6.
+        DEPRECATED - Order execution is now handled in main.py
+        This method is kept for backward compatibility only.
         
         Args:
             executed_unit: The unit level where order executed
             order_type: 'sell' or 'buy'
         """
+        # Track execution for historical purposes
         self.executed_orders.add(executed_unit)
         
-        if order_type == 'sell':
-            # Remove from sell window
-            if executed_unit in self.window.sell_orders:
-                self.window.sell_orders.remove(executed_unit)
-            
-            # Add buy order at current+1 (one unit ahead)
-            replacement_unit = self.current_unit + 1
-            if replacement_unit not in self.window.buy_orders:
-                self.window.buy_orders.append(replacement_unit)
-                self.window.buy_orders.sort()
-            
-            logger.info(f"Sell executed at {executed_unit}, placed buy at {replacement_unit}")
-        
-        elif order_type == 'buy':
-            # Remove from buy window
-            if executed_unit in self.window.buy_orders:
-                self.window.buy_orders.remove(executed_unit)
-            
-            # Add sell order at current-1 (one unit behind)
-            replacement_unit = self.current_unit - 1
-            if replacement_unit not in self.window.sell_orders:
-                self.window.sell_orders.append(replacement_unit)
-                self.window.sell_orders.sort()
-            
-            logger.info(f"Buy executed at {executed_unit}, placed sell at {replacement_unit}")
+        # Note: Actual order management now happens in main.py
+        logger.debug(f"handle_order_execution called for {order_type} at unit {executed_unit} - handled in main.py")
         
         # Detect phase transition after execution
         self._detect_phase_transition()
@@ -248,10 +227,7 @@ class UnitTracker:
             'trailing_stop': self.trailing_stop.copy(),  
             'trailing_buy': self.trailing_buy.copy(),
             'total_orders': len(self.trailing_stop) + len(self.trailing_buy),
-            'executed_orders': list(self.executed_orders),
-            # Keep old names for backward compatibility
-            'sell_orders': self.trailing_stop.copy(),
-            'buy_orders': self.trailing_buy.copy()
+            'executed_orders': list(self.executed_orders)
         }
     
     def reset_for_new_cycle(self, new_entry_price: Optional[Decimal] = None):
@@ -274,19 +250,14 @@ class UnitTracker:
         if self.wallet_type == "long":
             self.trailing_stop = [-4, -3, -2, -1]
             self.trailing_buy = []
-            
-            # Keep old window updated for compatibility
-            self.window.sell_orders = self.trailing_stop.copy()
-            self.window.buy_orders = []
-            
             self.phase = Phase.ADVANCE
             logger.info(f"Reset long wallet with stop-losses at {self.trailing_stop}")
         else:
             # Hedge wallet reset logic
-            self.window.sell_orders = [-1]
-            self.window.buy_orders = []
+            self.trailing_stop = [-1]
+            self.trailing_buy = []
             self.phase = Phase.ADVANCE
-            logger.info(f"Reset hedge wallet with sell at {self.window.sell_orders}")
+            logger.info(f"Reset hedge wallet with stop at {self.trailing_stop}")
     
     # NEW LIST-BASED TRACKING METHODS
     def add_trailing_stop(self, unit: int) -> bool:
@@ -294,8 +265,6 @@ class UnitTracker:
         if unit not in self.trailing_stop:
             self.trailing_stop.append(unit)
             self.trailing_stop.sort()  # Keep sorted for readability
-            # Update old window for compatibility
-            self.window.sell_orders = self.trailing_stop.copy()
             logger.debug(f"Added stop at unit {unit}, trailing_stop: {self.trailing_stop}")
             return True
         return False
@@ -304,8 +273,6 @@ class UnitTracker:
         """Remove a unit from trailing stop list"""
         if unit in self.trailing_stop:
             self.trailing_stop.remove(unit)
-            # Update old window for compatibility
-            self.window.sell_orders = self.trailing_stop.copy()
             logger.debug(f"Removed stop at unit {unit}, trailing_stop: {self.trailing_stop}")
             return True
         return False
@@ -315,8 +282,6 @@ class UnitTracker:
         if unit not in self.trailing_buy:
             self.trailing_buy.append(unit)
             self.trailing_buy.sort()  # Keep sorted for readability
-            # Update old window for compatibility
-            self.window.buy_orders = self.trailing_buy.copy()
             logger.debug(f"Added buy at unit {unit}, trailing_buy: {self.trailing_buy}")
             return True
         return False
@@ -325,8 +290,6 @@ class UnitTracker:
         """Remove a unit from trailing buy list"""
         if unit in self.trailing_buy:
             self.trailing_buy.remove(unit)
-            # Update old window for compatibility
-            self.window.buy_orders = self.trailing_buy.copy()
             logger.debug(f"Removed buy at unit {unit}, trailing_buy: {self.trailing_buy}")
             return True
         return False

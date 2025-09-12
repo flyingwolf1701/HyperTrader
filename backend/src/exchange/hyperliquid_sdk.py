@@ -264,16 +264,33 @@ class HyperliquidClient:
             True if successful, False otherwise
         """
         try:
+            logger.info(f"Attempting to set leverage to {leverage}x for {symbol}")
+            
             result = self.exchange.update_leverage(
                 leverage=leverage,
                 name=symbol,
                 is_cross=True  # Use cross margin
             )
+            
             if result.get("status") == "ok":
-                logger.info(f"Set leverage to {leverage}x for {symbol}")
+                logger.info(f"✅ Successfully set leverage to {leverage}x for {symbol}")
                 return True
             else:
-                logger.warning(f"Failed to set leverage: {result}")
+                error_msg = result.get("response", "Unknown error")
+                logger.warning(f"⚠️ Failed to set {leverage}x: {error_msg}")
+                
+                # SOL on testnet might have max 10x leverage
+                if leverage > 10:
+                    logger.info("Trying 10x leverage as fallback...")
+                    fallback = self.exchange.update_leverage(
+                        leverage=10,
+                        name=symbol,
+                        is_cross=True
+                    )
+                    if fallback.get("status") == "ok":
+                        logger.warning(f"Using 10x leverage (max allowed for {symbol})")
+                        return True
+                        
                 return False
         except Exception as e:
             logger.error(f"Error setting leverage: {e}")
