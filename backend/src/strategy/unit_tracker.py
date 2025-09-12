@@ -285,8 +285,6 @@ class UnitTracker:
             'sell_orders': self.window.sell_orders,
             'buy_orders': self.window.buy_orders,
             'total_orders': self.window.total_orders(),
-            'peak_unit': self.peak_unit,
-            'valley_unit': self.valley_unit,
             'executed_orders': list(self.executed_orders)
         }
     
@@ -302,8 +300,6 @@ class UnitTracker:
         
         # Reset unit counters
         self.current_unit = 0
-        self.peak_unit = 0
-        self.valley_unit = 0
         
         # Clear execution history
         self.executed_orders.clear()

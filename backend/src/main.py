@@ -31,6 +31,7 @@ from strategy.position_map import (
     get_window_orders
 )
 from strategy.unit_tracker import UnitTracker  # For backward compatibility
+from strategy.pending_buy_tracker import PendingBuyTracker
 from exchange.hyperliquid_sdk import HyperliquidClient, OrderResult
 from core.websocket_client import HyperliquidWebSocketClient
 
@@ -59,6 +60,7 @@ class HyperTrader:
         self.position_state: Optional[PositionState] = None
         self.position_map: Optional[Dict[int, PositionConfig]] = None
         self.unit_tracker: Optional[UnitTracker] = None
+        self.pending_buy_tracker: Optional[PendingBuyTracker] = None
         
         # Trading parameters - must be set from command line
         self.unit_size_usd = None
@@ -187,6 +189,9 @@ class HyperTrader:
             wallet_type=self.wallet_type
         )
         
+        # Initialize pending buy tracker
+        self.pending_buy_tracker = PendingBuyTracker(symbol=self.symbol)
+        
         # Place initial sliding window orders
         await self._place_window_orders()
         
@@ -242,16 +247,41 @@ class HyperTrader:
         price = config.price
         size = self.position_state.long_fragment_usd / price
         
-        logger.info(f"📊 Limit buy details: Unit {unit}, Price ${price:.2f}, Size {size:.6f} BTC, Value ${self.position_state.long_fragment_usd:.2f}")
+        logger.info(f"📊 Limit buy details: Unit {unit}, Price ${price:.2f}, Size {size:.6f} {self.symbol}, Value ${self.position_state.long_fragment_usd:.2f}")
         
-        result = await self._place_limit_order(unit, "buy")
+        # Check if price is above current market
+        current_market_price = await self._get_current_price()
         
-        if result:
-            logger.warning(f"✅ LIMIT BUY SUCCESSFULLY PLACED at unit {unit}")
-        else:
-            logger.error(f"❌ LIMIT BUY FAILED at unit {unit}")
+        if price > current_market_price:
+            # Price is above market - use stop limit buy
+            logger.warning(f"🎯 Price ${price:.2f} > Market ${current_market_price:.2f} - Using STOP LIMIT BUY")
             
-        return result
+            result = self.sdk_client.place_stop_limit_buy(
+                symbol=self.symbol,
+                size=size,
+                trigger_price=price,
+                limit_price=price,  # Use same price for limit
+                reduce_only=False
+            )
+            
+            if result.success:
+                config.set_active_order(result.order_id, OrderType.LIMIT_BUY, in_window=True)
+                logger.warning(f"✅ STOP LIMIT BUY SUCCESSFULLY PLACED at unit {unit} (triggers @ ${price:.2f})")
+                return result.order_id
+            else:
+                logger.error(f"❌ STOP LIMIT BUY FAILED at unit {unit}: {result.error_message}")
+                return None
+        else:
+            # Price is below market - use regular limit buy
+            logger.info(f"📉 Price ${price:.2f} <= Market ${current_market_price:.2f} - Using regular limit buy")
+            result = await self._place_limit_order(unit, "buy")
+            
+            if result:
+                logger.warning(f"✅ LIMIT BUY SUCCESSFULLY PLACED at unit {unit}")
+            else:
+                logger.error(f"❌ LIMIT BUY FAILED at unit {unit}")
+                
+            return result
     
     async def _place_stop_loss_order(self, unit: int) -> Optional[str]:
         """Place a stop loss order at a specific unit"""
@@ -278,13 +308,6 @@ class HyperTrader:
         """Place limit order via SDK"""
         is_buy = (side.lower() == "buy")
         
-        # For buy orders, check if price is below market to avoid rejection
-        if is_buy:
-            current_market_price = await self._get_current_price()
-            if price >= current_market_price:
-                logger.warning(f"⚠️ Limit buy price ${price:.2f} >= market ${current_market_price:.2f}, adjusting to ${current_market_price - 1:.2f}")
-                price = current_market_price - Decimal("1")  # Place $1 below market
-        
         logger.info(f"📝 Placing {side} limit order: {size:.6f} @ ${price:.2f}")
         
         result = self.sdk_client.place_limit_order(
@@ -293,7 +316,7 @@ class HyperTrader:
             price=price,
             size=size,
             reduce_only=False,
-            post_only=False  # Changed to False to ensure order goes through
+            post_only=True  # Back to True for maker orders (regular limits below market)
         )
         
         if not result.success:
@@ -332,15 +355,56 @@ class HyperTrader:
         """Handle price updates from WebSocket"""
         self.current_price = price
         
+        # Check for pending buys that should execute
+        asyncio.create_task(self._check_pending_buys(price))
+        
         # Check for unit boundary crossing
         unit_event = self.unit_tracker.calculate_unit_change(price)
         
         if unit_event:
             asyncio.create_task(self._handle_unit_change(unit_event))
     
+    async def _check_pending_buys(self, current_price: Decimal):
+        """Check if any pending buy orders should execute at current price"""
+        if not self.pending_buy_tracker:
+            return
+        
+        # Check for executions
+        ready_to_execute = self.pending_buy_tracker.check_for_executions(current_price)
+        
+        for pending_buy in ready_to_execute:
+            logger.warning(f"🚀 EXECUTING PENDING BUY for unit {pending_buy.unit}")
+            
+            # Place market order or limit order slightly above current
+            # Use limit order $1 above current to ensure fill
+            limit_price = current_price + Decimal("1")
+            
+            result = self.sdk_client.place_limit_order(
+                symbol=self.symbol,
+                is_buy=True,
+                price=limit_price,
+                size=pending_buy.size,
+                reduce_only=False,
+                post_only=False  # Allow taker for immediate fill
+            )
+            
+            if result.success:
+                logger.warning(f"✅ PENDING BUY EXECUTED for unit {pending_buy.unit}: Order {result.order_id}")
+                
+                # Update position map
+                if pending_buy.unit in self.position_map:
+                    config = self.position_map[pending_buy.unit]
+                    config.set_active_order(result.order_id, OrderType.LIMIT_BUY, in_window=True)
+                
+                # Mark as executed
+                self.pending_buy_tracker.mark_executed(pending_buy.unit, result.order_id)
+            else:
+                logger.error(f"❌ Failed to execute pending buy for unit {pending_buy.unit}: {result.error_message}")
+                self.pending_buy_tracker.mark_failed(pending_buy.unit, result.error_message)
+    
     async def _handle_unit_change(self, event: UnitChangeEvent):
         """Handle unit boundary crossing"""
-        logger.info(f"Unit changed to {self.unit_tracker.current_unit} - Direction: {event.direction} - Phase: {event.phase}")
+        logger.info(f"Unit changed to {self.unit_tracker.current_unit} - Direction: {event.direction} - Phase: {event.phase} - Window: {event.window_composition}")
         
         # PROACTIVE STRATEGY: Place orders immediately on unit crossing
         current_unit = self.unit_tracker.current_unit
@@ -583,9 +647,18 @@ class HyperTrader:
             while self.is_running:
                 # Monitor position and orders
                 window_state = self.unit_tracker.get_window_state()
-                active_orders = len(get_active_orders(self.position_map))
+                active_orders = get_active_orders(self.position_map)
                 
-                logger.debug(f"Status - Phase: {window_state['phase']}, Active orders: {active_orders}, Current unit: {window_state['current_unit']}")
+                # Log detailed order status every 30 seconds
+                if not hasattr(self, '_last_detail_log'):
+                    self._last_detail_log = 0
+                self._last_detail_log += 1
+                
+                if self._last_detail_log >= 3:  # Every 30 seconds (10s * 3)
+                    self._log_order_summary(active_orders)
+                    self._last_detail_log = 0
+                else:
+                    logger.debug(f"Status - Phase: {window_state['phase']}, Active orders: {len(active_orders)}, Current unit: {window_state['current_unit']}")
                 
                 # Sleep for monitoring interval
                 await asyncio.sleep(10)
@@ -597,6 +670,31 @@ class HyperTrader:
         finally:
             self.is_running = False
             await self.shutdown()
+    
+    def _log_order_summary(self, active_orders: Dict[int, PositionConfig]):
+        """Log summary of all active orders"""
+        stop_losses = []
+        limit_buys = []
+        
+        for unit, config in active_orders.items():
+            if config.order_type == OrderType.STOP_LOSS_SELL:
+                stop_losses.append(f"Unit {unit}: ${config.price:.2f}")
+            elif config.order_type == OrderType.LIMIT_BUY and config.is_active:
+                limit_buys.append(f"Unit {unit}: ${config.price:.2f}")
+        
+        # Get pending buys
+        pending_summary = self.pending_buy_tracker.get_pending_summary() if self.pending_buy_tracker else {}
+        pending_count = pending_summary.get('pending_count', 0)
+        
+        logger.info(f"📊 ORDERS - Stops: {len(stop_losses)}, Active buys: {len(limit_buys)}, Pending buys: {pending_count}")
+        if stop_losses:
+            logger.info(f"   Stop-losses: {', '.join(stop_losses[:4])}")
+        if limit_buys:
+            logger.info(f"   Active buys: {', '.join(limit_buys[:4])}")
+        if pending_count > 0:
+            pending_units = pending_summary.get('pending_units', [])
+            pending_info = [f"Unit {u}" for u in pending_units[:4]]
+            logger.info(f"   Pending buys: {', '.join(pending_info)} (execute on price rise)")
     
     async def shutdown(self):
         """Clean shutdown of all components"""
