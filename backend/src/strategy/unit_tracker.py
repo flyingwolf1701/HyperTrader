@@ -1,7 +1,5 @@
 """
-UnitTracker Implementation - Legacy compatibility layer
-Most functionality has been moved to strategy_engine.py and position_tracker.py
-This file is maintained for backward compatibility
+UnitTracker Implementation - Clean sliding window strategy
 """
 from decimal import Decimal
 from datetime import datetime
@@ -12,23 +10,7 @@ from dataclasses import dataclass, field
 # Import from centralized data models
 from .data_models import Phase, UnitChangeEvent
     
-@dataclass
-class SlidingWindow:
-    """Manages the 4-order sliding window"""
-    sell_orders: List[int] = field(default_factory=list)  # Unit levels with sell orders
-    buy_orders: List[int] = field(default_factory=list)   # Unit levels with buy orders
-    
-    def total_orders(self) -> int:
-        return len(self.sell_orders) + len(self.buy_orders)
-    
-    def is_all_sells(self) -> bool:
-        return len(self.sell_orders) == 4 and len(self.buy_orders) == 0
-    
-    def is_all_buys(self) -> bool:
-        return len(self.buy_orders) == 4 and len(self.sell_orders) == 0
-    
-    def is_mixed(self) -> bool:
-        return len(self.sell_orders) > 0 and len(self.buy_orders) > 0
+# SlidingWindow class removed - now using trailing_stop and trailing_buy lists directly
 
 
 class UnitTracker:
@@ -59,8 +41,9 @@ class UnitTracker:
         self.current_unit = 0
         self.previous_phase = Phase.ADVANCE  # Track last phase for transitions
         
-        # Sliding window management
-        self.window = SlidingWindow()
+        # Sliding window management - LIST-BASED TRACKING
+        self.trailing_stop: List[int] = []  # Units with active stop-loss orders
+        self.trailing_buy: List[int] = []   # Units with active limit buy orders
         self.executed_orders: Set[int] = set()  # Track which units have executed
         
         # Initialize with 4 sell orders for long wallet
@@ -73,17 +56,19 @@ class UnitTracker:
             raise ValueError("Unit 0 missing from position map")
     
     def _initialize_long_window(self):
-        """Initialize long wallet with 4 sell orders"""
-        self.window.sell_orders = [-4, -3, -2, -1]
+        """Initialize long wallet with 4 stop-loss orders"""
+        self.trailing_stop = [-4, -3, -2, -1]
+        self.trailing_buy = []
         self.phase = Phase.ADVANCE
-        logger.info(f"Long wallet initialized with sells at {self.window.sell_orders}")
+        logger.info(f"Long wallet initialized with stop-losses at {self.trailing_stop}")
     
     def _initialize_hedge_window(self):
         """Initialize hedge wallet for short strategy"""
         # Hedge starts with 1 sell to exit long, then shorts
-        self.window.sell_orders = [-1]  # To exit long position
+        self.trailing_stop = [-1]  # To exit long position
+        self.trailing_buy = []
         self.phase = Phase.ADVANCE
-        logger.info(f"Hedge wallet initialized with sell at {self.window.sell_orders}")
+        logger.info(f"Hedge wallet initialized with stop at {self.trailing_stop}")
     
     def calculate_unit_change(self, current_price: Decimal) -> Optional[UnitChangeEvent]:
         """
@@ -110,13 +95,12 @@ class UnitTracker:
                 self.current_unit = next_unit_down
                 direction = 'down'
         
-        # If unit changed, manage sliding window
+        # If unit changed, detect phase transition
         if self.current_unit != previous_unit:
-            self._slide_window(direction)
             self._detect_phase_transition()
             
             # Create window composition string
-            window_comp = f"{len(self.window.sell_orders)}S/{len(self.window.buy_orders)}B"
+            window_comp = f"{len(self.trailing_stop)}S/{len(self.trailing_buy)}B"
             
             return UnitChangeEvent(
                 price=current_price,
@@ -129,82 +113,6 @@ class UnitTracker:
         
         return None
     
-    def _slide_window(self, direction: str):
-        """
-        Slide the 4-order window based on price movement.
-        Implements the sliding window logic from v9.2.6.
-        """
-        if direction == 'up':
-            # In trending up phases (ADVANCE), slide sell window up
-            if self.phase == Phase.ADVANCE and self.window.is_all_sells():
-                # Add new sell at current-1, remove sell at current-5
-                new_sell = self.current_unit - 1
-                old_sell = self.current_unit - 5
-                
-                if new_sell not in self.window.sell_orders:
-                    self.window.sell_orders.append(new_sell)
-                    self.window.sell_orders.sort()
-                
-                if old_sell in self.window.sell_orders:
-                    self.window.sell_orders.remove(old_sell)
-                
-                logger.debug(f"Slid sell window up: {self.window.sell_orders}")
-        
-        elif direction == 'down':
-            # In trending down phases (DECLINE), slide buy window down
-            if self.phase == Phase.DECLINE and self.window.is_all_buys():
-                # Add new buy at current+1, remove buy at current+5
-                new_buy = self.current_unit + 1
-                old_buy = self.current_unit + 5
-                
-                if new_buy not in self.window.buy_orders:
-                    self.window.buy_orders.append(new_buy)
-                    self.window.buy_orders.sort()
-                
-                if old_buy in self.window.buy_orders:
-                    self.window.buy_orders.remove(old_buy)
-                
-                logger.debug(f"Slid buy window down: {self.window.buy_orders}")
-    
-    def handle_order_execution(self, executed_unit: int, order_type: str):
-        """
-        Handle order execution and replace with opposite type.
-        Implements the order replacement logic from v9.2.6.
-        
-        Args:
-            executed_unit: The unit level where order executed
-            order_type: 'sell' or 'buy'
-        """
-        self.executed_orders.add(executed_unit)
-        
-        if order_type == 'sell':
-            # Remove from sell window
-            if executed_unit in self.window.sell_orders:
-                self.window.sell_orders.remove(executed_unit)
-            
-            # Add buy order at current+1 (one unit ahead)
-            replacement_unit = self.current_unit + 1
-            if replacement_unit not in self.window.buy_orders:
-                self.window.buy_orders.append(replacement_unit)
-                self.window.buy_orders.sort()
-            
-            logger.info(f"Sell executed at {executed_unit}, placed buy at {replacement_unit}")
-        
-        elif order_type == 'buy':
-            # Remove from buy window
-            if executed_unit in self.window.buy_orders:
-                self.window.buy_orders.remove(executed_unit)
-            
-            # Add sell order at current-1 (one unit behind)
-            replacement_unit = self.current_unit - 1
-            if replacement_unit not in self.window.sell_orders:
-                self.window.sell_orders.append(replacement_unit)
-                self.window.sell_orders.sort()
-            
-            logger.info(f"Buy executed at {executed_unit}, placed sell at {replacement_unit}")
-        
-        # Detect phase transition after execution
-        self._detect_phase_transition()
     
     def _detect_phase_transition(self):
         """
@@ -214,13 +122,17 @@ class UnitTracker:
         new_phase = self.phase
         
         # Determine phase based on window composition
-        if self.window.is_all_sells():
+        has_all_stops = len(self.trailing_stop) == 4 and len(self.trailing_buy) == 0
+        has_all_buys = len(self.trailing_buy) == 4 and len(self.trailing_stop) == 0
+        has_mixed = len(self.trailing_stop) > 0 and len(self.trailing_buy) > 0
+        
+        if has_all_stops:
             # 4 stop-loss orders = ADVANCE
             new_phase = Phase.ADVANCE
-        elif self.window.is_all_buys():
+        elif has_all_buys:
             # 4 limit buy orders = DECLINE
             new_phase = Phase.DECLINE
-        elif self.window.is_mixed():
+        elif has_mixed:
             # Mixed orders: use previous phase to determine which transition
             if self.previous_phase == Phase.ADVANCE:
                 # Coming from ADVANCE → RETRACEMENT
@@ -249,9 +161,10 @@ class UnitTracker:
         """
         # For long wallet: All buys executed in RECOVER phase
         if self.wallet_type == "long":
-            if self.phase == Phase.RECOVER and self.window.is_all_sells():
+            has_all_stops = len(self.trailing_stop) == 4 and len(self.trailing_buy) == 0
+            if self.phase == Phase.RECOVER and has_all_stops:
                 return True
-            if self.phase == Phase.RETRACEMENT and self.window.is_all_sells():
+            if self.phase == Phase.RETRACEMENT and has_all_stops:
                 return True
         
         # For hedge wallet: All covers executed, ready for long entry
@@ -282,11 +195,9 @@ class UnitTracker:
         return {
             'current_unit': self.current_unit,
             'phase': self.phase.value,
-            'sell_orders': self.window.sell_orders,
-            'buy_orders': self.window.buy_orders,
-            'total_orders': self.window.total_orders(),
-            'peak_unit': self.peak_unit,
-            'valley_unit': self.valley_unit,
+            'trailing_stop': self.trailing_stop.copy(),  
+            'trailing_buy': self.trailing_buy.copy(),
+            'total_orders': len(self.trailing_stop) + len(self.trailing_buy),
             'executed_orders': list(self.executed_orders)
         }
     
@@ -302,24 +213,57 @@ class UnitTracker:
         
         # Reset unit counters
         self.current_unit = 0
-        self.peak_unit = 0
-        self.valley_unit = 0
         
         # Clear execution history
         self.executed_orders.clear()
         
-        # Reinitialize sliding window
+        # Reinitialize sliding window with new lists
         if self.wallet_type == "long":
-            self.window.sell_orders = [-4, -3, -2, -1]
-            self.window.buy_orders = []
+            self.trailing_stop = [-4, -3, -2, -1]
+            self.trailing_buy = []
             self.phase = Phase.ADVANCE
-            logger.info(f"Reset long wallet with sells at {self.window.sell_orders}")
+            logger.info(f"Reset long wallet with stop-losses at {self.trailing_stop}")
         else:
             # Hedge wallet reset logic
-            self.window.sell_orders = [-1]
-            self.window.buy_orders = []
+            self.trailing_stop = [-1]
+            self.trailing_buy = []
             self.phase = Phase.ADVANCE
-            logger.info(f"Reset hedge wallet with sell at {self.window.sell_orders}")
+            logger.info(f"Reset hedge wallet with stop at {self.trailing_stop}")
+    
+    # NEW LIST-BASED TRACKING METHODS
+    def add_trailing_stop(self, unit: int) -> bool:
+        """Add a unit to trailing stop list if not already present"""
+        if unit not in self.trailing_stop:
+            self.trailing_stop.append(unit)
+            self.trailing_stop.sort()  # Keep sorted for readability
+            logger.debug(f"Added stop at unit {unit}, trailing_stop: {self.trailing_stop}")
+            return True
+        return False
+    
+    def remove_trailing_stop(self, unit: int) -> bool:
+        """Remove a unit from trailing stop list"""
+        if unit in self.trailing_stop:
+            self.trailing_stop.remove(unit)
+            logger.debug(f"Removed stop at unit {unit}, trailing_stop: {self.trailing_stop}")
+            return True
+        return False
+    
+    def add_trailing_buy(self, unit: int) -> bool:
+        """Add a unit to trailing buy list if not already present"""
+        if unit not in self.trailing_buy:
+            self.trailing_buy.append(unit)
+            self.trailing_buy.sort()  # Keep sorted for readability
+            logger.debug(f"Added buy at unit {unit}, trailing_buy: {self.trailing_buy}")
+            return True
+        return False
+    
+    def remove_trailing_buy(self, unit: int) -> bool:
+        """Remove a unit from trailing buy list"""
+        if unit in self.trailing_buy:
+            self.trailing_buy.remove(unit)
+            logger.debug(f"Removed buy at unit {unit}, trailing_buy: {self.trailing_buy}")
+            return True
+        return False
         
         if new_entry_price:
             self.position_state.entry_price = new_entry_price

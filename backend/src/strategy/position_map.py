@@ -117,10 +117,10 @@ def get_filled_orders(position_map: Dict[int, PositionConfig]) -> Dict[int, Posi
             if config.execution_status == ExecutionStatus.FILLED}
 
 
-def get_window_orders(position_map: Dict[int, PositionConfig]) -> Dict[int, PositionConfig]:
-    """Get all units that are part of the current sliding window"""
+def get_active_orders(position_map: Dict[int, PositionConfig]) -> Dict[int, PositionConfig]:
+    """Get all units with active orders"""
     return {unit: config for unit, config in position_map.items() 
-            if config.window_type is not None}
+            if config.is_active}
 
 
 def get_orders_by_type(position_map: Dict[int, PositionConfig], order_type: OrderType) -> Dict[int, PositionConfig]:
@@ -136,72 +136,3 @@ def cancel_all_active_orders(position_map: Dict[int, PositionConfig]):
             config.mark_cancelled()
             logger.info(f"Cancelled order for unit {unit}")
 
-
-# Deprecated - functionality moved to strategy_engine.py
-def update_sliding_window(position_map: Dict[int, PositionConfig], 
-                         window_units: list[int],
-                         order_type: OrderType):
-    """
-    DEPRECATED: Use strategy_engine.calculate_window_slide() instead.
-    This function is kept for backward compatibility.
-    """
-    logger.warning("update_sliding_window is deprecated. Use strategy_engine methods instead.")
-    # Basic implementation for compatibility
-    for config in position_map.values():
-        config.window_type = None
-        config.window_index = None
-    
-    for i, unit in enumerate(sorted(window_units)):
-        if unit in position_map:
-            window_type = "stop_loss_orders" if order_type == OrderType.STOP_LOSS_SELL else "limit_buy_orders"
-            position_map[unit].window_type = window_type
-            position_map[unit].window_index = i
-
-
-# Deprecated - functionality moved to strategy_engine.py
-def handle_order_replacement(position_map: Dict[int, PositionConfig],
-                           executed_unit: int,
-                           current_unit: int,
-                           order_type: str) -> Optional[int]:
-    """
-    DEPRECATED: Use strategy_engine.get_replacement_order() instead.
-    This function is kept for backward compatibility.
-    """
-    logger.warning("handle_order_replacement is deprecated. Use strategy_engine methods instead.")
-    
-    # Basic implementation for compatibility
-    if order_type == 'sell':
-        replacement_unit = current_unit + 1
-        replacement_type = OrderType.LIMIT_BUY
-    elif order_type == 'buy':
-        replacement_unit = current_unit - 1
-        replacement_type = OrderType.STOP_LOSS_SELL
-    else:
-        return None
-    
-    # Ensure the replacement unit exists in map
-    if replacement_unit not in position_map:
-        logger.warning(f"Need to add unit {replacement_unit} to position map")
-        return None
-    
-    return replacement_unit
-
-
-# Example usage:
-if __name__ == "__main__":
-    # Initialize position map
-    entry_price = Decimal("4500.00")
-    unit_size = Decimal("25.00")
-    asset_size = Decimal("1.0")  # 1 ETH
-    position_value = Decimal("4500.00")
-    
-    # Create position map
-    position_state, position_map = calculate_initial_position_map(
-        entry_price, unit_size, asset_size, position_value
-    )
-    
-    # Show initial state
-    print(f"Position map created with {len(position_map)} units")
-    print(f"Entry price: ${position_state.entry_price}")
-    print(f"Fragments: {position_state.long_fragment_asset:.6f} asset")
-    print(f"Active orders: {len(get_active_orders(position_map))}")

@@ -264,16 +264,33 @@ class HyperliquidClient:
             True if successful, False otherwise
         """
         try:
+            logger.info(f"Attempting to set leverage to {leverage}x for {symbol}")
+            
             result = self.exchange.update_leverage(
                 leverage=leverage,
                 name=symbol,
                 is_cross=True  # Use cross margin
             )
+            
             if result.get("status") == "ok":
-                logger.info(f"Set leverage to {leverage}x for {symbol}")
+                logger.info(f"✅ Successfully set leverage to {leverage}x for {symbol}")
                 return True
             else:
-                logger.warning(f"Failed to set leverage: {result}")
+                error_msg = result.get("response", "Unknown error")
+                logger.warning(f"⚠️ Failed to set {leverage}x: {error_msg}")
+                
+                # SOL on testnet might have max 10x leverage
+                if leverage > 10:
+                    logger.info("Trying 10x leverage as fallback...")
+                    fallback = self.exchange.update_leverage(
+                        leverage=10,
+                        name=symbol,
+                        is_cross=True
+                    )
+                    if fallback.get("status") == "ok":
+                        logger.warning(f"Using 10x leverage (max allowed for {symbol})")
+                        return True
+                        
                 return False
         except Exception as e:
             logger.error(f"Error setting leverage: {e}")
@@ -547,6 +564,103 @@ class HyperliquidClient:
                 
         except Exception as e:
             logger.error(f"Failed to place stop order: {e}")
+            return OrderResult(
+                success=False,
+                error_message=str(e)
+            )
+    
+    def place_stop_limit_buy(
+        self,
+        symbol: str,
+        size: Decimal,
+        trigger_price: Decimal,
+        limit_price: Optional[Decimal] = None,
+        reduce_only: bool = False
+    ) -> OrderResult:
+        """
+        Place a stop limit buy order that triggers when price rises to specified level.
+        This is used for placing buy orders above current market price that wait for price to rise.
+        
+        Args:
+            symbol: Trading symbol
+            size: Order size in base currency
+            trigger_price: Price that triggers the order (above current market)
+            limit_price: Limit price for execution (if None, uses trigger_price)
+            reduce_only: If True, only reduces position (usually False for entries)
+            
+        Returns:
+            OrderResult with order details
+        """
+        try:
+            # Round trigger price to tick size
+            from .asset_config import round_to_tick
+            rounded_trigger = round_to_tick(trigger_price, symbol)
+            
+            # Use trigger as limit if not specified
+            if limit_price is None:
+                limit_price = trigger_price
+            rounded_limit = round_to_tick(limit_price, symbol)
+            
+            logger.info(
+                f"Placing STOP LIMIT BUY order: "
+                f"{size} {symbol} triggers @ ${rounded_trigger:.2f}, "
+                f"limit @ ${rounded_limit:.2f}"
+            )
+            
+            # Create stop loss order type (for buys, this triggers when price rises)
+            # Using "sl" because for a buy order, stop loss triggers above current price
+            order_type = {
+                "trigger": {
+                    "triggerPx": float(rounded_trigger),
+                    "isMarket": False,  # Execute as limit when triggered
+                    "tpsl": "sl"  # Stop loss type (for buy orders, triggers when price rises above)
+                }
+            }
+            
+            # Get market info for proper decimal formatting
+            market_info = self.get_market_info(symbol)
+            sz_decimals = int(market_info.get("szDecimals", 4))
+            
+            # Round size to appropriate decimals
+            rounded_size = round(float(size), sz_decimals)
+            
+            result = self.exchange.order(
+                symbol, 
+                True,  # is_buy = True
+                rounded_size, 
+                float(rounded_limit), 
+                order_type, 
+                reduce_only
+            )
+            
+            # Parse result
+            if result.get("status") == "ok":
+                response = result.get("response", {})
+                data = response.get("data", {})
+                statuses = data.get("statuses", [])
+                
+                if statuses and "resting" in statuses[0]:
+                    resting = statuses[0]["resting"]
+                    return OrderResult(
+                        success=True,
+                        order_id=str(resting.get("oid")),
+                        filled_size=Decimal("0"),  # Not filled yet
+                        average_price=rounded_limit
+                    )
+                else:
+                    return OrderResult(
+                        success=False,
+                        error_message=f"Unexpected response: {statuses}"
+                    )
+            else:
+                error_msg = result.get("response", "Unknown error")
+                return OrderResult(
+                    success=False,
+                    error_message=f"Stop limit buy order failed: {error_msg}"
+                )
+                
+        except Exception as e:
+            logger.error(f"Failed to place stop limit buy order: {e}")
             return OrderResult(
                 success=False,
                 error_message=str(e)

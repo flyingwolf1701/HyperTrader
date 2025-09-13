@@ -25,6 +25,7 @@ class HyperliquidWebSocketClient:
         self.user_address = user_address  # User's wallet address for order tracking
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._last_pong_time = datetime.now()
+        self.startup_time = datetime.now()  # Track when bot started to filter old fills
         
     async def connect(self) -> bool:
         """Establish WebSocket connection"""
@@ -333,7 +334,12 @@ class HyperliquidWebSocketClient:
                 # Get unit tracker for this symbol
                 tracker = self.unit_trackers[coin]
                 
-                # Check for unit changes
+                # CRITICAL FIX: Always call price callback for every price update
+                # The main.py handler needs to see ALL prices to properly manage orders
+                if coin in self.price_callbacks and self.price_callbacks[coin] is not None:
+                    self.price_callbacks[coin](Decimal(str(price)))
+                
+                # Check for unit changes (for logging purposes)
                 unit_changed = tracker.calculate_unit_change(price)
                 
                 # Simple periodic logging (every 60 seconds)
@@ -347,15 +353,10 @@ class HyperliquidWebSocketClient:
                         logger.info(f"{coin}: ${price:.2f} | Unit: {tracker.current_unit}")
                         tracker.last_logged_time = datetime.now()
                 
-                # Unit change handling (already logged in UnitTracker)
+                # Unit change logging (unit_changed already calculated above)
                 if unit_changed:
-                    logger.warning(f"{coin} UNIT CHANGE DETECTED!")
+                    logger.warning(f"{coin} UNIT CHANGE DETECTED in WebSocket!")
                     self._log_phase_info(coin, tracker)
-                    
-                    # Call price callback if registered and not None
-                    if coin in self.price_callbacks and self.price_callbacks[coin] is not None:
-                        logger.info(f"Calling strategy callback for {coin} at ${price}")
-                        self.price_callbacks[coin](Decimal(str(price)))
                         
                 # Add periodic connection verification
                 if not hasattr(self, '_last_heartbeat_log'):
@@ -402,9 +403,20 @@ class HyperliquidWebSocketClient:
             sz = fill.get("sz")  # Size (positive for buy, negative for sell)
             side = fill.get("side")  # "B" for buy, "A" for sell (ask)
             oid = fill.get("oid")  # Order ID
-            time = fill.get("time")
+            time_ms = fill.get("time")
+            
+            # Filter out old fills from before bot startup
+            if time_ms:
+                fill_time = datetime.fromtimestamp(time_ms / 1000)  # Convert from milliseconds
+                if fill_time < self.startup_time:
+                    logger.debug(f"Skipping old fill from {fill_time} (before startup {self.startup_time})")
+                    continue
             
             if coin and px and sz:
+                # Only process fills for symbols we're tracking
+                if coin not in self.fill_callbacks:
+                    continue
+                    
                 price = Decimal(str(px))
                 size = abs(Decimal(str(sz)))
                 is_buy = side == "B" or float(sz) > 0
@@ -415,11 +427,12 @@ class HyperliquidWebSocketClient:
                 )
                 
                 # Call fill callback if registered
-                if coin in self.fill_callbacks and self.fill_callbacks[coin] is not None:
+                if self.fill_callbacks[coin] is not None:
                     logger.info(f"Triggering fill callback for {coin}")
+                    logger.warning(f"📝 FILL CALLBACK: Passing order_id={oid} (type: {type(oid)})")
                     # Call with only the parameters that handle_order_fill expects
                     await self.fill_callbacks[coin](
-                        oid,           # order_id
+                        str(oid),      # order_id - ensure it's a string
                         price,         # filled_price  
                         size           # filled_size
                     )
