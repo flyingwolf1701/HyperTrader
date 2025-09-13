@@ -16,9 +16,8 @@
     "deny": [],
     "ask": [],
     "additionalDirectories": [
-      "D:\\d\\Coding\\2025\\HyperTrader\\HyperTrader",
-      "D:\\",
-      "C:\\c\\Users\\trini\\Desktop\\software_engineer\\2025\\crypto\\HyperTrader"
+      "D:\\Coding\\2025\\HyperTrader\\HyperTrader",
+      "C:\\Users\\trini\\Desktop\\software_engineer\\2025\\crypto\\HyperTrader"
     ]
   }
 }
