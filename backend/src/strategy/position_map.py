@@ -135,41 +135,4 @@ def cancel_all_active_orders(position_map: Dict[int, PositionConfig]):
         if config.is_active:
             config.mark_cancelled()
             logger.info(f"Cancelled order for unit {unit}")
-    logger.warning("handle_order_replacement is deprecated. Use strategy_engine methods instead.")
-    
-    # Basic implementation for compatibility
-    if order_type == 'sell':
-        replacement_unit = current_unit + 1
-        replacement_type = OrderType.LIMIT_BUY
-    elif order_type == 'buy':
-        replacement_unit = current_unit - 1
-        replacement_type = OrderType.STOP_LOSS_SELL
-    else:
-        return None
-    
-    # Ensure the replacement unit exists in map
-    if replacement_unit not in position_map:
-        logger.warning(f"Need to add unit {replacement_unit} to position map")
-        return None
-    
-    return replacement_unit
 
-
-# Example usage:
-if __name__ == "__main__":
-    # Initialize position map
-    entry_price = Decimal("4500.00")
-    unit_size = Decimal("25.00")
-    asset_size = Decimal("1.0")  # 1 ETH
-    position_value = Decimal("4500.00")
-    
-    # Create position map
-    position_state, position_map = calculate_initial_position_map(
-        entry_price, unit_size, asset_size, position_value
-    )
-    
-    # Show initial state
-    print(f"Position map created with {len(position_map)} units")
-    print(f"Entry price: ${position_state.entry_price}")
-    print(f"Fragments: {position_state.long_fragment_asset:.6f} asset")
-    print(f"Active orders: {len(get_active_orders(position_map))}")

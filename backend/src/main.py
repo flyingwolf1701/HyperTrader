@@ -19,18 +19,14 @@ sys.path.insert(0, src_dir)
 # Import new strategy components
 from strategy.data_models import (
     OrderType, Phase, ExecutionStatus, PositionState, 
-    WindowState, PositionConfig, UnitChangeEvent, OrderFillEvent
+    PositionConfig, UnitChangeEvent, OrderFillEvent
 )
-from strategy.strategy_engine import LongWalletStrategy
-from strategy.order_manager import OrderManager
-from strategy.position_tracker import PositionTracker
 from strategy.position_map import (
     calculate_initial_position_map,
     add_unit_level,
     get_active_orders
 )
-from strategy.unit_tracker import UnitTracker  # For backward compatibility
-from strategy.pending_buy_tracker import PendingBuyTracker
+from strategy.unit_tracker import UnitTracker
 from exchange.hyperliquid_sdk import HyperliquidClient, OrderResult
 from core.websocket_client import HyperliquidWebSocketClient
 
@@ -59,7 +55,6 @@ class HyperTrader:
         self.position_state: Optional[PositionState] = None
         self.position_map: Optional[Dict[int, PositionConfig]] = None
         self.unit_tracker: Optional[UnitTracker] = None
-        self.pending_buy_tracker: Optional[PendingBuyTracker] = None
         
         # Trading parameters - must be set from command line
         self.unit_size_usd = None
@@ -191,9 +186,6 @@ class HyperTrader:
             position_map=self.position_map,
             wallet_type=self.wallet_type
         )
-        
-        # Initialize pending buy tracker
-        self.pending_buy_tracker = PendingBuyTracker(symbol=self.symbol)
         
         # Place initial sliding window orders
         await self._place_window_orders()
@@ -371,9 +363,6 @@ class HyperTrader:
         logger.debug(f"Price update received: ${price}")
         self.current_price = price
         
-        # Check for pending buys that should execute
-        asyncio.create_task(self._check_pending_buys(price))
-        
         # Check for unit boundary crossing
         unit_event = self.unit_tracker.calculate_unit_change(price)
         
@@ -382,44 +371,6 @@ class HyperTrader:
             asyncio.create_task(self._handle_unit_change(unit_event))
         else:
             logger.debug(f"No unit change at price ${price}")
-    
-    async def _check_pending_buys(self, current_price: Decimal):
-        """Check if any pending buy orders should execute at current price"""
-        if not self.pending_buy_tracker:
-            return
-        
-        # Check for executions
-        ready_to_execute = self.pending_buy_tracker.check_for_executions(current_price)
-        
-        for pending_buy in ready_to_execute:
-            logger.warning(f"🚀 EXECUTING PENDING BUY for unit {pending_buy.unit}")
-            
-            # Place market order or limit order slightly above current
-            # Use limit order $1 above current to ensure fill
-            limit_price = current_price + Decimal("1")
-            
-            result = self.sdk_client.place_limit_order(
-                symbol=self.symbol,
-                is_buy=True,
-                price=limit_price,
-                size=pending_buy.size,
-                reduce_only=False,
-                post_only=False  # Allow taker for immediate fill
-            )
-            
-            if result.success:
-                logger.warning(f"✅ PENDING BUY EXECUTED for unit {pending_buy.unit}: Order {result.order_id}")
-                
-                # Update position map
-                if pending_buy.unit in self.position_map:
-                    config = self.position_map[pending_buy.unit]
-                    config.set_active_order(result.order_id, OrderType.LIMIT_BUY, in_window=True)
-                
-                # Mark as executed
-                self.pending_buy_tracker.mark_executed(pending_buy.unit, result.order_id)
-            else:
-                logger.error(f"❌ Failed to execute pending buy for unit {pending_buy.unit}: {result.error_message}")
-                self.pending_buy_tracker.mark_failed(pending_buy.unit, result.error_message)
     
     async def _handle_unit_change(self, event: UnitChangeEvent):
         """Handle unit boundary crossing"""
@@ -810,20 +761,13 @@ class HyperTrader:
             if unit in self.position_map:
                 limit_buys.append(f"Unit {unit}: ${self.position_map[unit].price:.2f}")
         
-        # Get pending buys
-        pending_summary = self.pending_buy_tracker.get_pending_summary() if self.pending_buy_tracker else {}
-        pending_count = pending_summary.get('pending_count', 0)
         
         # Log using actual list counts
-        logger.info(f"📊 ORDERS - Stops: {len(self.unit_tracker.trailing_stop)}, Active buys: {len(self.unit_tracker.trailing_buy)}, Pending buys: {pending_count}")
+        logger.info(f"📊 ORDERS - Stops: {len(self.unit_tracker.trailing_stop)}, Active buys: {len(self.unit_tracker.trailing_buy)}")
         if stop_losses:
             logger.info(f"   Stop-losses: {', '.join(stop_losses[:4])}")
         if limit_buys:
             logger.info(f"   Active buys: {', '.join(limit_buys[:4])}")
-        if pending_count > 0:
-            pending_units = pending_summary.get('pending_units', [])
-            pending_info = [f"Unit {u}" for u in pending_units[:4]]
-            logger.info(f"   Pending buys: {', '.join(pending_info)} (execute on price rise)")
     
     async def shutdown(self):
         """Clean shutdown of all components"""

@@ -1,7 +1,5 @@
 """
-UnitTracker Implementation - Legacy compatibility layer
-Most functionality has been moved to strategy_engine.py and position_tracker.py
-This file is maintained for backward compatibility
+UnitTracker Implementation - Clean sliding window strategy
 """
 from decimal import Decimal
 from datetime import datetime
@@ -97,9 +95,8 @@ class UnitTracker:
                 self.current_unit = next_unit_down
                 direction = 'down'
         
-        # If unit changed, manage sliding window
+        # If unit changed, detect phase transition
         if self.current_unit != previous_unit:
-            self._slide_window(direction)
             self._detect_phase_transition()
             
             # Create window composition string
@@ -116,32 +113,6 @@ class UnitTracker:
         
         return None
     
-    def _slide_window(self, direction: str):
-        """
-        DEPRECATED - Window sliding is now handled in main.py
-        This method is kept for backward compatibility only.
-        """
-        # Do nothing - sliding is handled in main.py
-        pass
-        
-    
-    def handle_order_execution(self, executed_unit: int, order_type: str):
-        """
-        DEPRECATED - Order execution is now handled in main.py
-        This method is kept for backward compatibility only.
-        
-        Args:
-            executed_unit: The unit level where order executed
-            order_type: 'sell' or 'buy'
-        """
-        # Track execution for historical purposes
-        self.executed_orders.add(executed_unit)
-        
-        # Note: Actual order management now happens in main.py
-        logger.debug(f"handle_order_execution called for {order_type} at unit {executed_unit} - handled in main.py")
-        
-        # Detect phase transition after execution
-        self._detect_phase_transition()
     
     def _detect_phase_transition(self):
         """
