@@ -7,7 +7,7 @@ import asyncio
 import sys
 import os
 from decimal import Decimal
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 from datetime import datetime
 from loguru import logger
 from dotenv import load_dotenv
@@ -759,6 +759,12 @@ class HyperTrader:
         logger.info("Starting HyperTrader main loop")
         
         try:
+            # Check for emergency cleanup on startup
+            live_orders = await self._get_live_orders()
+            if len(live_orders) > 10:
+                logger.error(f"🚨 STARTUP CHECK: Found {len(live_orders)} orders! Running emergency cleanup...")
+                await self.emergency_order_cleanup()
+            
             # Start WebSocket listening
             listen_task = asyncio.create_task(self.ws_client.listen())
             
@@ -833,6 +839,93 @@ class HyperTrader:
             logger.error(f"Failed to get live orders: {e}")
             return []
     
+    async def emergency_order_cleanup(self) -> bool:
+        """
+        Emergency cleanup - cancel ALL orders except the 4 most recent/relevant
+        """
+        logger.warning("🚨 EMERGENCY ORDER CLEANUP INITIATED")
+        
+        try:
+            # Get all live orders
+            live_orders = await self._get_live_orders()
+            total_orders = len(live_orders)
+            
+            if total_orders <= 4:
+                logger.info(f"✅ Only {total_orders} orders found, no cleanup needed")
+                return True
+            
+            logger.error(f"🚨 Found {total_orders} orders - will cancel {total_orders - 4} excess orders")
+            
+            # Separate stop and buy orders
+            stop_orders = []
+            buy_orders = []
+            
+            for order in live_orders:
+                if order.get('symbol') != self.symbol:
+                    continue
+                
+                order_id = order.get('oid')
+                price = Decimal(str(order.get('limitPx', 0)))
+                side = order.get('side')
+                order_type = order.get('orderType')
+                
+                if order_type == 'Stop' and side == 'A':  # Stop loss
+                    stop_orders.append((order_id, price))
+                elif side == 'B':  # Buy order
+                    buy_orders.append((order_id, price))
+            
+            # Sort to keep the most relevant orders
+            stop_orders.sort(key=lambda x: x[1], reverse=True)  # Higher price = closer to current
+            buy_orders.sort(key=lambda x: x[1], reverse=False)  # Lower price = better buy
+            
+            # Keep first 4 orders total (prioritize stops from trailing_stop list)
+            orders_to_keep = set()
+            
+            # Keep stops matching our expected units
+            kept_stops = 0
+            for stop_id, stop_price in stop_orders:
+                if kept_stops < len(self.unit_tracker.trailing_stop) and kept_stops < 4:
+                    orders_to_keep.add(stop_id)
+                    kept_stops += 1
+            
+            # Fill remaining slots with buys
+            remaining_slots = 4 - kept_stops
+            kept_buys = 0
+            for buy_id, buy_price in buy_orders:
+                if kept_buys < remaining_slots:
+                    orders_to_keep.add(buy_id)
+                    kept_buys += 1
+            
+            # Cancel everything else
+            cancelled = 0
+            failed = 0
+            
+            for order in live_orders:
+                order_id = order.get('oid')
+                if order_id and order_id not in orders_to_keep:
+                    try:
+                        if self.sdk_client.cancel_order(self.symbol, order_id):
+                            logger.info(f"✅ Cancelled excess order {order_id}")
+                            cancelled += 1
+                        else:
+                            logger.error(f"❌ Failed to cancel order {order_id}")
+                            failed += 1
+                    except Exception as e:
+                        logger.error(f"Error cancelling order {order_id}: {e}")
+                        failed += 1
+            
+            logger.warning(f"🧹 CLEANUP COMPLETE: Cancelled {cancelled} orders, {failed} failures")
+            
+            # Force an audit after cleanup
+            await asyncio.sleep(2)
+            await self._perform_order_audit(force=True)
+            
+            return failed == 0
+            
+        except Exception as e:
+            logger.error(f"Emergency cleanup failed: {e}")
+            return False
+    
     async def _perform_order_audit(self, force: bool = False) -> bool:
         """
         Perform order audit and auto-correct if needed
@@ -854,6 +947,12 @@ class HyperTrader:
         
         # Get live orders from exchange
         live_orders = await self._get_live_orders()
+        
+        # EMERGENCY CHECK: If we have way too many orders, do emergency cleanup first
+        if len(live_orders) > 10:  # More than 10 orders is definitely wrong
+            logger.error(f"🚨 CRITICAL: {len(live_orders)} orders detected! Initiating emergency cleanup...")
+            await self.emergency_order_cleanup()
+            return True
         
         # Perform audit
         report = self.order_auditor.audit_orders(

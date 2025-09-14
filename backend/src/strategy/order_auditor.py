@@ -74,10 +74,19 @@ class OrderAuditor:
         """
         self.audit_count += 1
         logger.info(f"🔍 AUDIT #{self.audit_count} - Starting order reconciliation")
+        logger.info(f"   Expected: {len(expected_stops)} stops, {len(expected_buys)} buys")
+        logger.info(f"   Actual: {len(live_orders)} total orders on exchange")
+        
+        # CRITICAL: We should have EXACTLY 4 total orders (stops + buys combined)
+        expected_total = len(expected_stops) + len(expected_buys)
+        if expected_total > 4:
+            logger.error(f"⚠️ Expected total orders ({expected_total}) exceeds maximum of 4!")
         
         # Map live orders to units based on price
         actual_orders = {}  # unit -> [order_ids]
         orphan_orders = []  # Orders that don't match any unit
+        stop_orders = []  # All stop orders found
+        buy_orders = []  # All buy orders found
         
         for order in live_orders:
             if order.get('symbol') != self.symbol:
@@ -88,6 +97,12 @@ class OrderAuditor:
             side = order.get('side')  # 'A' for ask/sell, 'B' for bid/buy
             order_type = order.get('orderType')  # 'Stop', 'Limit', etc.
             
+            # Track all stop and buy orders
+            if order_type == 'Stop' and side == 'A':  # Stop loss (sell)
+                stop_orders.append((order_id, price))
+            elif side == 'B':  # Buy order
+                buy_orders.append((order_id, price))
+            
             # Try to match order to a unit based on price
             matched_unit = self._match_order_to_unit(price, position_map)
             
@@ -97,10 +112,47 @@ class OrderAuditor:
                 actual_orders[matched_unit].append(order_id)
             else:
                 orphan_orders.append((order_id, price))
+        
+        # EMERGENCY CHECK: If we have way too many orders, mark ALL excess as orphans
+        if len(stop_orders) + len(buy_orders) > 4:
+            logger.error(f"🚨 EMERGENCY: Found {len(stop_orders)} stops + {len(buy_orders)} buys = {len(stop_orders) + len(buy_orders)} total orders!")
+            logger.error(f"🚨 Maximum allowed is 4 total orders. All excess will be cancelled!")
                 
         # Find discrepancies
         discrepancies = []
         duplicate_orders = {}
+        
+        # SIMPLIFIED APPROACH: Keep only the 4 most recent/relevant orders
+        # Cancel everything else as orphans
+        
+        # If we have more than 4 total orders, we need to clean up
+        total_live_orders = len(stop_orders) + len(buy_orders)
+        if total_live_orders > 4:
+            # Sort orders by price (for stops, higher price = more recent/relevant)
+            stop_orders.sort(key=lambda x: x[1], reverse=True)
+            buy_orders.sort(key=lambda x: x[1], reverse=False)  # Lower price = better buy
+            
+            # Keep only what we need
+            orders_to_keep = set()
+            
+            # Keep stops for expected units (max 4)
+            for i, unit in enumerate(expected_stops[:4]):
+                if i < len(stop_orders):
+                    orders_to_keep.add(stop_orders[i][0])
+            
+            # Keep buys for expected units (remaining slots)
+            remaining_slots = 4 - len(orders_to_keep)
+            for i, unit in enumerate(expected_buys[:remaining_slots]):
+                if i < len(buy_orders):
+                    orders_to_keep.add(buy_orders[i][0])
+            
+            # Mark everything else as orphan
+            for order_id, price in stop_orders + buy_orders:
+                if order_id not in orders_to_keep:
+                    if (order_id, price) not in orphan_orders:
+                        orphan_orders.append((order_id, price))
+            
+            logger.warning(f"🧹 Marking {len(orphan_orders)} excess orders for cancellation")
         
         # Check expected stops
         for unit in expected_stops:
