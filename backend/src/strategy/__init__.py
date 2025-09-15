@@ -7,10 +7,8 @@ from .data_models import (
     ExecutionStatus,
     PositionState,
     PositionConfig,
-    WindowState,
     UnitChangeEvent,
-    OrderFillEvent,
-    CompoundGrowthMetrics
+    OrderFillEvent
 )
 
 # Import from position map (utility functions)
@@ -36,10 +34,8 @@ __all__ = [
     'ExecutionStatus',
     'PositionState',
     'PositionConfig',
-    'WindowState',
     'UnitChangeEvent',
     'OrderFillEvent',
-    'CompoundGrowthMetrics',
     # Position map functions
     'calculate_initial_position_map',
     'add_unit_level',

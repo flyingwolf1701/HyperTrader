@@ -622,7 +622,7 @@ class HyperliquidClient:
                 error_message=str(e)
             )
     
-    def place_stop_limit_buy(
+    def place_stop_buy(
         self,
         symbol: str,
         size: Decimal,

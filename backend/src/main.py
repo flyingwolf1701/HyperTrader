@@ -214,35 +214,36 @@ class HyperTrader:
         logger.warning(f"✅ INITIAL SETUP COMPLETE - Placed {len(order_ids)} stop-loss orders")
         logger.warning(f"📋 Active position_map units: {[u for u, c in self.position_map.items() if c.is_active]}")
     
-    async def _place_limit_order(self, unit: int, side: str) -> Optional[str]:
-        """Place a limit order at a specific unit"""
+    async def _place_stop_order(self, unit: int, side: str) -> Optional[str]:
+        """Place a stop order at a specific unit"""
         config = self.position_map[unit]
         price = config.price
-        
+
         # Determine size based on fragment type
         if side == "sell":
             size = self.position_state.long_fragment_asset
             order_type = OrderType.STOP_LOSS_SELL
         else:
-            # Calculate size in asset terms from USD fragment
-            size = self.position_state.long_fragment_usd / price
-            order_type = OrderType.LIMIT_BUY
-        
+            # Calculate size in asset terms from USD fragment (adjusted for PnL in recovery)
+            fragment_usd = self.unit_tracker.get_adjusted_fragment_usd()
+            size = fragment_usd / price
+            order_type = OrderType.STOP_BUY
+
         # Place order via SDK
-        result = await self._sdk_place_limit_order(side, price, size)
-        
+        result = await self._sdk_place_stop_order(side, price, size)
+
         if result.success:
             # Update position map
-            config.set_active_order(result.order_id, order_type, in_window=True)
-            logger.info(f"Placed {side} order at unit {unit}: {size:.6f} @ ${price:.2f}")
+            config.set_active_order(result.order_id, order_type)
+            logger.info(f"Placed {side} stop order at unit {unit}: {size:.6f} @ ${price:.2f}")
             return result.order_id
         else:
-            logger.error(f"Failed to place {side} order at unit {unit}: {result.error_message}")
+            logger.error(f"Failed to place {side} stop order at unit {unit}: {result.error_message}")
             return None
     
-    async def _place_limit_buy_order(self, unit: int) -> Optional[str]:
-        """Place a limit buy order at a specific unit"""
-        logger.warning(f"📊 ATTEMPTING TO PLACE LIMIT BUY at unit {unit}")
+    async def _place_stop_buy_order(self, unit: int) -> Optional[str]:
+        """Place a stop buy order at a specific unit"""
+        logger.warning(f"📊 ATTEMPTING TO PLACE STOP BUY at unit {unit}")
         
         if unit not in self.position_map:
             logger.error(f"❌ Unit {unit} not in position map!")
@@ -250,18 +251,21 @@ class HyperTrader:
             
         config = self.position_map[unit]
         price = config.price
-        size = self.position_state.long_fragment_usd / price
-        
-        logger.info(f"📊 Limit buy details: Unit {unit}, Price ${price:.2f}, Size {size:.6f} {self.symbol}, Value ${self.position_state.long_fragment_usd:.2f}")
+
+        # Use adjusted fragment in recovery phase (includes PnL reinvestment)
+        fragment_usd = self.unit_tracker.get_adjusted_fragment_usd()
+        size = fragment_usd / price
+
+        logger.info(f"📊 Stop buy details: Unit {unit}, Price ${price:.2f}, Size {size:.6f} {self.symbol}, Value ${fragment_usd:.2f}")
         
         # Check if price is above current market
         current_market_price = await self._get_current_price()
         
         if price > current_market_price:
             # Price is above market - use stop limit buy
-            logger.warning(f"🎯 Price ${price:.2f} > Market ${current_market_price:.2f} - Using STOP LIMIT BUY")
-            
-            result = self.sdk_client.place_stop_limit_buy(
+            logger.warning(f"🎯 Price ${price:.2f} > Market ${current_market_price:.2f} - Using STOP BUY")
+
+            result = self.sdk_client.place_stop_buy(
                 symbol=self.symbol,
                 size=size,
                 trigger_price=price,
@@ -270,22 +274,22 @@ class HyperTrader:
             )
             
             if result.success:
-                config.set_active_order(result.order_id, OrderType.LIMIT_BUY, in_window=True)
-                logger.warning(f"✅ STOP LIMIT BUY SUCCESSFULLY PLACED at unit {unit} (triggers @ ${price:.2f})")
-                logger.warning(f"📝 ORDER ID TRACKING: Stop-limit buy at unit {unit} = {result.order_id}")
+                config.set_active_order(result.order_id, OrderType.STOP_BUY)
+                logger.warning(f"✅ STOP BUY SUCCESSFULLY PLACED at unit {unit} (triggers @ ${price:.2f})")
+                logger.warning(f"📝 ORDER ID TRACKING: Stop buy at unit {unit} = {result.order_id}")
                 return result.order_id
             else:
-                logger.error(f"❌ STOP LIMIT BUY FAILED at unit {unit}: {result.error_message}")
+                logger.error(f"❌ STOP BUY FAILED at unit {unit}: {result.error_message}")
                 return None
         else:
-            # Price is below market - use regular limit buy
-            logger.info(f"📉 Price ${price:.2f} <= Market ${current_market_price:.2f} - Using regular limit buy")
-            result = await self._place_limit_order(unit, "buy")
-            
+            # Price is below market - use regular stop buy
+            logger.info(f"📉 Price ${price:.2f} <= Market ${current_market_price:.2f} - Using regular stop buy")
+            result = await self._place_stop_order(unit, "buy")
+
             if result:
-                logger.warning(f"✅ LIMIT BUY SUCCESSFULLY PLACED at unit {unit}")
+                logger.warning(f"✅ STOP BUY SUCCESSFULLY PLACED at unit {unit}")
             else:
-                logger.error(f"❌ LIMIT BUY FAILED at unit {unit}")
+                logger.error(f"❌ STOP BUY FAILED at unit {unit}")
                 
             return result
     
@@ -303,7 +307,7 @@ class HyperTrader:
         
         if result.success:
             # Update position map
-            config.set_active_order(result.order_id, OrderType.STOP_LOSS_SELL, "stop_loss_orders")
+            config.set_active_order(result.order_id, OrderType.STOP_LOSS_SELL)
             logger.info(f"Placed STOP LOSS at unit {unit}: {size:.6f} {self.symbol} triggers @ ${trigger_price:.2f}")
             logger.warning(f"📝 ORDER ID TRACKING: Stop-loss at unit {unit} = {result.order_id}")
             return result.order_id
@@ -311,35 +315,16 @@ class HyperTrader:
             logger.error(f"Failed to place stop loss at unit {unit}: {result.error_message}")
             return None
     
-    async def _sdk_place_limit_order(self, side: str, price: Decimal, size: Decimal) -> OrderResult:
-        """Place limit order via SDK"""
-        is_buy = (side.lower() == "buy")
-        
-        logger.info(f"📝 Placing {side} limit order: {size:.6f} @ ${price:.2f}")
-        
-        result = self.sdk_client.place_limit_order(
-            symbol=self.symbol,
-            is_buy=is_buy,
-            price=price,
-            size=size,
-            reduce_only=False,
-            post_only=True  # Back to True for maker orders (regular limits below market)
-        )
-        
-        if not result.success:
-            logger.error(f"❌ SDK limit order failed: {result.error_message}")
-            
-        return result
     
     async def _sdk_place_stop_order(self, side: str, trigger_price: Decimal, size: Decimal) -> OrderResult:
-        """Place stop loss order via SDK"""
+        """Place stop order via SDK"""
         is_buy = (side.lower() == "buy")
         return self.sdk_client.place_stop_order(
             symbol=self.symbol,
             is_buy=is_buy,
             size=size,
             trigger_price=trigger_price,
-            reduce_only=True  # Stop losses always reduce position
+            reduce_only=(not is_buy)  # Only sells reduce position, buys open position
         )
     
     async def _place_market_order(self, side: str, size: Decimal) -> OrderResult:
@@ -391,14 +376,14 @@ class HyperTrader:
             
             # Check if we already have an active order at this unit
             if not self.position_map[replacement_unit].is_active:
-                logger.warning(f"🚀 PROACTIVE: Price dropped to unit {current_unit}, placing limit buy at unit {replacement_unit}")
-                
-                # Place limit buy order immediately
-                order_id = await self._place_limit_buy_order(replacement_unit)
+                logger.warning(f"🚀 PROACTIVE: Price dropped to unit {current_unit}, placing stop buy at unit {replacement_unit}")
+
+                # Place stop buy order immediately
+                order_id = await self._place_stop_buy_order(replacement_unit)
                 if order_id:
-                    logger.info(f"✅ PROACTIVE limit buy placed at unit {replacement_unit}")
+                    logger.info(f"✅ PROACTIVE stop buy placed at unit {replacement_unit}")
                 else:
-                    logger.error(f"❌ Failed to place PROACTIVE limit buy at unit {replacement_unit}")
+                    logger.error(f"❌ Failed to place PROACTIVE stop buy at unit {replacement_unit}")
             else:
                 logger.debug(f"Already have active order at unit {replacement_unit}, skipping proactive placement")
                 
@@ -541,11 +526,11 @@ class HyperTrader:
                 # Add to list and place order
                 if self.unit_tracker.add_trailing_buy(buy_unit):
                     if not self.position_map[buy_unit].is_active:
-                        order_id = await self._place_limit_buy_order(buy_unit)
+                        order_id = await self._place_stop_buy_order(buy_unit)
                         if order_id:
-                            logger.info(f"✅ Added trailing buy at unit {buy_unit}")
+                            logger.info(f"✅ Added trailing stop buy at unit {buy_unit}")
                         else:
-                            logger.error(f"❌ Failed to place limit buy at unit {buy_unit}")
+                            logger.error(f"❌ Failed to place stop buy at unit {buy_unit}")
         
         # Maintain exactly 4 TOTAL orders (stops + buys)
         total_orders = len(self.unit_tracker.trailing_stop) + len(self.unit_tracker.trailing_buy)
@@ -630,6 +615,13 @@ class HyperTrader:
             if filled_order_type == OrderType.STOP_LOSS_SELL:
                 # Stop-loss executed - remove from trailing_stop list
                 self.unit_tracker.remove_trailing_stop(filled_unit)
+
+                # Track realized PnL (sell price - entry price)
+                self.unit_tracker.track_realized_pnl(
+                    sell_price=filled_price,
+                    buy_price=self.position_state.entry_price,
+                    size=filled_size
+                )
                 
                 # Add replacement buy at filled_unit + 1
                 replacement_unit = filled_unit + 1
@@ -640,13 +632,13 @@ class HyperTrader:
                 
                 # Add to trailing_buy list and place order
                 if self.unit_tracker.add_trailing_buy(replacement_unit):
-                    order_id = await self._place_limit_buy_order(replacement_unit)
+                    order_id = await self._place_stop_buy_order(replacement_unit)
                     if order_id:
-                        logger.info(f"✅ Stop filled at {filled_unit}, placed buy at {replacement_unit}")
+                        logger.info(f"✅ Stop filled at {filled_unit}, placed stop buy at {replacement_unit}")
                     else:
-                        logger.error(f"❌ Failed to place replacement buy at {replacement_unit}")
-                        
-            elif filled_order_type == OrderType.LIMIT_BUY:
+                        logger.error(f"❌ Failed to place replacement stop buy at {replacement_unit}")
+
+            elif filled_order_type == OrderType.STOP_BUY:
                 # Buy executed - remove from trailing_buy list
                 self.unit_tracker.remove_trailing_buy(filled_unit)
                 
@@ -665,9 +657,7 @@ class HyperTrader:
                     else:
                         logger.error(f"❌ Failed to place replacement stop at {replacement_unit}")
             
-            # Still update the old tracking for compatibility
-            order_side = "sell" if filled_order_type == OrderType.STOP_LOSS_SELL else "buy"
-            self.unit_tracker.handle_order_execution(filled_unit, order_side)
+            # Removed handle_order_execution call - not needed with list-based tracking
             
             # Log current list state
             logger.info(f"Lists after fill: Stop={self.unit_tracker.trailing_stop}, Buy={self.unit_tracker.trailing_buy}")
@@ -764,28 +754,19 @@ class HyperTrader:
             if unit in self.position_map:
                 stop_losses.append(f"Unit {unit}: ${self.position_map[unit].price:.2f}")
         
-        limit_buys = []
+        stop_buys = []
         for unit in self.unit_tracker.trailing_buy:
             if unit in self.position_map:
-                limit_buys.append(f"Unit {unit}: ${self.position_map[unit].price:.2f}")
+                stop_buys.append(f"Unit {unit}: ${self.position_map[unit].price:.2f}")
         
         
         # Log using actual list counts
-        logger.info(f"📊 ORDERS - Stops: {len(self.unit_tracker.trailing_stop)}, Active buys: {len(self.unit_tracker.trailing_buy)}")
+        logger.info(f"📊 ORDERS - Stop sells: {len(self.unit_tracker.trailing_stop)}, Stop buys: {len(self.unit_tracker.trailing_buy)}")
         if stop_losses:
             logger.info(f"   Stop-losses: {', '.join(stop_losses[:4])}")
-        if limit_buys:
-            logger.info(f"   Active buys: {', '.join(limit_buys[:4])}")
+        if stop_buys:
+            logger.info(f"   Stop buys: {', '.join(stop_buys[:4])}")
         
-        # Log profit summary periodically
-        if self.profit_tracker and self.current_price:
-            if not hasattr(self, '_profit_log_counter'):
-                self._profit_log_counter = 0
-            
-            self._profit_log_counter += 1
-            if self._profit_log_counter >= 10:  # Every 5 minutes (30 sec * 10)
-                self._profit_log_counter = 0
-                self.profit_tracker.log_profit_summary(self.current_price)
     
     async def _get_live_orders(self) -> List[Dict]:
         """Get all open orders from exchange"""

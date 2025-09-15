@@ -113,14 +113,8 @@ def get_active_orders(position_map: Dict[int, PositionConfig]) -> Dict[int, Posi
 
 def get_filled_orders(position_map: Dict[int, PositionConfig]) -> Dict[int, PositionConfig]:
     """Get all units that have been filled"""
-    return {unit: config for unit, config in position_map.items() 
+    return {unit: config for unit, config in position_map.items()
             if config.execution_status == ExecutionStatus.FILLED}
-
-
-def get_active_orders(position_map: Dict[int, PositionConfig]) -> Dict[int, PositionConfig]:
-    """Get all units with active orders"""
-    return {unit: config for unit, config in position_map.items() 
-            if config.is_active}
 
 
 def get_orders_by_type(position_map: Dict[int, PositionConfig], order_type: OrderType) -> Dict[int, PositionConfig]:
