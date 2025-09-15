@@ -26,10 +26,6 @@ class LongWalletConfig:
     MIN_ORDER_SIZE_USD = Decimal("10")  # Minimum order size in USD
     MAX_POSITION_SIZE_USD = Decimal("100000")  # Maximum position size in USD
     
-    # Unit configuration
-    DEFAULT_UNIT_RANGE = 20  # Pre-calculate units from -20 to +20
-    MAX_UNITS_FROM_ENTRY = 100  # Maximum distance from entry point
-    
     # Retry configuration
     MAX_ORDER_RETRIES = 3  # Maximum retries for failed orders
     RETRY_DELAY_SECONDS = 2  # Base delay between retries (exponential backoff)

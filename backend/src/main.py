@@ -68,6 +68,7 @@ class HyperTrader:
         # State tracking
         self.is_running = False
         self.current_price: Optional[Decimal] = None
+        self.processed_fills = set()  # Track fills already handled via REST responses
         
         logger.info(f"Initializing HyperTrader for {symbol} - {wallet_type} wallet")
     
@@ -156,24 +157,27 @@ class HyperTrader:
                 self.initial_order_id = result.order_id
                 logger.info(f"Initial position order ID: {self.initial_order_id}")
                 
-                # CRITICAL: Wait for position to be fully established
-                logger.info("⏳ Waiting for initial position to be fully established...")
+                # Add to processed fills to avoid WebSocket duplicate
+                if not hasattr(self, 'processed_fills'):
+                    self.processed_fills = set()
+                self.processed_fills.add(result.order_id)
                 
-                # Poll for position with timeout
-                max_attempts = 10
-                for attempt in range(max_attempts):
+                # Use fill data from REST response if available
+                if result.filled_size and result.filled_size > 0:
+                    entry_price = result.average_price
+                    asset_size = result.filled_size
+                    logger.info(f"✅ Position established from REST response: {asset_size:.6f} {self.symbol} @ ${entry_price:.2f}")
+                else:
+                    # Fallback: Poll for position (shouldn't happen with market orders)
+                    logger.info("⏳ Waiting for position confirmation...")
                     await asyncio.sleep(1)
                     positions = self.sdk_client.get_positions()
-                    if self.symbol in positions:
-                        logger.info(f"Position found after {attempt + 1} second(s)")
-                        break
-                else:
-                    raise Exception(f"Position not found after {max_attempts} seconds")
-                
-                position = positions[self.symbol]
-                entry_price = position.entry_price  # Use ACTUAL average fill price
-                asset_size = position.size  # Use ACTUAL position size
-                logger.info(f"✅ Position established: {asset_size:.6f} {self.symbol} @ ${entry_price:.2f} (actual fill price)")
+                    if self.symbol not in positions:
+                        raise Exception("Position not found after market order")
+                    position = positions[self.symbol]
+                    entry_price = position.entry_price
+                    asset_size = position.size
+                    logger.info(f"✅ Position confirmed: {asset_size:.6f} {self.symbol} @ ${entry_price:.2f}")
         
         # Initialize position map with ACTUAL entry price
         self.position_state, self.position_map = calculate_initial_position_map(
@@ -252,6 +256,12 @@ class HyperTrader:
             # Update position map
             config.set_active_order(result.order_id, order_type, in_window=True)
             logger.info(f"Placed {side} order at unit {unit}: {size:.6f} @ ${price:.2f}")
+            
+            # Handle immediate fill from REST response
+            if result.filled_size and result.filled_size > 0:
+                logger.warning(f"🔔 IMMEDIATE FILL: {side} {result.filled_size} @ ${result.average_price:.2f}")
+                await self._handle_order_fill_direct(unit, result.order_id, result.average_price, result.filled_size, order_type)
+            
             return result.order_id
         else:
             logger.error(f"Failed to place {side} order at unit {unit}: {result.error_message}")
@@ -290,6 +300,12 @@ class HyperTrader:
                 config.set_active_order(result.order_id, OrderType.LIMIT_BUY, in_window=True)
                 logger.warning(f"✅ STOP LIMIT BUY SUCCESSFULLY PLACED at unit {unit} (triggers @ ${price:.2f})")
                 logger.warning(f"📝 ORDER ID TRACKING: Stop-limit buy at unit {unit} = {result.order_id}")
+                
+                # Handle immediate fill from REST response
+                if result.filled_size and result.filled_size > 0:
+                    logger.warning(f"🔔 IMMEDIATE FILL DETECTED: {result.filled_size} @ ${result.average_price:.2f}")
+                    await self._handle_order_fill_direct(unit, result.order_id, result.average_price, result.filled_size, OrderType.LIMIT_BUY)
+                
                 return result.order_id
             else:
                 logger.error(f"❌ STOP LIMIT BUY FAILED at unit {unit}: {result.error_message}")
@@ -323,6 +339,12 @@ class HyperTrader:
             config.set_active_order(result.order_id, OrderType.STOP_LOSS_SELL, "stop_loss_orders")
             logger.info(f"Placed STOP LOSS at unit {unit}: {size:.6f} {self.symbol} triggers @ ${trigger_price:.2f}")
             logger.warning(f"📝 ORDER ID TRACKING: Stop-loss at unit {unit} = {result.order_id}")
+            
+            # Handle immediate fill from REST response (shouldn't happen for stop orders but check anyway)
+            if result.filled_size and result.filled_size > 0:
+                logger.warning(f"🔔 IMMEDIATE STOP FILL: {result.filled_size} @ ${result.average_price:.2f}")
+                await self._handle_order_fill_direct(unit, result.order_id, result.average_price, result.filled_size, OrderType.STOP_LOSS_SELL)
+            
             return result.order_id
         else:
             logger.error(f"Failed to place stop loss at unit {unit}: {result.error_message}")
@@ -617,13 +639,97 @@ class HyperTrader:
                 return False
         return False
     
+    async def _handle_order_fill_direct(self, unit: int, order_id: str, filled_price: Decimal, filled_size: Decimal, order_type: OrderType):
+        """Handle order fill directly from REST response - no duplicate processing"""
+        logger.warning(f"🎯 DIRECT FILL PROCESSING - Unit {unit}, Type: {order_type.value}, Size: {filled_size:.6f} @ ${filled_price:.2f}")
+        
+        # Mark the order as filled in position map
+        if unit in self.position_map:
+            self.position_map[unit].mark_filled(filled_price, filled_size)
+            
+            # Add to processed fills to avoid duplicate WebSocket processing
+            if not hasattr(self, 'processed_fills'):
+                self.processed_fills = set()
+            self.processed_fills.add(order_id)
+            
+            # Track the trade in profit tracker
+            if self.profit_tracker:
+                if order_type == OrderType.STOP_LOSS_SELL:
+                    self.profit_tracker.add_trade(
+                        trade_type=TradeType.STOP_LOSS,
+                        side='sell',
+                        unit=unit,
+                        price=filled_price,
+                        size=filled_size,
+                        order_id=order_id
+                    )
+                elif order_type == OrderType.LIMIT_BUY:
+                    self.profit_tracker.add_trade(
+                        trade_type=TradeType.LIMIT_BUY,
+                        side='buy',
+                        unit=unit,
+                        price=filled_price,
+                        size=filled_size,
+                        order_id=order_id
+                    )
+            
+            # Update tracking lists and place replacement orders
+            if order_type == OrderType.STOP_LOSS_SELL:
+                # Stop-loss executed - remove from trailing_stop list
+                self.unit_tracker.remove_trailing_stop(unit)
+                
+                # Add replacement buy at unit + 1
+                replacement_unit = unit + 1
+                if replacement_unit not in self.position_map:
+                    add_unit_level(self.position_state, self.position_map, replacement_unit)
+                
+                if self.unit_tracker.add_trailing_buy(replacement_unit):
+                    new_order_id = await self._place_limit_buy_order(replacement_unit)
+                    if new_order_id:
+                        logger.info(f"✅ Stop filled at {unit}, placed buy at {replacement_unit}")
+                    else:
+                        logger.error(f"❌ Failed to place replacement buy at {replacement_unit}")
+                        
+            elif order_type == OrderType.LIMIT_BUY:
+                # Buy executed - remove from trailing_buy list
+                self.unit_tracker.remove_trailing_buy(unit)
+                
+                # Add replacement stop at unit - 1
+                replacement_unit = unit - 1
+                if replacement_unit not in self.position_map:
+                    add_unit_level(self.position_state, self.position_map, replacement_unit)
+                
+                if self.unit_tracker.add_trailing_stop(replacement_unit):
+                    new_order_id = await self._place_stop_loss_order(replacement_unit)
+                    if new_order_id:
+                        logger.info(f"✅ Buy filled at {unit}, placed stop at {replacement_unit}")
+                    else:
+                        logger.error(f"❌ Failed to place replacement stop at {replacement_unit}")
+            
+            # Update old tracking for compatibility
+            order_side = "sell" if order_type == OrderType.STOP_LOSS_SELL else "buy"
+            self.unit_tracker.handle_order_execution(unit, order_side)
+            
+            # Log current list state
+            logger.info(f"Lists after direct fill: Stop={self.unit_tracker.trailing_stop}, Buy={self.unit_tracker.trailing_buy}")
+            
+            # Check for phase transition
+            window_state = self.unit_tracker.get_window_state()
+            if window_state['phase'] == 'RESET':
+                await self._handle_reset()
+    
     async def handle_order_fill(self, order_id: str, filled_price: Decimal, filled_size: Decimal):
-        """Handle order fill notification with proper list updates"""
-        logger.warning(f"🔔 FILL RECEIVED - Order ID: {order_id}, Price: ${filled_price:.2f}, Size: {filled_size}")
+        """Handle order fill notification from WebSocket - avoid duplicates"""
+        logger.warning(f"🔔 WS FILL RECEIVED - Order ID: {order_id}, Price: ${filled_price:.2f}, Size: {filled_size}")
         
         # Filter out initial position order
         if hasattr(self, 'initial_order_id') and order_id == self.initial_order_id:
             logger.info(f"Ignoring initial position order fill (ID: {order_id})")
+            return
+        
+        # Check if we already processed this fill from REST response
+        if hasattr(self, 'processed_fills') and order_id in self.processed_fills:
+            logger.info(f"✅ Fill already processed from REST response, skipping WebSocket duplicate")
             return
         
         # Log current order IDs in position map for debugging
@@ -757,6 +863,17 @@ class HyperTrader:
         """Main trading loop"""
         self.is_running = True
         logger.info("Starting HyperTrader main loop")
+        
+        # Periodic cleanup task for processed fills set
+        async def cleanup_processed_fills():
+            while self.is_running:
+                await asyncio.sleep(300)  # Every 5 minutes
+                if len(self.processed_fills) > 100:
+                    logger.debug(f"Cleaning up processed_fills set (size: {len(self.processed_fills)})")
+                    # Keep only the last 50 entries
+                    self.processed_fills = set(list(self.processed_fills)[-50:])
+        
+        cleanup_task = asyncio.create_task(cleanup_processed_fills())
         
         try:
             # Check for emergency cleanup on startup

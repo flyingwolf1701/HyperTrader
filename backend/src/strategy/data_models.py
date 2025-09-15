@@ -29,7 +29,7 @@ class Phase(Enum):
 
 class ExecutionStatus(Enum):
     """Order execution status"""
-    PENDING = "pending"
+    PENDING = "pending" # I am not sure this is hyperliquids language. Might be triggered
     FILLED = "filled"
     CANCELLED = "cancelled"
     FAILED = "failed"
