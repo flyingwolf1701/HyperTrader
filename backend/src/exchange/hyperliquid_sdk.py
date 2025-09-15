@@ -266,11 +266,40 @@ class HyperliquidClient:
         try:
             logger.info(f"Attempting to set leverage to {leverage}x for {symbol}")
             
+            # First, let's check current leverage and max allowed
+            try:
+                user_state = self.info.user_state(self.wallet_address)
+                asset_positions = user_state.get("assetPositions", [])
+                
+                for position in asset_positions:
+                    if position.get("position", {}).get("coin") == symbol:
+                        current_leverage = position.get("position", {}).get("leverage", {}).get("value")
+                        logger.info(f"Current leverage for {symbol}: {current_leverage}")
+                        break
+                        
+                # Get market info for max leverage
+                meta = self.info.meta()
+                for asset in meta.get("universe", []):
+                    if asset.get("name") == symbol:
+                        max_leverage = asset.get("maxLeverage", 20)
+                        logger.info(f"Max leverage for {symbol}: {max_leverage}")
+                        
+                        # Adjust requested leverage if it exceeds max
+                        if leverage > max_leverage:
+                            logger.warning(f"Requested {leverage}x exceeds max {max_leverage}x for {symbol}")
+                            leverage = max_leverage
+                        break
+            except Exception as e:
+                logger.debug(f"Could not fetch leverage info: {e}")
+            
+            # Try to set the leverage
             result = self.exchange.update_leverage(
                 leverage=leverage,
                 name=symbol,
                 is_cross=True  # Use cross margin
             )
+            
+            logger.debug(f"Leverage update result: {result}")
             
             if result.get("status") == "ok":
                 logger.info(f"✅ Successfully set leverage to {leverage}x for {symbol}")
@@ -279,17 +308,41 @@ class HyperliquidClient:
                 error_msg = result.get("response", "Unknown error")
                 logger.warning(f"⚠️ Failed to set {leverage}x: {error_msg}")
                 
-                # SOL on testnet might have max 10x leverage
-                if leverage > 10:
-                    logger.info("Trying 10x leverage as fallback...")
-                    fallback = self.exchange.update_leverage(
-                        leverage=10,
-                        name=symbol,
-                        is_cross=True
-                    )
-                    if fallback.get("status") == "ok":
-                        logger.warning(f"Using 10x leverage (max allowed for {symbol})")
-                        return True
+                # Try isolated margin instead of cross
+                logger.info("Trying isolated margin instead of cross margin...")
+                result2 = self.exchange.update_leverage(
+                    leverage=leverage,
+                    name=symbol,
+                    is_cross=False  # Try isolated margin
+                )
+                
+                if result2.get("status") == "ok":
+                    logger.info(f"✅ Successfully set leverage to {leverage}x using isolated margin")
+                    return True
+                    
+                # If still failing, check if we should try a fallback
+                # Only fallback if the requested leverage might be too high
+                max_allowed = get_max_leverage(symbol)
+                
+                # Log the failure with more context
+                logger.error(f"Failed to set {leverage}x leverage for {symbol} (max allowed from config: {max_allowed}x)")
+                
+                # Don't fallback if leverage is already within valid range
+                # The failure is likely due to other reasons (position limits, etc.)
+                if leverage <= max_allowed:
+                    logger.error(f"Leverage {leverage}x is within valid range for {symbol}, not attempting fallback")
+                    return False
+                
+                # Only try fallback if we were requesting more than allowed
+                logger.info(f"Trying {max_allowed}x leverage (max for {symbol}) as fallback...")
+                fallback = self.exchange.update_leverage(
+                    leverage=max_allowed,
+                    name=symbol,
+                    is_cross=True
+                )
+                if fallback.get("status") == "ok":
+                    logger.warning(f"Using {max_allowed}x leverage (max allowed for {symbol})")
+                    return True
                         
                 return False
         except Exception as e:
