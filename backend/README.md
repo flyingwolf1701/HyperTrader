@@ -13,7 +13,7 @@ uv run python src/main.py --symbol SOL --wallet long --unit-size 5.0 --position-
 ```bash
 cd backend
 uv run python src/main.py --symbol SOL --wallet long --unit-size 0.5 --position-size 2000 --leverage 20 --testnet
-uv run python src/main.py --symbol BTC --wallet long --unit-size 5 --position-size 20000 --leverage 40 --testnet
+uv run python src/main.py --symbol BTC --wallet long --unit-size 25 --position-size 20000 --leverage 40 --testnet
 uv run python src/main.py --symbol ETH --wallet long --unit-size 1 --position-size 12500 --leverage 25 --testnet
 ```
 

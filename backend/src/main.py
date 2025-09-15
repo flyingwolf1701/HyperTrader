@@ -183,8 +183,7 @@ class HyperTrader:
         # Initialize unit tracker with sliding window
         self.unit_tracker = UnitTracker(
             position_state=self.position_state,
-            position_map=self.position_map,
-            wallet_type=self.wallet_type
+            position_map=self.position_map
         )
         
         # Place initial sliding window orders
@@ -426,53 +425,92 @@ class HyperTrader:
         logger.info(f"Window after slide: Stop={self.unit_tracker.trailing_stop}, Buy={self.unit_tracker.trailing_buy}")
     
     async def _slide_window_up(self):
-        """Handle upward price movement - clean list-based approach"""
+        """Handle upward price movement - sliding windows for different phases"""
         current_unit = self.unit_tracker.current_unit
-        
+
         logger.info(f"Sliding window UP to unit {current_unit}")
         logger.info(f"Before: Stops={self.unit_tracker.trailing_stop}, Buys={self.unit_tracker.trailing_buy}")
-        
-        # Step 1: Clear any buy orders that executed (at or below current unit)
-        while self.unit_tracker.trailing_buy and self.unit_tracker.trailing_buy[0] <= current_unit:
-            executed_buy = self.unit_tracker.trailing_buy.pop(0)
-            logger.info(f"Buy at unit {executed_buy} assumed executed - removed from tracking")
-        
-        # Step 2: Add new stop at current_unit - 1
-        new_stop_unit = current_unit - 1
-        
-        # Ensure unit exists in position map
-        if new_stop_unit not in self.position_map:
-            add_unit_level(self.position_state, self.position_map, new_stop_unit)
-        
-        # Append to end of list (highest/newest)
-        if new_stop_unit not in self.unit_tracker.trailing_stop:
-            self.unit_tracker.trailing_stop.append(new_stop_unit)
-            self.unit_tracker.trailing_stop.sort()  # Keep sorted
-            
-            # Place the order
-            if not self.position_map[new_stop_unit].is_active:
-                order_id = await self._place_stop_loss_order(new_stop_unit)
-                if order_id:
-                    logger.warning(f"✅ Added NEW trailing stop at unit {new_stop_unit}")
-                else:
-                    logger.error(f"❌ Failed to place stop at unit {new_stop_unit}")
-        
-        # Step 3: Maintain exactly 4 TOTAL orders (stops + buys)
-        total_orders = len(self.unit_tracker.trailing_stop) + len(self.unit_tracker.trailing_buy)
-        
-        # Remove oldest stops if total exceeds 4
-        while total_orders > 4 and len(self.unit_tracker.trailing_stop) > 0:
-            old_stop = self.unit_tracker.trailing_stop.pop(0)  # Remove oldest/lowest
-            logger.warning(f"🚫 Removing oldest stop at unit {old_stop} (total orders: {total_orders})")
-            
-            if old_stop in self.position_map and self.position_map[old_stop].is_active:
-                success = await self._cancel_order(old_stop)
-                if success:
-                    logger.warning(f"✅ Cancelled old stop at unit {old_stop}")
-                else:
-                    logger.error(f"❌ Failed to cancel old stop at unit {old_stop}")
-            
+
+        # Handle any executed buys first
+        executed_buys = [unit for unit in self.unit_tracker.trailing_buy if unit <= current_unit]
+
+        if executed_buys:
+            logger.warning(f"Buys executed at units: {executed_buys}")
+
+            # Remove all executed buys
+            for buy_unit in executed_buys:
+                self.unit_tracker.remove_trailing_buy(buy_unit)
+                logger.info(f"Removed executed buy at unit {buy_unit}")
+
+        # CRITICAL: Determine phase to handle sliding correctly
+        phase = self.unit_tracker.get_phase()
+
+        if phase == "advance":
+            # PURE ADVANCE PHASE: All 4 orders should be trailing stops
+            # Stop orders should be at current_unit-1, -2, -3, -4
+            desired_stop_units = [current_unit - i for i in range(1, 5)]
+
+            logger.warning(f"📈 ADVANCE PHASE: Price at unit {current_unit}, sliding stop window to {desired_stop_units}")
+
+            # Cancel stop orders that are too far below (more than 4 units)
+            stops_to_cancel = [unit for unit in self.unit_tracker.trailing_stop if unit < current_unit - 4]
+            for cancel_unit in stops_to_cancel:
+                logger.warning(f"🚫 Cancelling stop order at unit {cancel_unit} (too far below)")
+                self.unit_tracker.remove_trailing_stop(cancel_unit)
+                if cancel_unit in self.position_map and self.position_map[cancel_unit].is_active:
+                    await self._cancel_order(cancel_unit)
+
+            # Place new stop orders at correct levels
+            for stop_unit in desired_stop_units:
+                if stop_unit not in self.unit_tracker.trailing_stop:
+                    # Ensure unit exists in position map
+                    if stop_unit not in self.position_map:
+                        add_unit_level(self.position_state, self.position_map, stop_unit)
+
+                    # Add to list and place order
+                    if self.unit_tracker.add_trailing_stop(stop_unit):
+                        if not self.position_map[stop_unit].is_active:
+                            order_id = await self._place_stop_loss_order(stop_unit)
+                            if order_id:
+                                logger.info(f"✅ Added trailing stop at unit {stop_unit}")
+                            else:
+                                logger.error(f"❌ Failed to place stop at unit {stop_unit}")
+
+        else:
+            # MIXED PHASE (retracement/recovery): Handle replacement logic
+            # Only place replacement stops for executed buys
+            for buy_unit in executed_buys:
+                replacement_unit = buy_unit - 1
+
+                # Ensure unit exists in position map
+                if replacement_unit not in self.position_map:
+                    add_unit_level(self.position_state, self.position_map, replacement_unit)
+
+                # Add replacement stop if not already there
+                if replacement_unit not in self.unit_tracker.trailing_stop:
+                    if self.unit_tracker.add_trailing_stop(replacement_unit):
+                        if not self.position_map[replacement_unit].is_active:
+                            order_id = await self._place_stop_loss_order(replacement_unit)
+                            if order_id:
+                                logger.info(f"✅ Added replacement stop at unit {replacement_unit}")
+                            else:
+                                logger.error(f"❌ Failed to place replacement stop at unit {replacement_unit}")
+
+            # Maintain exactly 4 TOTAL orders (stops + buys)
             total_orders = len(self.unit_tracker.trailing_stop) + len(self.unit_tracker.trailing_buy)
+
+            # Remove excess stops if total exceeds 4
+            while total_orders > 4 and len(self.unit_tracker.trailing_stop) > 0:
+                # Find the lowest (worst) stop order to remove
+                if self.unit_tracker.trailing_stop:
+                    old_stop = min(self.unit_tracker.trailing_stop)
+                    self.unit_tracker.remove_trailing_stop(old_stop)
+                    logger.warning(f"🚫 Removing excess stop at unit {old_stop} (total orders: {total_orders})")
+
+                    if old_stop in self.position_map and self.position_map[old_stop].is_active:
+                        await self._cancel_order(old_stop)
+
+                total_orders = len(self.unit_tracker.trailing_stop) + len(self.unit_tracker.trailing_buy)
         
         logger.warning(f"📊 AFTER SLIDE: Stops={self.unit_tracker.trailing_stop}, Buys={self.unit_tracker.trailing_buy}")
         
@@ -490,64 +528,90 @@ class HyperTrader:
     async def _slide_window_down(self):
         """Handle downward price movement - manage buy window"""
         current_unit = self.unit_tracker.current_unit
-        
-        # CRITICAL FIX: When price drops, we need to:
-        # 1. Remove any stops that would have triggered (at or above current_unit)
-        # 2. Place replacement buys for each triggered stop
-        # 3. Ensure we maintain 4 trailing buy orders that follow the price down
-        
+
         logger.info(f"Sliding window DOWN to unit {current_unit}")
         logger.info(f"Current stops: {self.unit_tracker.trailing_stop}, Current buys: {self.unit_tracker.trailing_buy}")
-        
-        # Find all stops that would have triggered (at or above current price)
+
+        # Handle any triggered stops first
         triggered_stops = [unit for unit in self.unit_tracker.trailing_stop if unit >= current_unit]
-        
+
         if triggered_stops:
             logger.warning(f"Stops triggered at units: {triggered_stops}")
-            
+
             # Remove all triggered stops
             for stop_unit in triggered_stops:
                 self.unit_tracker.remove_trailing_stop(stop_unit)
                 logger.info(f"Removed triggered stop at unit {stop_unit}")
-        
-        # After stops trigger, we need to maintain 4 trailing buy orders
-        # These should be at current_unit+1, +2, +3, +4
-        desired_buy_units = [current_unit + i for i in range(1, 5)]
-        
-        logger.info(f"Desired trailing buy units: {desired_buy_units}")
-        
-        # Place any missing buy orders
-        for buy_unit in desired_buy_units:
-            if buy_unit not in self.unit_tracker.trailing_buy:
+
+        # CRITICAL: Determine phase to handle sliding correctly
+        phase = self.unit_tracker.get_phase()
+
+        if phase == "decline":
+            # PURE DECLINE PHASE: All 4 orders should be trailing buys
+            # Buy orders should be at current_unit+1, +2, +3, +4
+            desired_buy_units = [current_unit + i for i in range(1, 5)]
+
+            logger.warning(f"📉 DECLINE PHASE: Price at unit {current_unit}, sliding buy window to {desired_buy_units}")
+
+            # Cancel buy orders that are too far above (more than 4 units)
+            buys_to_cancel = [unit for unit in self.unit_tracker.trailing_buy if unit > current_unit + 4]
+            for cancel_unit in buys_to_cancel:
+                logger.warning(f"🚫 Cancelling buy order at unit {cancel_unit} (too far above)")
+                self.unit_tracker.remove_trailing_buy(cancel_unit)
+                if cancel_unit in self.position_map and self.position_map[cancel_unit].is_active:
+                    await self._cancel_order(cancel_unit)
+
+            # Place new buy orders at correct levels
+            for buy_unit in desired_buy_units:
+                if buy_unit not in self.unit_tracker.trailing_buy:
+                    # Ensure unit exists in position map
+                    if buy_unit not in self.position_map:
+                        add_unit_level(self.position_state, self.position_map, buy_unit)
+
+                    # Add to list and place order
+                    if self.unit_tracker.add_trailing_buy(buy_unit):
+                        if not self.position_map[buy_unit].is_active:
+                            order_id = await self._place_stop_buy_order(buy_unit)
+                            if order_id:
+                                logger.info(f"✅ Added trailing buy at unit {buy_unit}")
+                            else:
+                                logger.error(f"❌ Failed to place stop buy at unit {buy_unit}")
+
+        else:
+            # MIXED PHASE (retracement/recovery): Handle replacement logic
+            # Only place replacement buys for triggered stops
+            for stop_unit in triggered_stops:
+                replacement_unit = stop_unit + 1
+
                 # Ensure unit exists in position map
-                if buy_unit not in self.position_map:
-                    add_unit_level(self.position_state, self.position_map, buy_unit)
-                
-                # Add to list and place order
-                if self.unit_tracker.add_trailing_buy(buy_unit):
-                    if not self.position_map[buy_unit].is_active:
-                        order_id = await self._place_stop_buy_order(buy_unit)
-                        if order_id:
-                            logger.info(f"✅ Added trailing stop buy at unit {buy_unit}")
-                        else:
-                            logger.error(f"❌ Failed to place stop buy at unit {buy_unit}")
-        
-        # Maintain exactly 4 TOTAL orders (stops + buys)
-        total_orders = len(self.unit_tracker.trailing_stop) + len(self.unit_tracker.trailing_buy)
-        
-        # Remove oldest (highest) buys if total exceeds 4
-        while total_orders > 4 and len(self.unit_tracker.trailing_buy) > 0:
-            old_buy = self.unit_tracker.trailing_buy.pop()  # Remove highest/oldest
-            logger.warning(f"🚫 Cancelling oldest buy at unit {old_buy} (total orders: {total_orders})")
-            
-            if old_buy in self.position_map and self.position_map[old_buy].is_active:
-                success = await self._cancel_order(old_buy)
-                if success:
-                    logger.warning(f"✅ Cancelled old buy at unit {old_buy}")
-                else:
-                    logger.error(f"❌ Failed to cancel old buy at unit {old_buy}")
-            
+                if replacement_unit not in self.position_map:
+                    add_unit_level(self.position_state, self.position_map, replacement_unit)
+
+                # Add replacement buy if not already there
+                if replacement_unit not in self.unit_tracker.trailing_buy:
+                    if self.unit_tracker.add_trailing_buy(replacement_unit):
+                        if not self.position_map[replacement_unit].is_active:
+                            order_id = await self._place_stop_buy_order(replacement_unit)
+                            if order_id:
+                                logger.info(f"✅ Added replacement buy at unit {replacement_unit}")
+                            else:
+                                logger.error(f"❌ Failed to place replacement buy at unit {replacement_unit}")
+
+            # Maintain exactly 4 TOTAL orders (stops + buys)
             total_orders = len(self.unit_tracker.trailing_stop) + len(self.unit_tracker.trailing_buy)
+
+            # Remove excess buys if total exceeds 4
+            while total_orders > 4 and len(self.unit_tracker.trailing_buy) > 0:
+                # Find the highest (worst) buy order to remove
+                if self.unit_tracker.trailing_buy:
+                    old_buy = max(self.unit_tracker.trailing_buy)
+                    self.unit_tracker.remove_trailing_buy(old_buy)
+                    logger.warning(f"🚫 Removing excess buy at unit {old_buy} (total orders: {total_orders})")
+
+                    if old_buy in self.position_map and self.position_map[old_buy].is_active:
+                        await self._cancel_order(old_buy)
+
+                total_orders = len(self.unit_tracker.trailing_stop) + len(self.unit_tracker.trailing_buy)
         
         logger.warning(f"📊 AFTER SLIDE: Stops={self.unit_tracker.trailing_stop}, Buys={self.unit_tracker.trailing_buy}")
         
@@ -884,7 +948,7 @@ async def main():
     import argparse
     parser = argparse.ArgumentParser(description="HyperTrader - Sliding Window Strategy Bot")
     parser.add_argument("--symbol", required=True, help="Trading symbol (e.g., ETH, BTC)")
-    parser.add_argument("--wallet", choices=["long", "hedge"], required=True, help="Wallet type")
+    parser.add_argument("--wallet", choices=["long"], default="long", help="Wallet type (only 'long' supported)")
     parser.add_argument("--testnet", action="store_true", help="Use testnet")
     parser.add_argument("--unit-size", type=float, required=True, help="Unit size in USD")
     parser.add_argument("--position-size", type=float, required=True, help="Initial position size in USD")
