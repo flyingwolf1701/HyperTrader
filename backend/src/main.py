@@ -536,82 +536,38 @@ class HyperTrader:
             # Log current list state
             logger.info(f"Lists after fill: Stop={self.unit_tracker.trailing_stop}, Buy={self.unit_tracker.trailing_buy}")
             
-            # Check for phase transition
+            # Log window state after fill
             window_state = self.unit_tracker.get_window_state()
-            if window_state['phase'] == 'RESET':
-                await self._handle_reset()
+            logger.debug(f"Window state after fill: {window_state}")
         else:
             logger.warning(f"⚠️ Could not match order {order_id} to any unit in position_map!")
-    
-    async def _handle_reset(self):
-        """Handle RESET phase - capture compound growth"""
-        logger.info("🔄 RESET triggered - capturing compound growth")
-        
-        # Get current position value
-        positions = self.sdk_client.get_positions()
-        if self.symbol in positions:
-            position = positions[self.symbol]
-            new_position_value = position.size * self.current_price
-            
-            # Reset unit tracker with new position value
-            self.unit_tracker.reset_for_new_cycle(self.current_price)
-            
-            # Update position state with new values for fresh cycle
-            self.position_state.position_value_usd = new_position_value
-            self.position_state.asset_size = position.size
-            # Update original sizes for the new cycle (compound growth)
-            self.position_state.original_asset_size = position.size
-            self.position_state.original_position_value_usd = new_position_value
-            # Recalculate fragments based on new original sizes
-            self.position_state.long_fragment_usd = new_position_value / Decimal("4")
-            self.position_state.long_fragment_asset = position.size / Decimal("4")
-            
-            # Cancel all existing orders
-            for unit, config in self.position_map.items():
-                if config.is_active:
-                    await self._cancel_order(unit)
-            
-            # Place new window orders
-            await self._place_window_orders()
-            
-            logger.info(f"RESET complete - New position value: ${new_position_value:.2f}")
     
     async def run(self):
         """Main trading loop"""
         self.is_running = True
         logger.info("Starting HyperTrader main loop")
-        
+
         try:
-            # Check for emergency cleanup on startup
-            live_orders = await self._get_live_orders()
-            if len(live_orders) > 10:
-                logger.error(f"🚨 STARTUP CHECK: Found {len(live_orders)} orders! Running emergency cleanup...")
-                await self.emergency_order_cleanup()
-            
             # Start WebSocket listening
             listen_task = asyncio.create_task(self.ws_client.listen())
-            
+
             # Main loop
             while self.is_running:
                 # Monitor position and orders
                 window_state = self.unit_tracker.get_window_state()
                 active_orders = get_active_orders(self.position_map)
 
-                # Validate orders are on correct side of price
-                await self._validate_order_placement()
-                
                 # Log detailed order status every 30 seconds
                 if not hasattr(self, '_last_detail_log'):
                     self._last_detail_log = 0
                 self._last_detail_log += 1
-                
+
                 if self._last_detail_log >= 3:  # Every 30 seconds (10s * 3)
                     self._log_order_summary(active_orders)
                     self._last_detail_log = 0
-                    
                 else:
                     logger.debug(f"Status - Phase: {window_state['phase']}, Active orders: {len(active_orders)}, Current unit: {window_state['current_unit']}")
-                
+
                 # Sleep for monitoring interval
                 await asyncio.sleep(10)
                 
@@ -644,144 +600,7 @@ class HyperTrader:
         if stop_buys:
             logger.info(f"   Stop buys: {', '.join(stop_buys[:4])}")
         
-    
-    async def _validate_order_placement(self):
-        """Validate all orders are on the correct side of price and cancel invalid ones"""
-        if not self.current_price or not self.unit_tracker:
-            return
 
-        current_unit = self.unit_tracker.current_unit
-        cancelled_any = False
-
-        # Check for invalid stop orders (should be BELOW current price)
-        for unit in list(self.unit_tracker.trailing_stop):
-            if unit >= current_unit:
-                logger.error(f"🚨 INVALID: Stop order at unit {unit} is ABOVE current unit {current_unit}")
-                self.unit_tracker.remove_trailing_stop(unit)
-
-                if unit in self.position_map and self.position_map[unit].is_active:
-                    success = await self._cancel_order(unit)
-                    if success:
-                        logger.warning(f"✅ Cancelled invalid stop at unit {unit}")
-                        cancelled_any = True
-
-        # Check for invalid buy orders (should be ABOVE current price)
-        for unit in list(self.unit_tracker.trailing_buy):
-            if unit < current_unit:  # Changed from <= to < (unit AT current price is valid for pending orders)
-                logger.error(f"🚨 INVALID: Buy order at unit {unit} is BELOW current unit {current_unit}")
-                self.unit_tracker.remove_trailing_buy(unit)
-
-                if unit in self.position_map and self.position_map[unit].is_active:
-                    success = await self._cancel_order(unit)
-                    if success:
-                        logger.warning(f"✅ Cancelled invalid buy at unit {unit}")
-                        cancelled_any = True
-
-        # If we cancelled any orders, trigger window slide to place correct ones
-        if cancelled_any:
-            phase = self.unit_tracker.get_phase()
-            logger.warning(f"🔧 Triggering window slide to place correct orders (phase: {phase})")
-
-            if phase == "decline" or len(self.unit_tracker.trailing_buy) > 0:
-                await self._slide_window_down()
-            elif phase == "advance" or len(self.unit_tracker.trailing_stop) > 0:
-                await self._slide_window_up()
-
-    async def _get_live_orders(self) -> List[Dict]:
-        """Get all open orders from exchange"""
-        try:
-            orders = self.sdk_client.get_open_orders(self.symbol)
-            return orders if orders else []
-        except Exception as e:
-            logger.error(f"Failed to get live orders: {e}")
-            return []
-    
-    async def emergency_order_cleanup(self) -> bool:
-        """
-        Emergency cleanup - cancel ALL orders except the 4 most recent/relevant
-        """
-        logger.warning("🚨 EMERGENCY ORDER CLEANUP INITIATED")
-        
-        try:
-            # Get all live orders
-            live_orders = await self._get_live_orders()
-            total_orders = len(live_orders)
-            
-            if total_orders <= 4:
-                logger.info(f"✅ Only {total_orders} orders found, no cleanup needed")
-                return True
-            
-            logger.error(f"🚨 Found {total_orders} orders - will cancel {total_orders - 4} excess orders")
-            
-            # Separate stop and buy orders
-            stop_orders = []
-            buy_orders = []
-            
-            for order in live_orders:
-                if order.get('symbol') != self.symbol:
-                    continue
-                
-                order_id = order.get('oid')
-                price = Decimal(str(order.get('limitPx', 0)))
-                side = order.get('side')
-                order_type = order.get('orderType')
-                
-                if order_type == 'Stop' and side == 'A':  # Stop loss
-                    stop_orders.append((order_id, price))
-                elif side == 'B':  # Buy order
-                    buy_orders.append((order_id, price))
-            
-            # Sort to keep the most relevant orders
-            stop_orders.sort(key=lambda x: x[1], reverse=True)  # Higher price = closer to current
-            buy_orders.sort(key=lambda x: x[1], reverse=False)  # Lower price = better buy
-            
-            # Keep first 4 orders total (prioritize stops from trailing_stop list)
-            orders_to_keep = set()
-            
-            # Keep stops matching our expected units
-            kept_stops = 0
-            for stop_id, stop_price in stop_orders:
-                if kept_stops < len(self.unit_tracker.trailing_stop) and kept_stops < 4:
-                    orders_to_keep.add(stop_id)
-                    kept_stops += 1
-            
-            # Fill remaining slots with buys
-            remaining_slots = 4 - kept_stops
-            kept_buys = 0
-            for buy_id, buy_price in buy_orders:
-                if kept_buys < remaining_slots:
-                    orders_to_keep.add(buy_id)
-                    kept_buys += 1
-            
-            # Cancel everything else
-            cancelled = 0
-            failed = 0
-            
-            for order in live_orders:
-                order_id = order.get('oid')
-                if order_id and order_id not in orders_to_keep:
-                    try:
-                        if self.sdk_client.cancel_order(self.symbol, order_id):
-                            logger.info(f"✅ Cancelled excess order {order_id}")
-                            cancelled += 1
-                        else:
-                            logger.error(f"❌ Failed to cancel order {order_id}")
-                            failed += 1
-                    except Exception as e:
-                        logger.error(f"Error cancelling order {order_id}: {e}")
-                        failed += 1
-            
-            logger.warning(f"🧹 CLEANUP COMPLETE: Cancelled {cancelled} orders, {failed} failures")
-            
-            # Force an audit after cleanup
-            await asyncio.sleep(2)
-            return failed == 0
-            
-        except Exception as e:
-            logger.error(f"Emergency cleanup failed: {e}")
-            return False
-    
-    
     async def shutdown(self):
         """Clean shutdown of all components"""
         logger.info("Shutting down HyperTrader...")

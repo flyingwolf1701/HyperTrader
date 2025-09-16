@@ -24,9 +24,6 @@ from .position_map import (
 # Import from unit tracker
 from .unit_tracker import UnitTracker
 
-# Import from config
-from .config import LongWalletConfig, TestnetConfig, MainnetConfig
-
 __all__ = [
     # Data models
     'OrderType',
@@ -44,9 +41,5 @@ __all__ = [
     'get_orders_by_type',
     'cancel_all_active_orders',
     # Unit tracker
-    'UnitTracker',
-    # Config
-    'LongWalletConfig',
-    'TestnetConfig',
-    'MainnetConfig'
+    'UnitTracker'
 ]

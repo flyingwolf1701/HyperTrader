@@ -30,7 +30,7 @@ class UnitTracker:
         self.position_state = position_state
         self.position_map = position_map
         self.current_unit = 0
-        self.last_phase = "advance"  # Simple string tracking for phase detection
+        self.last_phase = "advance"  # Track last phase for recovery detection
 
         # Sliding window management - SIMPLE LIST-BASED TRACKING from data_flow.md
         self.trailing_stop: List[int] = [-4, -3, -2, -1]  # Initial 4 stop-loss orders
@@ -46,29 +46,41 @@ class UnitTracker:
     def calculate_unit_change(self, current_price: Decimal) -> Optional[UnitChangeEvent]:
         """
         Check if price has crossed a unit boundary and manage sliding window.
+        Properly handles rapid price movements that skip units.
         """
         self._ensure_sufficient_units()
-        
+
         previous_unit = self.current_unit
-        direction = None
-        
-        # Check UP boundary
-        next_unit_up = self.current_unit + 1
-        if next_unit_up in self.position_map:
-            price_threshold_up = self.position_map[next_unit_up].price
-            if current_price >= price_threshold_up:
-                self.current_unit = next_unit_up
-                direction = 'up'
-        
-        # Check DOWN boundary
-        next_unit_down = self.current_unit - 1
-        if next_unit_down in self.position_map:
-            price_threshold_down = self.position_map[next_unit_down].price
-            if current_price <= price_threshold_down:
-                self.current_unit = next_unit_down
-                direction = 'down'
-        
-        # If unit changed, update phase
+
+        # Calculate which unit the current price belongs to
+        # Unit = floor((price - entry_price) / unit_size)
+        price_diff = current_price - self.position_state.entry_price
+        unit_size = self.position_state.unit_size_usd
+
+        # Calculate the actual unit we should be in
+        new_unit = int(price_diff / unit_size)
+        # Handle negative rounding correctly
+        if price_diff < 0 and price_diff % unit_size != 0:
+            new_unit -= 1
+
+        # Ensure the unit exists in position map
+        if new_unit not in self.position_map:
+            from .position_map import add_unit_level
+            add_unit_level(self.position_state, self.position_map, new_unit)
+
+        # Update current unit if it changed
+        if new_unit != previous_unit:
+            self.current_unit = new_unit
+            direction = 'up' if new_unit > previous_unit else 'down'
+
+            # Log if we skipped units (rapid price movement)
+            units_skipped = abs(new_unit - previous_unit) - 1
+            if units_skipped > 0:
+                logger.warning(f"Rapid price movement detected! Skipped {units_skipped} units: {previous_unit} → {new_unit}")
+        else:
+            return None
+
+        # If unit changed, create event
         if self.current_unit != previous_unit:
             current_phase = self.get_phase()
 
@@ -93,20 +105,36 @@ class UnitTracker:
     def get_phase(self) -> str:
         """
         Simple phase detection based on list lengths as per data_flow.md.
-        Phase names don't matter much - mostly for documentation and logging.
+        Phase names are mostly for documentation and logging.
         """
-        if len(self.trailing_stop) == 4 and len(self.trailing_buy) == 0:
-            self.last_phase = "advance"
-            return "advance"
-        elif len(self.trailing_buy) == 4 and len(self.trailing_stop) == 0:
-            self.last_phase = "decline"
-            return "decline"
-        else:
-            # Mixed state - determine based on last phase
-            if self.last_phase == "decline":
-                return "recovery"
-            else:
-                return "retracement"
+        stop_count = len(self.trailing_stop)
+        buy_count = len(self.trailing_buy)
+
+        # Determine the current phase
+        match (stop_count, buy_count):
+            case (4, 0):
+                # Pure long position with stops
+                current_phase = "advance"
+
+            case (0, 4):
+                # Pure cash position with buy orders
+                current_phase = "decline"
+
+            case (s, b) if s > 0 and b > 0:
+                # Mixed state - have both stops and buys
+                # Retracement if we were in advance, recovery if we were in decline
+                if self.last_phase in ["advance", "retracement"]:
+                    current_phase = "retracement"
+                else:
+                    current_phase = "recovery"
+
+            case _:
+                # Edge case - shouldn't normally happen
+                current_phase = self.last_phase if hasattr(self, 'last_phase') else "advance"
+
+        # Update last_phase for next call
+        self.last_phase = current_phase
+        return current_phase
     
     
     def _ensure_sufficient_units(self):
@@ -134,41 +162,10 @@ class UnitTracker:
             'total_orders': len(self.trailing_stop) + len(self.trailing_buy),
             'current_realized_pnl': float(self.current_realized_pnl)
         }
-    
-    def reset_for_new_cycle(self, new_entry_price: Optional[Decimal] = None):
-        """
-        Reset unit tracking for a new cycle.
-        Note: data_flow.md says we don't really need a reset phase anymore.
-        This is kept for compatibility but simplified.
-
-        Args:
-            new_entry_price: Optional new entry price for the cycle
-        """
-        logger.info("Resetting unit tracking for new cycle")
-
-        # Reset unit counters
-        self.current_unit = 0
-
-        # Reinitialize sliding window
-        self.trailing_stop = [-4, -3, -2, -1]
-        self.trailing_buy = []
-        self.last_phase = "advance"
-
-        # Reset PnL tracking for new cycle
-        self.current_realized_pnl = Decimal(0)
-
-        if new_entry_price:
-            self.position_state.entry_price = new_entry_price
-            logger.info(f"Updated entry price: ${new_entry_price:.2f}")
-
-        logger.info(f"Reset complete with stop-losses at {self.trailing_stop}")
-    
     # NEW LIST-BASED TRACKING METHODS
     def add_trailing_stop(self, unit: int) -> bool:
         """Add a unit to trailing stop list if not already present"""
         if unit not in self.trailing_stop:
-            # Validation: stops should be BELOW current unit (can be placed when price moves up)
-            # This prevents invalid states like having stops above price
             self.trailing_stop.append(unit)
             self.trailing_stop.sort()  # Keep sorted for readability
             logger.debug(f"Added stop at unit {unit}, trailing_stop: {self.trailing_stop}")
@@ -186,8 +183,6 @@ class UnitTracker:
     def add_trailing_buy(self, unit: int) -> bool:
         """Add a unit to trailing buy list if not already present"""
         if unit not in self.trailing_buy:
-            # Validation: buys should be ABOVE current unit (can be placed when price moves down)
-            # This prevents invalid states like having buys below price
             self.trailing_buy.append(unit)
             self.trailing_buy.sort()  # Keep sorted for readability
             logger.debug(f"Added buy at unit {unit}, trailing_buy: {self.trailing_buy}")

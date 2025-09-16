@@ -71,16 +71,16 @@ class PositionState:
 class PositionConfig:
     """
     Simple per-unit tracking as per data_flow.md.
-    Tracks order at each price level.
+    Tracks order history at each price level.
     """
     unit: int
     price: Decimal
 
-    # Order management
-    order_id: Optional[str] = None
-    order_type: Optional[OrderType] = None
-    execution_status: ExecutionStatus = ExecutionStatus.PENDING
-    is_active: bool = False
+    # Order management - Lists to track history as per data_flow.md
+    order_ids: List[str] = field(default_factory=list)
+    order_types: List[OrderType] = field(default_factory=list)
+    order_statuses: List[ExecutionStatus] = field(default_factory=list)
+    is_active: bool = False  # Current order active status
 
     def mark_filled(self, filled_price: Optional[Decimal] = None, filled_size: Optional[Decimal] = None):
         """Mark this unit's order as filled
@@ -89,22 +89,40 @@ class PositionConfig:
             filled_price: The actual fill price (optional, for logging)
             filled_size: The actual fill size (optional, for logging)
         """
-        self.execution_status = ExecutionStatus.FILLED
+        # Update the last order status to FILLED
+        if self.order_statuses:
+            self.order_statuses[-1] = ExecutionStatus.FILLED
         self.is_active = False
 
     def mark_cancelled(self):
         """Mark this unit's order as cancelled"""
-        self.execution_status = ExecutionStatus.CANCELLED
+        # Update the last order status to CANCELLED
+        if self.order_statuses:
+            self.order_statuses[-1] = ExecutionStatus.CANCELLED
         self.is_active = False
-        self.order_id = None
-        self.order_type = None
 
     def set_active_order(self, order_id: str, order_type: OrderType):
-        """Set an active order for this unit"""
-        self.order_id = order_id
-        self.order_type = order_type
+        """Set an active order for this unit - appends to history"""
+        # Append to lists as per data_flow.md
+        self.order_ids.append(order_id)
+        self.order_types.append(order_type)
+        self.order_statuses.append(ExecutionStatus.PENDING)
         self.is_active = True
-        self.execution_status = ExecutionStatus.PENDING
+
+    @property
+    def order_id(self) -> Optional[str]:
+        """Get the current/latest order ID for backward compatibility"""
+        return self.order_ids[-1] if self.order_ids else None
+
+    @property
+    def order_type(self) -> Optional[OrderType]:
+        """Get the current/latest order type for backward compatibility"""
+        return self.order_types[-1] if self.order_types else None
+
+    @property
+    def execution_status(self) -> ExecutionStatus:
+        """Get the current/latest execution status for backward compatibility"""
+        return self.order_statuses[-1] if self.order_statuses else ExecutionStatus.PENDING
 
 
 @dataclass
