@@ -243,9 +243,14 @@ class HyperTrader:
     async def _place_stop_buy_order(self, unit: int) -> Optional[str]:
         """Place a stop buy order at a specific unit"""
         logger.warning(f"📊 ATTEMPTING TO PLACE STOP BUY at unit {unit}")
-        
+
+        # Debug for unit 0
+        if unit == 0:
+            logger.warning(f"🎯 Placing stop-buy at UNIT 0 (entry price)")
+            logger.warning(f"🎯 Unit 0 in position_map: {0 in self.position_map}")
+
         if unit not in self.position_map:
-            logger.error(f"❌ Unit {unit} not in position map!")
+            logger.error(f"❌ Unit {unit} not in position map! Available units: {sorted(self.position_map.keys())}")
             return None
             
         config = self.position_map[unit]
@@ -294,7 +299,16 @@ class HyperTrader:
     
     async def _place_stop_loss_order(self, unit: int) -> Optional[str]:
         """Place a stop loss order at a specific unit"""
-            
+
+        # Debug for unit 0
+        if unit == 0:
+            logger.warning(f"🎯 Placing stop-loss at UNIT 0 (entry price)")
+            logger.warning(f"🎯 Unit 0 in position_map: {0 in self.position_map}")
+
+        if unit not in self.position_map:
+            logger.error(f"❌ Unit {unit} not in position_map! Available units: {sorted(self.position_map.keys())}")
+            return None
+
         config = self.position_map[unit]
         trigger_price = config.price
         
@@ -357,59 +371,77 @@ class HyperTrader:
             logger.debug(f"No unit change at price ${price}")
     
     async def _handle_unit_change(self, event: UnitChangeEvent):
-        """Handle unit boundary crossing"""
-        logger.info(f"📍 UNIT CHANGE HANDLER CALLED")
-        logger.info(f"Unit changed to {self.unit_tracker.current_unit} - Direction: {event.direction} - Phase: {event.phase} - Window: {event.window_composition}")
-        
-        # PROACTIVE STRATEGY: Place orders immediately on unit crossing
-        current_unit = self.unit_tracker.current_unit
-        
-        if event.direction == 'down':
-            # When price drops to a new unit, immediately place limit buy at current+1
-            # This assumes the stop-loss at this level will/has triggered
-            replacement_unit = current_unit + 1
-            
-            # Ensure unit exists in position map
-            if replacement_unit not in self.position_map:
-                add_unit_level(self.position_state, self.position_map, replacement_unit)
-            
-            # Check if we already have an active order at this unit
-            if not self.position_map[replacement_unit].is_active:
-                logger.warning(f"🚀 PROACTIVE: Price dropped to unit {current_unit}, placing stop buy at unit {replacement_unit}")
+        """Handle unit boundary crossing - IMMEDIATE placement"""
+        logger.warning(f"⚡ UNIT CROSSED! Unit {self.unit_tracker.current_unit} | Dir: {event.direction} | Phase: {event.phase}")
 
-                # Place stop buy order immediately
-                order_id = await self._place_stop_buy_order(replacement_unit)
-                if order_id:
-                    logger.info(f"✅ PROACTIVE stop buy placed at unit {replacement_unit}")
-                else:
-                    logger.error(f"❌ Failed to place PROACTIVE stop buy at unit {replacement_unit}")
+        current_unit = self.unit_tracker.current_unit
+        phase = self.unit_tracker.get_phase()
+
+        # IMMEDIATE PLACEMENT - Fire tasks without waiting
+        placed_orders = []
+
+        if event.direction == 'down':
+            # Determine what orders to place based on phase
+            if phase == "decline":
+                # Pure decline: Need buy orders at +1, +2, +3, +4
+                target_units = [current_unit + i for i in range(1, 5)]
             else:
-                logger.debug(f"Already have active order at unit {replacement_unit}, skipping proactive placement")
-                
+                # Mixed phase: Just place replacement for triggered stop
+                target_units = [current_unit + 1]
+
+            # Place orders IMMEDIATELY without waiting
+            for buy_unit in target_units:
+                if buy_unit not in self.unit_tracker.trailing_buy:
+                    if buy_unit not in self.position_map:
+                        add_unit_level(self.position_state, self.position_map, buy_unit)
+
+                    if not self.position_map[buy_unit].is_active:
+                        logger.warning(f"⚡ INSTANT PLACE: Buy at {buy_unit}")
+                        # Fire task without awaiting
+                        task = asyncio.create_task(self._place_stop_buy_order(buy_unit))
+                        placed_orders.append((buy_unit, 'buy', task))
+                        self.unit_tracker.add_trailing_buy(buy_unit)
+
         elif event.direction == 'up':
-            # When price rises to a new unit, immediately place stop-loss at current-1
-            # This assumes a limit buy at this level will/has filled
-            replacement_unit = current_unit - 1
-            
-            # Ensure unit exists in position map
-            if replacement_unit not in self.position_map:
-                add_unit_level(self.position_state, self.position_map, replacement_unit)
-            
-            # Check if we already have an active order at this unit
-            if not self.position_map[replacement_unit].is_active:
-                logger.warning(f"🚀 PROACTIVE: Price rose to unit {current_unit}, placing stop-loss at unit {replacement_unit}")
-                
-                # Place stop-loss order immediately
-                order_id = await self._place_stop_loss_order(replacement_unit)
-                if order_id:
-                    logger.info(f"✅ PROACTIVE stop-loss placed at unit {replacement_unit}")
-                else:
-                    logger.error(f"❌ Failed to place PROACTIVE stop-loss at unit {replacement_unit}")
+            # Determine what orders to place based on phase
+            if phase == "advance":
+                # Pure advance: Need stop orders at -1, -2, -3, -4
+                target_units = [current_unit - i for i in range(1, 5)]
             else:
-                logger.debug(f"Already have active order at unit {replacement_unit}, skipping proactive placement")
-        
-        # Always slide window on unit changes (more aggressive)
+                # Mixed phase: Just place replacement for executed buy
+                target_units = [current_unit - 1]
+
+            # Place orders IMMEDIATELY without waiting
+            for stop_unit in target_units:
+                if stop_unit not in self.unit_tracker.trailing_stop:
+                    if stop_unit not in self.position_map:
+                        add_unit_level(self.position_state, self.position_map, stop_unit)
+
+                    if not self.position_map[stop_unit].is_active:
+                        logger.warning(f"⚡ INSTANT PLACE: Stop at {stop_unit}")
+                        # Fire task without awaiting
+                        task = asyncio.create_task(self._place_stop_loss_order(stop_unit))
+                        placed_orders.append((stop_unit, 'stop', task))
+                        self.unit_tracker.add_trailing_stop(stop_unit)
+
+        # NOW handle sliding (cleanup old orders) - this can be slower
         await self._slide_window(event.direction)
+
+        # Log results of placement attempts (non-blocking)
+        if placed_orders:
+            asyncio.create_task(self._log_placement_results(placed_orders))
+
+    async def _log_placement_results(self, placed_orders):
+        """Log the results of order placements"""
+        for unit, order_type, task in placed_orders:
+            try:
+                result = await task
+                if result:
+                    logger.info(f"✅ {order_type} placed at {unit}")
+                else:
+                    logger.error(f"❌ Failed {order_type} at {unit}")
+            except Exception as e:
+                logger.error(f"❌ Error placing {order_type} at {unit}: {e}")
         
     
     async def _slide_window(self, direction: str):
@@ -431,16 +463,23 @@ class HyperTrader:
         logger.info(f"Sliding window UP to unit {current_unit}")
         logger.info(f"Before: Stops={self.unit_tracker.trailing_stop}, Buys={self.unit_tracker.trailing_buy}")
 
-        # Handle any executed buys first
-        executed_buys = [unit for unit in self.unit_tracker.trailing_buy if unit <= current_unit]
+        # CRITICAL: Cancel ANY buy orders that are BELOW current price (invalid)
+        # Buy orders should ALWAYS be above current price (or at current price if pending)
+        invalid_buys = [unit for unit in self.unit_tracker.trailing_buy if unit < current_unit]
 
-        if executed_buys:
-            logger.warning(f"Buys executed at units: {executed_buys}")
+        if invalid_buys:
+            logger.error(f"🚨 INVALID BUYS BELOW PRICE: {invalid_buys} - CANCELLING IMMEDIATELY")
 
-            # Remove all executed buys
-            for buy_unit in executed_buys:
+            for buy_unit in invalid_buys:
                 self.unit_tracker.remove_trailing_buy(buy_unit)
-                logger.info(f"Removed executed buy at unit {buy_unit}")
+
+                # Cancel the invalid order
+                if buy_unit in self.position_map and self.position_map[buy_unit].is_active:
+                    success = await self._cancel_order(buy_unit)
+                    if success:
+                        logger.warning(f"✅ Cancelled invalid buy at unit {buy_unit} (was below price)")
+                    else:
+                        logger.error(f"❌ Failed to cancel invalid buy at unit {buy_unit}")
 
         # CRITICAL: Determine phase to handle sliding correctly
         phase = self.unit_tracker.get_phase()
@@ -478,23 +517,9 @@ class HyperTrader:
 
         else:
             # MIXED PHASE (retracement/recovery): Handle replacement logic
-            # Only place replacement stops for executed buys
-            for buy_unit in executed_buys:
-                replacement_unit = buy_unit - 1
-
-                # Ensure unit exists in position map
-                if replacement_unit not in self.position_map:
-                    add_unit_level(self.position_state, self.position_map, replacement_unit)
-
-                # Add replacement stop if not already there
-                if replacement_unit not in self.unit_tracker.trailing_stop:
-                    if self.unit_tracker.add_trailing_stop(replacement_unit):
-                        if not self.position_map[replacement_unit].is_active:
-                            order_id = await self._place_stop_loss_order(replacement_unit)
-                            if order_id:
-                                logger.info(f"✅ Added replacement stop at unit {replacement_unit}")
-                            else:
-                                logger.error(f"❌ Failed to place replacement stop at unit {replacement_unit}")
+            # In mixed phases, just ensure we have proper trailing orders
+            # The immediate placement already happened in _handle_unit_change
+            pass
 
             # Maintain exactly 4 TOTAL orders (stops + buys)
             total_orders = len(self.unit_tracker.trailing_stop) + len(self.unit_tracker.trailing_buy)
@@ -532,16 +557,23 @@ class HyperTrader:
         logger.info(f"Sliding window DOWN to unit {current_unit}")
         logger.info(f"Current stops: {self.unit_tracker.trailing_stop}, Current buys: {self.unit_tracker.trailing_buy}")
 
-        # Handle any triggered stops first
-        triggered_stops = [unit for unit in self.unit_tracker.trailing_stop if unit >= current_unit]
+        # CRITICAL: Cancel ANY stop-loss orders that are ABOVE current price (invalid)
+        # Stop-losses should ALWAYS be below current price
+        invalid_stops = [unit for unit in self.unit_tracker.trailing_stop if unit >= current_unit]
 
-        if triggered_stops:
-            logger.warning(f"Stops triggered at units: {triggered_stops}")
+        if invalid_stops:
+            logger.error(f"🚨 INVALID STOPS ABOVE PRICE: {invalid_stops} - CANCELLING IMMEDIATELY")
 
-            # Remove all triggered stops
-            for stop_unit in triggered_stops:
+            for stop_unit in invalid_stops:
                 self.unit_tracker.remove_trailing_stop(stop_unit)
-                logger.info(f"Removed triggered stop at unit {stop_unit}")
+
+                # Cancel the invalid order
+                if stop_unit in self.position_map and self.position_map[stop_unit].is_active:
+                    success = await self._cancel_order(stop_unit)
+                    if success:
+                        logger.warning(f"✅ Cancelled invalid stop at unit {stop_unit} (was above price)")
+                    else:
+                        logger.error(f"❌ Failed to cancel invalid stop at unit {stop_unit}")
 
         # CRITICAL: Determine phase to handle sliding correctly
         phase = self.unit_tracker.get_phase()
@@ -579,23 +611,9 @@ class HyperTrader:
 
         else:
             # MIXED PHASE (retracement/recovery): Handle replacement logic
-            # Only place replacement buys for triggered stops
-            for stop_unit in triggered_stops:
-                replacement_unit = stop_unit + 1
-
-                # Ensure unit exists in position map
-                if replacement_unit not in self.position_map:
-                    add_unit_level(self.position_state, self.position_map, replacement_unit)
-
-                # Add replacement buy if not already there
-                if replacement_unit not in self.unit_tracker.trailing_buy:
-                    if self.unit_tracker.add_trailing_buy(replacement_unit):
-                        if not self.position_map[replacement_unit].is_active:
-                            order_id = await self._place_stop_buy_order(replacement_unit)
-                            if order_id:
-                                logger.info(f"✅ Added replacement buy at unit {replacement_unit}")
-                            else:
-                                logger.error(f"❌ Failed to place replacement buy at unit {replacement_unit}")
+            # In mixed phases, just ensure we have proper trailing orders
+            # The immediate placement already happened in _handle_unit_change
+            pass
 
             # Maintain exactly 4 TOTAL orders (stops + buys)
             total_orders = len(self.unit_tracker.trailing_stop) + len(self.unit_tracker.trailing_buy)
@@ -786,6 +804,9 @@ class HyperTrader:
                 # Monitor position and orders
                 window_state = self.unit_tracker.get_window_state()
                 active_orders = get_active_orders(self.position_map)
+
+                # Validate orders are on correct side of price
+                await self._validate_order_placement()
                 
                 # Log detailed order status every 30 seconds
                 if not hasattr(self, '_last_detail_log'):
@@ -832,6 +853,48 @@ class HyperTrader:
             logger.info(f"   Stop buys: {', '.join(stop_buys[:4])}")
         
     
+    async def _validate_order_placement(self):
+        """Validate all orders are on the correct side of price and cancel invalid ones"""
+        if not self.current_price or not self.unit_tracker:
+            return
+
+        current_unit = self.unit_tracker.current_unit
+        cancelled_any = False
+
+        # Check for invalid stop orders (should be BELOW current price)
+        for unit in list(self.unit_tracker.trailing_stop):
+            if unit >= current_unit:
+                logger.error(f"🚨 INVALID: Stop order at unit {unit} is ABOVE current unit {current_unit}")
+                self.unit_tracker.remove_trailing_stop(unit)
+
+                if unit in self.position_map and self.position_map[unit].is_active:
+                    success = await self._cancel_order(unit)
+                    if success:
+                        logger.warning(f"✅ Cancelled invalid stop at unit {unit}")
+                        cancelled_any = True
+
+        # Check for invalid buy orders (should be ABOVE current price)
+        for unit in list(self.unit_tracker.trailing_buy):
+            if unit < current_unit:  # Changed from <= to < (unit AT current price is valid for pending orders)
+                logger.error(f"🚨 INVALID: Buy order at unit {unit} is BELOW current unit {current_unit}")
+                self.unit_tracker.remove_trailing_buy(unit)
+
+                if unit in self.position_map and self.position_map[unit].is_active:
+                    success = await self._cancel_order(unit)
+                    if success:
+                        logger.warning(f"✅ Cancelled invalid buy at unit {unit}")
+                        cancelled_any = True
+
+        # If we cancelled any orders, trigger window slide to place correct ones
+        if cancelled_any:
+            phase = self.unit_tracker.get_phase()
+            logger.warning(f"🔧 Triggering window slide to place correct orders (phase: {phase})")
+
+            if phase == "decline" or len(self.unit_tracker.trailing_buy) > 0:
+                await self._slide_window_down()
+            elif phase == "advance" or len(self.unit_tracker.trailing_stop) > 0:
+                await self._slide_window_up()
+
     async def _get_live_orders(self) -> List[Dict]:
         """Get all open orders from exchange"""
         try:

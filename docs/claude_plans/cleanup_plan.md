@@ -1,9 +1,6 @@
 
 # HyperTrader Code Cleanup - COMPLETED ✅
 
-## Initial Prompt
-Please read docs\strategy_doc_v9.md and docs\data_flow.md
-
 ## Executive Summary
 
 **Status: ALL STAGES COMPLETE (2025-01-15)**

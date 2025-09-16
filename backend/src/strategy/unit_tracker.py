@@ -167,6 +167,8 @@ class UnitTracker:
     def add_trailing_stop(self, unit: int) -> bool:
         """Add a unit to trailing stop list if not already present"""
         if unit not in self.trailing_stop:
+            # Validation: stops should be BELOW current unit (can be placed when price moves up)
+            # This prevents invalid states like having stops above price
             self.trailing_stop.append(unit)
             self.trailing_stop.sort()  # Keep sorted for readability
             logger.debug(f"Added stop at unit {unit}, trailing_stop: {self.trailing_stop}")
@@ -184,6 +186,8 @@ class UnitTracker:
     def add_trailing_buy(self, unit: int) -> bool:
         """Add a unit to trailing buy list if not already present"""
         if unit not in self.trailing_buy:
+            # Validation: buys should be ABOVE current unit (can be placed when price moves down)
+            # This prevents invalid states like having buys below price
             self.trailing_buy.append(unit)
             self.trailing_buy.sort()  # Keep sorted for readability
             logger.debug(f"Added buy at unit {unit}, trailing_buy: {self.trailing_buy}")

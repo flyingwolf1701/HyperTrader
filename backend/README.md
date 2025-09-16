@@ -23,3 +23,6 @@ cd backend
 uv run python scripts/hl_commands.py status
 uv run python scripts/hl_commands.py close SOL
 ```
+
+## Initial Prompt for Claude to study and gain context. 
+Please read docs\strategy_doc_v9.md and docs\data_flow.md for context on the app. Then read backend\src\main.py, and files in these folders: backend\src\core, backend\src\exchange, backend\src\strategy.
