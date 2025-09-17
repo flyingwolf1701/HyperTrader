@@ -77,6 +77,9 @@ class UnitTracker:
             units_skipped = abs(new_unit - previous_unit) - 1
             if units_skipped > 0:
                 logger.warning(f"Rapid price movement detected! Skipped {units_skipped} units: {previous_unit} → {new_unit}")
+
+            # Update trailing lists to reflect new position
+            self._update_trailing_lists_for_movement(previous_unit, new_unit)
         else:
             return None
 
@@ -98,7 +101,7 @@ class UnitTracker:
                 direction=direction,
                 window_composition=window_comp
             )
-        
+
         return None
     
     
@@ -142,12 +145,33 @@ class UnitTracker:
         Ensure we have units for the sliding window (4 ahead and 4 behind).
         """
         from .position_map import add_unit_level
-        
+
         # Ensure we have 5 units ahead and behind for window management
         for offset in range(-5, 6):
             target_unit = self.current_unit + offset
             if target_unit not in self.position_map:
                 add_unit_level(self.position_state, self.position_map, target_unit)
+
+    def _update_trailing_lists_for_movement(self, previous_unit: int, new_unit: int):
+        """
+        Update trailing stop and buy lists when unit changes.
+        Maintains the 4-order constraint and keeps orders relative to current position.
+        """
+        # Remove any stops that are now above current unit
+        stops_to_remove = [u for u in self.trailing_stop if u > new_unit]
+        for stop in stops_to_remove:
+            self.trailing_stop.remove(stop)
+            logger.debug(f"Removed stop at unit {stop} (now above current unit {new_unit})")
+
+        # Remove any buys that are now below current unit
+        buys_to_remove = [u for u in self.trailing_buy if u < new_unit]
+        for buy in buys_to_remove:
+            self.trailing_buy.remove(buy)
+            logger.debug(f"Removed buy at unit {buy} (now below current unit {new_unit})")
+
+        # Keep lists sorted
+        self.trailing_stop.sort()
+        self.trailing_buy.sort()
     
     
     def get_window_state(self) -> Dict:

@@ -177,7 +177,23 @@ class HyperTrader:
             position_value_usd=asset_size * entry_price,  # Use actual position value
             unit_range=20  # Pre-calculate more units for sliding window
         )
-        
+
+        # Validate minimum spacing
+        spacing_pct = (self.unit_size_usd / entry_price) * 100
+        logger.info(f"📏 Unit spacing: ${self.unit_size_usd:.2f} = {spacing_pct:.3f}% of entry price ${entry_price:.2f}")
+
+        if spacing_pct < 0.2:
+            logger.error(f"⚠️ WARNING: Unit size too small! {spacing_pct:.3f}% spacing will cause order clustering")
+            logger.error(f"⚠️ Recommended minimum unit size for {self.symbol} at ${entry_price:.2f}: ${entry_price * Decimal('0.005'):.2f} (0.5% spacing)")
+
+        # Log unit prices for verification
+        units_to_check = [-4, -3, -2, -1, 0, 1, 2, 3, 4]
+        logger.info("📊 Unit price verification:")
+        for unit in units_to_check:
+            if unit in self.position_map:
+                price = self.position_map[unit].price
+                logger.info(f"   Unit {unit:3d}: ${price:.4f}")
+
         # Initialize unit tracker with sliding window
         self.unit_tracker = UnitTracker(
             position_state=self.position_state,
@@ -250,9 +266,26 @@ class HyperTrader:
         if unit not in self.position_map:
             logger.error(f"❌ Unit {unit} not in position map! Available units: {sorted(self.position_map.keys())}")
             return None
-            
+
         config = self.position_map[unit]
+
+        # Check if order already active at this unit
+        if config.is_active:
+            logger.warning(f"⚠️ Order already active at unit {unit} (ID: {config.order_id}), skipping placement")
+            return config.order_id
+
         price = config.price
+
+        # Check for duplicate prices in active orders
+        active_prices = []
+        for u, cfg in self.position_map.items():
+            if cfg.is_active and cfg.order_type == OrderType.STOP_BUY:
+                active_prices.append((u, cfg.price))
+
+        for other_unit, other_price in active_prices:
+            if abs(other_price - price) < Decimal("0.01"):  # Within 1 cent
+                logger.error(f"❌ Duplicate price detected! Unit {unit} price ${price:.2f} too close to unit {other_unit} price ${other_price:.2f}")
+                return None
 
         # Use adjusted fragment in recovery phase (includes PnL reinvestment)
         fragment_usd = self.unit_tracker.get_adjusted_fragment_usd()
@@ -284,16 +317,26 @@ class HyperTrader:
                 logger.error(f"❌ STOP BUY FAILED at unit {unit}: {result.error_message}")
                 return None
         else:
-            # Price is below market - use regular stop buy
-            logger.info(f"📉 Price ${price:.2f} <= Market ${current_market_price:.2f} - Using regular stop buy")
-            result = await self._place_stop_order(unit, "buy")
+            # Price is at or below market - use LIMIT buy order
+            logger.info(f"📉 Price ${price:.2f} <= Market ${current_market_price:.2f} - Using LIMIT BUY")
 
-            if result:
-                logger.warning(f"✅ STOP BUY SUCCESSFULLY PLACED at unit {unit}")
+            result = self.sdk_client.place_limit_order(
+                symbol=self.symbol,
+                is_buy=True,
+                price=price,
+                size=size,
+                reduce_only=False,
+                post_only=True  # Maker order to avoid fees
+            )
+
+            if result.success:
+                config.set_active_order(result.order_id, OrderType.STOP_BUY)  # Track as stop buy for strategy
+                logger.warning(f"✅ LIMIT BUY SUCCESSFULLY PLACED at unit {unit} @ ${price:.2f}")
+                logger.warning(f"📝 ORDER ID TRACKING: Limit buy at unit {unit} = {result.order_id}")
+                return result.order_id
             else:
-                logger.error(f"❌ STOP BUY FAILED at unit {unit}")
-                
-            return result
+                logger.error(f"❌ LIMIT BUY FAILED at unit {unit}: {result.error_message}")
+                return None
     
     async def _place_stop_loss_order(self, unit: int) -> Optional[str]:
         """Place a stop loss order at a specific unit"""
@@ -308,14 +351,31 @@ class HyperTrader:
             return None
 
         config = self.position_map[unit]
+
+        # Check if order already active at this unit
+        if config.is_active:
+            logger.warning(f"⚠️ Order already active at unit {unit} (ID: {config.order_id}), skipping placement")
+            return config.order_id
+
         trigger_price = config.price
-        
+
+        # Check for duplicate prices in active orders
+        active_prices = []
+        for u, cfg in self.position_map.items():
+            if cfg.is_active and cfg.order_type == OrderType.STOP_LOSS_SELL:
+                active_prices.append((u, cfg.price))
+
+        for other_unit, other_price in active_prices:
+            if abs(other_price - trigger_price) < Decimal("0.01"):  # Within 1 cent
+                logger.error(f"❌ Duplicate price detected! Unit {unit} price ${trigger_price:.2f} too close to unit {other_unit} price ${other_price:.2f}")
+                return None
+
         # Stop losses are always sells that reduce the long position
         size = self.position_state.long_fragment_asset
-        
+
         # Place stop order via SDK
         result = await self._sdk_place_stop_order("sell", trigger_price, size)
-        
+
         if result.success:
             # Update position map
             config.set_active_order(result.order_id, OrderType.STOP_LOSS_SELL)
@@ -373,6 +433,22 @@ class HyperTrader:
         logger.warning(f"⚡ UNIT CROSSED! Unit {self.unit_tracker.current_unit} | Dir: {event.direction} | Phase: {event.phase}")
 
         current_unit = self.unit_tracker.current_unit
+
+        # Log unit prices for debugging
+        if current_unit in self.position_map:
+            current_price = self.position_map[current_unit].price
+            logger.info(f"📍 Current unit {current_unit} price: ${current_price:.4f}")
+
+            # Log neighboring unit prices
+            if current_unit - 1 in self.position_map:
+                below_price = self.position_map[current_unit - 1].price
+                spacing = float(current_price - below_price)
+                logger.info(f"   Unit {current_unit - 1} price: ${below_price:.4f} (spacing: ${spacing:.4f})")
+
+            if current_unit + 1 in self.position_map:
+                above_price = self.position_map[current_unit + 1].price
+                spacing = float(above_price - current_price)
+                logger.info(f"   Unit {current_unit + 1} price: ${above_price:.4f} (spacing: ${spacing:.4f})")
 
         if event.direction == 'up':
             # Price went UP - as per data_flow.md step 7
