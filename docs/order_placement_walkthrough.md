@@ -32,172 +32,269 @@ self.trailing_buy: List[int] = []                  # Buy orders above price
 
 ## Order Placement Flow
 
-### 1. Initial Entry (backend/src/main.py: initialize_position)
+### 1. Initial Entry (backend/src/main.py: _initialize_position)
 ```python
-async def initialize_position():
-    # Place initial market buy order
-    await exchange_client.place_market_order(
-        symbol=symbol,
-        side="buy",
-        size=position_size
+async def _initialize_position():
+    # Check for existing position first
+    positions = self.sdk_client.get_positions()
+
+    if self.symbol in positions:
+        # Load existing position
+        position = positions[self.symbol]
+        entry_price = position.entry_price
+        asset_size = position.size
+    else:
+        # Create new position (long wallet only)
+        if self.wallet_type == "long":
+            result = await self._place_market_order("buy", estimated_size)
+
+            # Wait for position to be fully established
+            # Poll for position with timeout
+            for attempt in range(10):
+                await asyncio.sleep(1)
+                positions = self.sdk_client.get_positions()
+                if self.symbol in positions:
+                    break
+
+            position = positions[self.symbol]
+            entry_price = position.entry_price  # Use ACTUAL fill price
+            asset_size = position.size  # Use ACTUAL position size
+
+    # Initialize position map with actual values
+    self.position_state, self.position_map = calculate_initial_position_map(
+        entry_price=entry_price,
+        unit_size_usd=self.unit_size_usd,
+        asset_size=asset_size,
+        position_value_usd=asset_size * entry_price
     )
 
-    # Set up initial trailing stops at units -4, -3, -2, -1
-    for unit in [-4, -3, -2, -1]:
-        await _place_stop_order(unit, OrderType.STOP_LOSS_SELL)
+    # Initialize unit tracker with sliding window
+    self.unit_tracker = UnitTracker(
+        position_state=self.position_state,
+        position_map=self.position_map
+    )
+
+    # Place initial sliding window orders
+    await self._place_window_orders()
 ```
 
 **State After Entry:**
 - Current unit: 0
-- Trailing stops: [-4, -3, -2, -1]
+- Trailing stops: [-4, -3, -2, -1]  # Set in UnitTracker init
 - Trailing buys: []
 - Phase: ADVANCE
 
-### 2. Price Movement Detection (backend/src/main.py: main_loop)
+### 2. Price Movement Detection (backend/src/main.py: _handle_price_update)
 ```python
-async def main_loop():
-    while running:
-        # Get current price
-        price = await exchange_client.get_mark_price()
+def _handle_price_update(self, price: Decimal):
+    """Handle price updates from WebSocket"""
+    self.current_price = price
 
-        # Check for unit boundary crossing
-        unit_change = unit_tracker.calculate_unit_change(price)
+    # Check for unit boundary crossing
+    unit_event = self.unit_tracker.calculate_unit_change(price)
 
-        if unit_change:
-            await _handle_unit_change(unit_change)
+    if unit_event:
+        # Create async task to handle unit change
+        asyncio.create_task(self._handle_unit_change(unit_event))
 ```
 
 ### 3. Unit Change Handling (backend/src/main.py: _handle_unit_change)
 
-#### Scenario A: Price Moving UP (ADVANCE Phase)
-**Initial State:** Price at unit 0, moving to unit 1
+#### Scenario A: Price Moving UP
+**Initial State:** Price crosses up to a new unit
 
 ```python
 async def _handle_unit_change(event: UnitChangeEvent):
+    current_unit = self.unit_tracker.current_unit
+
     if event.direction == 'up':
-        # 1. Cancel the furthest stop (unit -4)
-        old_stop = current_unit - 4
-        await exchange_client.cancel_order(old_stop)
-        unit_tracker.remove_trailing_stop(old_stop)
+        # Place new stop at current_unit - 1
+        new_stop_unit = current_unit - 1
 
-        # 2. Place new stop at current unit
-        new_stop = current_unit
-        asyncio.create_task(_place_stop_order(new_stop, STOP_LOSS_SELL))
-        unit_tracker.add_trailing_stop(new_stop)
+        # Ensure unit exists in position map
+        if new_stop_unit not in self.position_map:
+            add_unit_level(self.position_state, self.position_map, new_stop_unit)
+
+        # Place new stop if not already there
+        if new_stop_unit not in self.unit_tracker.trailing_stop:
+            order_id = await self._place_stop_loss_order(new_stop_unit)
+            if order_id:
+                self.unit_tracker.add_trailing_stop(new_stop_unit)
+
+        # Cancel the oldest (furthest) stop if we have more than 4
+        if len(self.unit_tracker.trailing_stop) > 4:
+            sorted_stops = sorted(self.unit_tracker.trailing_stop)
+            oldest_stop = sorted_stops[0]  # Lowest unit
+
+            # Cancel and remove
+            if oldest_stop in self.position_map and self.position_map[oldest_stop].is_active:
+                success = await self._cancel_order(oldest_stop)
+                if success:
+                    self.unit_tracker.remove_trailing_stop(oldest_stop)
 ```
 
-**Result:** Trailing stops slide up to [-3, -2, -1, 0]
+**Result:** Maintains 4 trailing stops, sliding window up
 
-#### Scenario B: Price Moving DOWN (DECLINE Phase)
-**Initial State:** Price peaked at unit 8, now moving to unit 7
+#### Scenario B: Price Moving DOWN
+**Initial State:** Price crosses down to a lower unit
 
 ```python
-async def _handle_unit_change(event: UnitChangeEvent):
-    if event.direction == 'down':
-        # Phase transition: stops become buys
-        if len(trailing_buy) == 0:  # First decline
-            # Cancel all stops, place buys above
-            for unit in trailing_stop:
-                await exchange_client.cancel_order(unit)
-            trailing_stop.clear()
+    elif event.direction == 'down':
+        # Place new buy at current_unit + 1
+        new_buy_unit = current_unit + 1
 
-            # Place buys at [8, 9, 10, 11]
-            for i in range(4):
-                buy_unit = current_unit + i + 1
-                asyncio.create_task(_place_stop_order(buy_unit, STOP_BUY))
-                unit_tracker.add_trailing_buy(buy_unit)
+        # Ensure unit exists in position map
+        if new_buy_unit not in self.position_map:
+            add_unit_level(self.position_state, self.position_map, new_buy_unit)
+
+        # Place new buy if not already there
+        if new_buy_unit not in self.unit_tracker.trailing_buy:
+            order_id = await self._place_stop_buy_order(new_buy_unit)
+            if order_id:
+                self.unit_tracker.add_trailing_buy(new_buy_unit)
+
+        # Cancel the oldest (furthest) buy if we have more than 4
+        if len(self.unit_tracker.trailing_buy) > 4:
+            sorted_buys = sorted(self.unit_tracker.trailing_buy, reverse=True)
+            oldest_buy = sorted_buys[0]  # Highest unit
+
+            # Cancel and remove
+            if oldest_buy in self.position_map and self.position_map[oldest_buy].is_active:
+                success = await self._cancel_order(oldest_buy)
+                if success:
+                    self.unit_tracker.remove_trailing_buy(oldest_buy)
 ```
 
-**Result:** Trailing buys at [8, 9, 10, 11], no stops
+**Result:** Maintains up to 4 trailing buys above current price
 
-### 4. Sliding Window Management
+### 4. Order Placement Methods
 
-#### ADVANCE: Sliding Stops UP
+#### Stop Loss Order Placement
 ```python
-async def _slide_window_up():
-    # Cancel orders too far behind (>4 units)
-    for unit in list(trailing_stop):
-        if unit < current_unit - 4:
-            await exchange_client.cancel_order(unit)
-            unit_tracker.remove_trailing_stop(unit)
+async def _place_stop_loss_order(self, unit: int) -> Optional[str]:
+    config = self.position_map[unit]
 
-    # Place new stops up to current unit
-    for i in range(4):
-        target_unit = current_unit - i
-        if target_unit not in trailing_stop:
-            asyncio.create_task(_place_stop_order(target_unit, STOP_LOSS_SELL))
-            unit_tracker.add_trailing_stop(target_unit)
+    # Check if order already active at this unit
+    if config.is_active:
+        return config.order_id
+
+    trigger_price = config.price
+    size = self.position_state.long_fragment_asset
+
+    # Place stop order via SDK
+    result = await self._sdk_place_stop_order("sell", trigger_price, size)
+
+    if result.success:
+        config.set_active_order(result.order_id, OrderType.STOP_LOSS_SELL)
+        return result.order_id
+    return None
 ```
 
-#### DECLINE: Sliding Buys DOWN
+#### Stop Buy Order Placement (Adaptive)
 ```python
-async def _slide_window_down():
-    # Cancel orders too far above (>4 units)
-    for unit in list(trailing_buy):
-        if unit > current_unit + 4:
-            await exchange_client.cancel_order(unit)
-            unit_tracker.remove_trailing_buy(unit)
+async def _place_stop_buy_order(self, unit: int) -> Optional[str]:
+    config = self.position_map[unit]
+    price = config.price
 
-    # Place new buys above current unit
-    for i in range(1, 5):
-        target_unit = current_unit + i
-        if target_unit not in trailing_buy:
-            asyncio.create_task(_place_stop_order(target_unit, STOP_BUY))
-            unit_tracker.add_trailing_buy(target_unit)
+    # Get current market price
+    current_market_price = await self._get_current_price()
+
+    # Use adjusted fragment in recovery phase (includes PnL reinvestment)
+    fragment_usd = self.unit_tracker.get_adjusted_fragment_usd()
+    size = fragment_usd / price
+
+    if price > current_market_price:
+        # Price above market - use STOP BUY
+        result = self.sdk_client.place_stop_buy(
+            symbol=self.symbol,
+            size=size,
+            trigger_price=price,
+            limit_price=price
+        )
+    else:
+        # Price at/below market - use LIMIT BUY
+        result = self.sdk_client.place_limit_order(
+            symbol=self.symbol,
+            is_buy=True,
+            price=price,
+            size=size,
+            post_only=True  # Maker order to avoid fees
+        )
+
+    if result.success:
+        config.set_active_order(result.order_id, OrderType.STOP_BUY)
+        return result.order_id
+    return None
 ```
 
-### 5. Order Execution Handling (backend/src/main.py: handle_fill)
+### 5. Order Execution Handling (backend/src/main.py: handle_order_fill)
 
 #### Stop Loss Execution
 ```python
-async def handle_fill(fill_data):
-    if order.order_type == OrderType.STOP_LOSS_SELL:
-        # Remove from tracking
-        unit_tracker.remove_trailing_stop(unit)
+async def handle_order_fill(self, order_id: str, filled_price: Decimal, filled_size: Decimal):
+    # Find the unit that was filled
+    for unit, config in self.position_map.items():
+        if config.order_id == order_id:
+            filled_unit = unit
+            filled_order_type = config.order_type
+            config.mark_filled(filled_price, filled_size)
+            break
 
-        # In DECLINE phase, this creates space for new buy
-        if phase == "decline":
-            # Window will adjust on next unit change
-            pass
+    if filled_order_type == OrderType.STOP_LOSS_SELL:
+        # Remove from trailing_stop list
+        self.unit_tracker.remove_trailing_stop(filled_unit)
+
+        # Track realized PnL
+        self.unit_tracker.track_realized_pnl(
+            sell_price=filled_price,
+            buy_price=self.position_state.entry_price,
+            size=filled_size
+        )
+
+        # Add replacement buy at filled_unit + 1
+        replacement_unit = filled_unit + 1
+        if replacement_unit not in self.position_map:
+            add_unit_level(self.position_state, self.position_map, replacement_unit)
+
+        if self.unit_tracker.add_trailing_buy(replacement_unit):
+            order_id = await self._place_stop_buy_order(replacement_unit)
 ```
 
 #### Stop Buy Execution
 ```python
-async def handle_fill(fill_data):
-    if order.order_type == OrderType.STOP_BUY:
-        # Remove from tracking
-        unit_tracker.remove_trailing_buy(unit)
+    elif filled_order_type == OrderType.STOP_BUY:
+        # Remove from trailing_buy list
+        self.unit_tracker.remove_trailing_buy(filled_unit)
 
-        # Track PnL for reinvestment
-        unit_tracker.track_realized_pnl(sell_price, buy_price, size)
+        # Add replacement stop at filled_unit - 1
+        replacement_unit = filled_unit - 1
+        if replacement_unit not in self.position_map:
+            add_unit_level(self.position_state, self.position_map, replacement_unit)
 
-        # In RECOVERY phase, this creates space for new stop
-        if phase == "recovery":
-            # Window will adjust on next unit change
-            pass
+        if self.unit_tracker.add_trailing_stop(replacement_unit):
+            order_id = await self._place_stop_loss_order(replacement_unit)
 ```
 
-### 6. Order Validation (backend/src/main.py: _validate_order_placement)
+### 6. Window State Tracking
 
-Continuous validation ensures orders stay on correct side of price:
+The sliding window state is tracked through list-based management in `UnitTracker`:
 
 ```python
-async def _validate_order_placement():
-    current_unit = unit_tracker.current_unit
+class UnitTracker:
+    def __init__(self):
+        # Sliding window management - LIST-BASED TRACKING
+        self.trailing_stop: List[int] = [-4, -3, -2, -1]  # Initial stops
+        self.trailing_buy: List[int] = []  # Initially empty
 
-    # Cancel invalid stop orders (should be BELOW price)
-    for unit in list(trailing_stop):
-        if unit > current_unit:
-            logger.error(f"INVALID: Stop at {unit} is ABOVE price")
-            await exchange_client.cancel_order(unit)
-            unit_tracker.remove_trailing_stop(unit)
-
-    # Cancel invalid buy orders (should be ABOVE price)
-    for unit in list(trailing_buy):
-        if unit < current_unit:  # Note: < not <= to allow orders AT current unit
-            logger.error(f"INVALID: Buy at {unit} is BELOW price")
-            await exchange_client.cancel_order(unit)
-            unit_tracker.remove_trailing_buy(unit)
+    def get_window_state(self) -> dict:
+        """Get current window state for monitoring"""
+        return {
+            'current_unit': self.current_unit,
+            'phase': self.get_phase(),
+            'trailing_stop': self.trailing_stop.copy(),
+            'trailing_buy': self.trailing_buy.copy(),
+            'total_orders': len(self.trailing_stop) + len(self.trailing_buy)
+        }
 ```
 
 ## Complete Scenarios
@@ -254,23 +351,29 @@ async def _validate_order_placement():
    - Mixed state: 2 stops, 1 buy
 4. If price recovers, buys trigger and return to ADVANCE
 
-## Key Principles
+## Key Implementation Principles
 
-1. **Immediate Placement**: Orders placed instantly on unit crossing via `asyncio.create_task()`
-2. **Sliding Window**: Always maintain 4 trailing orders (stops OR buys)
-3. **Phase-Based Logic**: Order types determined by current phase
-4. **Continuous Validation**: Invalid orders cancelled in main loop
-5. **Unit Agnostic**: Unit 0 treated same as any other unit
-6. **PnL Tracking**: Realized profits tracked for reinvestment in recovery
+1. **List-Based Tracking**: Orders managed through `trailing_stop` and `trailing_buy` lists
+2. **Sliding Window**: Maintains up to 4 orders on each side (stops below, buys above)
+3. **Adaptive Order Types**: Stop buys become limit orders when price drops below trigger
+4. **Real-Time WebSocket**: Price updates trigger unit changes via WebSocket callbacks
+5. **Asynchronous Execution**: Orders placed using `asyncio.create_task()` for non-blocking operation
+6. **PnL Reinvestment**: Realized profits tracked and reinvested in recovery phase
 
-## Error Prevention
+## Architecture Highlights
 
-### Common Issues Fixed:
-1. **Orders on wrong side**: Validation ensures stops below, buys above
-2. **Window not sliding**: Proper cancellation of distant orders
-3. **Unit 0 special treatment**: Fixed validation to allow orders AT current unit
-4. **Undefined variables**: Removed legacy code references
-5. **Sluggish placement**: Made asynchronous with create_task()
+### Order Management Flow:
+1. **Price Update** → WebSocket callback (`_handle_price_update`)
+2. **Unit Detection** → UnitTracker calculates boundary crossing
+3. **Order Placement** → Async task spawned for order operations
+4. **List Updates** → Trailing lists maintained at max 4 entries
+5. **Fill Handling** → WebSocket fills trigger replacement orders
+
+### Smart Order Placement:
+- **Stop Loss**: Always uses stop orders (triggered when price drops)
+- **Stop Buy**: Uses stop orders above market, limit orders below market
+- **Duplicate Prevention**: Checks for existing orders before placement
+- **Price Validation**: Ensures proper spacing between unit prices
 
 ## Testing Scenarios
 
