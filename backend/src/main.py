@@ -64,7 +64,10 @@ class HyperTrader:
         # State tracking
         self.is_running = False
         self.current_price: Optional[Decimal] = None
-        
+
+        # Order ID to unit mapping for O(1) lookups
+        self.order_id_to_unit: Dict[str, int] = {}
+
         logger.info(f"Initializing HyperTrader for {symbol} - {wallet_type} wallet")
     
     async def initialize(self):
@@ -125,49 +128,78 @@ class HyperTrader:
     
     async def _initialize_position(self):
         """Initialize or load existing position"""
+        logger.warning("🚀 ENTERING _initialize_position")
+
         # Check if we have an existing position
+        logger.info("📊 Checking for existing positions...")
         positions = self.sdk_client.get_positions()
-        
+        logger.info(f"   Found positions for symbols: {list(positions.keys())}")
+
         if self.symbol in positions:
             # Load existing position
             position = positions[self.symbol]
             entry_price = position.entry_price
             asset_size = position.size
-            logger.info(f"Loaded existing position: {asset_size} {self.symbol} @ ${entry_price:.2f}")
+            logger.warning(f"✅ LOADED EXISTING POSITION: {asset_size} {self.symbol} @ ${entry_price:.2f}")
         else:
             # Create new position
+            logger.warning(f"❌ NO EXISTING POSITION for {self.symbol} - Creating new one")
+
             estimated_price = self.current_price
             estimated_size = self.initial_position_size / estimated_price
-            logger.info(f"Creating new position: ~{estimated_size:.6f} {self.symbol} @ ~${estimated_price:.2f}")
-            
+
+            logger.warning(f"📈 CREATING NEW POSITION:")
+            logger.warning(f"   Symbol: {self.symbol}")
+            logger.warning(f"   Wallet type: {self.wallet_type}")
+            logger.warning(f"   Current price: ${estimated_price:.2f}")
+            logger.warning(f"   Position size USD: ${self.initial_position_size}")
+            logger.warning(f"   Estimated asset size: {estimated_size:.6f} {self.symbol}")
+            logger.warning(f"   Leverage: {self.leverage}x")
+
             # Place initial market buy order (for long wallet)
             if self.wallet_type == "long":
+                logger.warning("🔥 PLACING INITIAL MARKET BUY ORDER...")
                 result = await self._place_market_order("buy", estimated_size)
+
+                logger.warning(f"📝 Market order result:")
+                logger.warning(f"   Success: {result.success}")
+                logger.warning(f"   Order ID: {result.order_id if result.success else 'N/A'}")
+                logger.warning(f"   Error: {result.error_message if not result.success else 'None'}")
+
                 if not result.success:
+                    logger.error(f"❌ FAILED TO CREATE POSITION: {result.error_message}")
                     raise Exception(f"Failed to create initial position: {result.error_message}")
-                
+
                 # Track initial order ID to filter from fill matching
                 self.initial_order_id = result.order_id
-                logger.info(f"Initial position order ID: {self.initial_order_id}")
-                
+                logger.warning(f"✅ Initial position order placed! ID: {self.initial_order_id}")
+
                 # CRITICAL: Wait for position to be fully established
                 logger.info("⏳ Waiting for initial position to be fully established...")
-                
+
                 # Poll for position with timeout
-                max_attempts = 10
+                max_attempts = 30  # Increase timeout for slower fills
                 for attempt in range(max_attempts):
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(2)  # Check every 2 seconds
                     positions = self.sdk_client.get_positions()
+
+                    logger.info(f"   Attempt {attempt + 1}: Positions found: {list(positions.keys())}")
+
                     if self.symbol in positions:
-                        logger.info(f"Position found after {attempt + 1} second(s)")
+                        logger.warning(f"✅ POSITION FOUND after {(attempt + 1) * 2} seconds")
                         break
                 else:
-                    raise Exception(f"Position not found after {max_attempts} seconds")
-                
+                    logger.error(f"❌ Position not found after {max_attempts * 2} seconds")
+                    logger.error(f"   Final positions check: {list(positions.keys())}")
+                    raise Exception(f"Position not found after {max_attempts * 2} seconds")
+
                 position = positions[self.symbol]
                 entry_price = position.entry_price  # Use ACTUAL average fill price
                 asset_size = position.size  # Use ACTUAL position size
-                logger.info(f"✅ Position established: {asset_size:.6f} {self.symbol} @ ${entry_price:.2f} (actual fill price)")
+                logger.warning(f"✅ POSITION ESTABLISHED: {asset_size:.6f} {self.symbol} @ ${entry_price:.2f} (actual fill price)")
+            else:
+                logger.error(f"❌ Wallet type '{self.wallet_type}' not supported for initial position")
+                raise Exception(f"Wallet type '{self.wallet_type}' not supported")
         
         # Initialize position map with ACTUAL entry price
         self.position_state, self.position_map = calculate_initial_position_map(
@@ -181,10 +213,6 @@ class HyperTrader:
         # Validate minimum spacing
         spacing_pct = (self.unit_size_usd / entry_price) * 100
         logger.info(f"📏 Unit spacing: ${self.unit_size_usd:.2f} = {spacing_pct:.3f}% of entry price ${entry_price:.2f}")
-
-        if spacing_pct < 0.2:
-            logger.error(f"⚠️ WARNING: Unit size too small! {spacing_pct:.3f}% spacing will cause order clustering")
-            logger.error(f"⚠️ Recommended minimum unit size for {self.symbol} at ${entry_price:.2f}: ${entry_price * Decimal('0.005'):.2f} (0.5% spacing)")
 
         # Log unit prices for verification
         units_to_check = [-4, -3, -2, -1, 0, 1, 2, 3, 4]
@@ -202,28 +230,53 @@ class HyperTrader:
         
         # Place initial sliding window orders
         await self._place_window_orders()
-        
+
         logger.info(f"Position initialized with sliding window: {self.unit_tracker.get_window_state()}")
+
+        # DO NOT validate/repair here - the initial setup is correct!
+        logger.warning(f"✅ Initial window setup complete - Stops: {self.unit_tracker.trailing_stop}, Buys: {self.unit_tracker.trailing_buy}")
     
     async def _place_window_orders(self):
-        """Place initial stop loss orders using list-based tracking"""
-        # Initialize with 4 stop-losses (already set in unit_tracker init, but ensure it's correct)
-        if not self.unit_tracker.trailing_stop:
-            self.unit_tracker.trailing_stop = [-4, -3, -2, -1]
-            self.unit_tracker.trailing_buy = []
-        
+        """Place initial stop loss orders - BUT CHECK FOR EXISTING ORDERS FIRST"""
+
+        # First, check what orders already exist
+        open_orders = self.sdk_client.get_open_orders(self.symbol)
+        logger.warning(f"🔍 Found {len(open_orders)} existing open orders")
+
+        # Cancel ALL existing orders to start fresh
+        if open_orders:
+            logger.warning(f"🗑️ Cancelling {len(open_orders)} existing orders to start fresh...")
+            for order in open_orders:
+                order_id = order.get('oid')
+                try:
+                    self.sdk_client.cancel_order(self.symbol, order_id)
+                    logger.info(f"   Cancelled order {order_id}")
+                except Exception as e:
+                    logger.error(f"   Failed to cancel order {order_id}: {e}")
+
+            # Wait a moment for cancellations to process
+            await asyncio.sleep(1)
+
+        # Initialize with 4 stop-losses - CLOSEST FIRST (-1, -2, -3, -4)
+        self.unit_tracker.trailing_stop = [-1, -2, -3, -4]
+        self.unit_tracker.trailing_buy = []
+
         logger.warning(f"📋 INITIAL WINDOW STATE:")
         logger.warning(f"   trailing_stop: {self.unit_tracker.trailing_stop}")
         logger.warning(f"   trailing_buy: {self.unit_tracker.trailing_buy}")
-        
-        # Place stop losses at designated units
+
+        # Place stop losses at designated units - IN ORDER from -1 to -4
         order_ids = []
-        for unit in self.unit_tracker.trailing_stop:
-            if unit in self.position_map and not self.position_map[unit].is_active:
+        for unit in [-1, -2, -3, -4]:  # Place in order, closest first
+            if unit in self.position_map:
+                # Clear any stale active state by marking as cancelled
+                if self.position_map[unit].is_active:
+                    self.position_map[unit].mark_cancelled()
+
                 order_id = await self._place_stop_loss_order(unit)
                 if order_id:
                     order_ids.append(order_id)
-        
+
         logger.warning(f"✅ INITIAL SETUP COMPLETE - Placed {len(order_ids)} stop-loss orders")
         logger.warning(f"📋 Active position_map units: {[u for u, c in self.position_map.items() if c.is_active]}")
     
@@ -305,11 +358,13 @@ class HyperTrader:
                 size=size,
                 trigger_price=price,
                 limit_price=price,  # Use same price for limit
-                reduce_only=False
+                reduce_only=False  # Stop buys are for re-entry, not reduce-only
             )
             
             if result.success:
                 config.set_active_order(result.order_id, OrderType.STOP_BUY)
+                # Track order ID to unit mapping
+                self.order_id_to_unit[result.order_id] = unit
                 logger.warning(f"✅ STOP BUY SUCCESSFULLY PLACED at unit {unit} (triggers @ ${price:.2f})")
                 logger.warning(f"📝 ORDER ID TRACKING: Stop buy at unit {unit} = {result.order_id}")
                 return result.order_id
@@ -331,6 +386,8 @@ class HyperTrader:
 
             if result.success:
                 config.set_active_order(result.order_id, OrderType.STOP_BUY)  # Track as stop buy for strategy
+                # Track order ID to unit mapping
+                self.order_id_to_unit[result.order_id] = unit
                 logger.warning(f"✅ LIMIT BUY SUCCESSFULLY PLACED at unit {unit} @ ${price:.2f}")
                 logger.warning(f"📝 ORDER ID TRACKING: Limit buy at unit {unit} = {result.order_id}")
                 return result.order_id
@@ -379,6 +436,8 @@ class HyperTrader:
         if result.success:
             # Update position map
             config.set_active_order(result.order_id, OrderType.STOP_LOSS_SELL)
+            # Track order ID to unit mapping
+            self.order_id_to_unit[result.order_id] = unit
             logger.info(f"Placed STOP LOSS at unit {unit}: {size:.6f} {self.symbol} triggers @ ${trigger_price:.2f}")
             logger.warning(f"📝 ORDER ID TRACKING: Stop-loss at unit {unit} = {result.order_id}")
             return result.order_id
@@ -390,29 +449,49 @@ class HyperTrader:
     async def _sdk_place_stop_order(self, side: str, trigger_price: Decimal, size: Decimal) -> OrderResult:
         """Place stop order via SDK"""
         is_buy = (side.lower() == "buy")
+        # Stop SELLS should be reduce-only to prevent unwanted fills on price recovery
+        # Stop BUYS are for re-entry and should NOT be reduce-only
         return self.sdk_client.place_stop_order(
             symbol=self.symbol,
             is_buy=is_buy,
             size=size,
             trigger_price=trigger_price,
-            reduce_only=(not is_buy)  # Only sells reduce position, buys open position
+            reduce_only=(not is_buy)  # Only stop sells are reduce-only
         )
     
     async def _place_market_order(self, side: str, size: Decimal) -> OrderResult:
         """Place market order via SDK"""
         is_buy = (side.lower() == "buy")
-        
+
+        logger.warning(f"🎯 _place_market_order called:")
+        logger.warning(f"   Side: {side}")
+        logger.warning(f"   Size: {size} {self.symbol}")
+
         # Calculate USD amount for the order
         current_price = await self._get_current_price()
         usd_amount = size * current_price
-        
-        return self.sdk_client.open_position(
+
+        logger.warning(f"   Current price: ${current_price:.2f}")
+        logger.warning(f"   USD amount: ${usd_amount:.2f}")
+        logger.warning(f"   Leverage: {self.leverage}x")
+        logger.warning(f"   Is buy: {is_buy}")
+
+        logger.warning(f"📞 Calling SDK open_position...")
+        result = self.sdk_client.open_position(
             symbol=self.symbol,
             usd_amount=usd_amount,
             is_long=is_buy,
             leverage=self.leverage,
             slippage=0.01
         )
+
+        logger.warning(f"📋 SDK open_position result:")
+        logger.warning(f"   Success: {result.success}")
+        logger.warning(f"   Order ID: {result.order_id if result.success else 'N/A'}")
+        if not result.success:
+            logger.error(f"   Error message: {result.error_message}")
+
+        return result
     
     def _handle_price_update(self, price: Decimal):
         """Handle price updates from WebSocket"""
@@ -429,102 +508,310 @@ class HyperTrader:
             logger.debug(f"No unit change at price ${price}")
     
     async def _handle_unit_change(self, event: UnitChangeEvent):
-        """Handle unit boundary crossing - Simple data_flow.md approach"""
+        """Handle unit boundary crossing - Trail ONLY in the correct direction"""
         logger.warning(f"⚡ UNIT CROSSED! Unit {self.unit_tracker.current_unit} | Dir: {event.direction} | Phase: {event.phase}")
 
         current_unit = self.unit_tracker.current_unit
+        previous_unit = event.previous_unit if hasattr(event, 'previous_unit') else current_unit - (1 if event.direction == 'up' else -1)
+
+        # Count current orders
+        stop_count = len(self.unit_tracker.trailing_stop)
+        buy_count = len(self.unit_tracker.trailing_buy)
 
         # Log unit prices for debugging
         if current_unit in self.position_map:
             current_price = self.position_map[current_unit].price
             logger.info(f"📍 Current unit {current_unit} price: ${current_price:.4f}")
 
-            # Log neighboring unit prices
-            if current_unit - 1 in self.position_map:
-                below_price = self.position_map[current_unit - 1].price
-                spacing = float(current_price - below_price)
-                logger.info(f"   Unit {current_unit - 1} price: ${below_price:.4f} (spacing: ${spacing:.4f})")
-
-            if current_unit + 1 in self.position_map:
-                above_price = self.position_map[current_unit + 1].price
-                spacing = float(above_price - current_price)
-                logger.info(f"   Unit {current_unit + 1} price: ${above_price:.4f} (spacing: ${spacing:.4f})")
-
+        # CRITICAL: Only trail in the correct direction!
         if event.direction == 'up':
-            # Price went UP - as per data_flow.md step 7
-            # Place new stop at current_unit - 1
-            new_stop_unit = current_unit - 1
+            logger.info(f"📈 Price moved UP from unit {previous_unit} to {current_unit}")
 
-            # Ensure unit exists in position map
-            if new_stop_unit not in self.position_map:
-                add_unit_level(self.position_state, self.position_map, new_stop_unit)
+            # ONLY trail STOPS upward if we have stops
+            if stop_count > 0:
+                logger.info(f"📈 TRAILING STOPS UP - Adding stop at {current_unit - 1}")
+                await self._trail_stops_up()
+            else:
+                logger.info(f"📈 Price up but no stops to trail (have {buy_count} buys)")
 
-            # Place new stop if not already there
-            if new_stop_unit not in self.unit_tracker.trailing_stop:
-                order_id = await self._place_stop_loss_order(new_stop_unit)
-                if order_id:
-                    self.unit_tracker.add_trailing_stop(new_stop_unit)
-                    logger.info(f"✅ Placed new stop at unit {new_stop_unit}")
+        else:  # direction == 'down'
+            logger.info(f"📉 Price moved DOWN from unit {previous_unit} to {current_unit}")
 
-            # Cancel the oldest (furthest) stop if we have more than 4
-            if len(self.unit_tracker.trailing_stop) > 4:
-                # Sort to find the lowest unit (furthest below current price)
-                sorted_stops = sorted(self.unit_tracker.trailing_stop)
-                oldest_stop = sorted_stops[0]
+            # ONLY trail BUYS downward if we have buys
+            if buy_count > 0:
+                logger.info(f"📉 TRAILING BUYS DOWN - Adding buy at {current_unit + 1}")
+                await self._trail_buys_down()
+            else:
+                logger.info(f"📉 Price down but no buys to trail (have {stop_count} stops)")
 
-                # Cancel and remove
-                if oldest_stop in self.position_map and self.position_map[oldest_stop].is_active:
-                    success = await self._cancel_order(oldest_stop)
+        # Log final state
+        logger.info(f"Window state: Stops={sorted(self.unit_tracker.trailing_stop, reverse=True)}, Buys={sorted(self.unit_tracker.trailing_buy)}")
+
+    async def _cancel_invalid_orders(self):
+        """Cancel any invalid orders (triggered stops, stops above price, etc)"""
+        try:
+            # Get all open orders
+            open_orders = self.sdk_client.get_open_orders(self.symbol)
+            current_price = self.current_price
+
+            for order in open_orders:
+                order_id = order.get('oid')
+                order_type = order.get('orderType', '')
+                trigger_px = order.get('triggerPx')
+                is_buy = order.get('side') == 'B'
+                order_size = order.get('sz')
+
+                # Check if it's a triggered stop order - EXECUTE IMMEDIATELY WITH MARKET ORDER
+                if 'trigger' in order_type and order.get('triggered'):
+                    logger.warning(f"⚠️ Found triggered-but-unfilled stop {order_id}")
+
+                    # Cancel the stuck order
+                    await self._cancel_order_by_id(order_id)
+
+                    # Place immediate market order to close position
+                    if not is_buy:  # Stop loss sell
+                        logger.warning(f"🚨 EMERGENCY: Placing market SELL for {order_size} {self.symbol}")
+                        result = await self._place_market_order("sell", Decimal(str(order_size)))
+                        if result.success:
+                            logger.warning(f"✅ Emergency market sell executed @ ${result.average_price}")
+                    else:  # Stop buy
+                        logger.warning(f"🚨 EMERGENCY: Placing market BUY for {order_size} {self.symbol}")
+                        result = await self._place_market_order("buy", Decimal(str(order_size)))
+                        if result.success:
+                            logger.warning(f"✅ Emergency market buy executed @ ${result.average_price}")
+                    continue
+
+                # Cancel stop sells that are above current price (invalid)
+                if not is_buy and trigger_px and Decimal(str(trigger_px)) > current_price:
+                    logger.warning(f"🚫 Cancelling stop sell at ${trigger_px} (above current ${current_price})")
+                    await self._cancel_order_by_id(order_id)
+                    continue
+
+                # Cancel stop buys that are below current price (invalid)
+                if is_buy and trigger_px and Decimal(str(trigger_px)) < current_price:
+                    logger.warning(f"🚫 Cancelling stop buy at ${trigger_px} (below current ${current_price})")
+                    await self._cancel_order_by_id(order_id)
+                    continue
+
+        except Exception as e:
+            logger.error(f"Error cancelling invalid orders: {e}")
+
+    async def _cancel_order_by_id(self, order_id: str):
+        """Cancel an order by its ID"""
+        try:
+            result = self.sdk_client.cancel_order(self.symbol, order_id)
+            if result:
+                # Clean up tracking
+                if order_id in self.order_id_to_unit:
+                    unit = self.order_id_to_unit[order_id]
+                    del self.order_id_to_unit[order_id]
+
+                    # Remove from tracking lists
+                    if unit in self.unit_tracker.trailing_stop:
+                        self.unit_tracker.remove_trailing_stop(unit)
+                    if unit in self.unit_tracker.trailing_buy:
+                        self.unit_tracker.remove_trailing_buy(unit)
+
+                    logger.info(f"Cleaned up tracking for cancelled order at unit {unit}")
+            return result
+        except Exception as e:
+            logger.error(f"Failed to cancel order {order_id}: {e}")
+            return False
+
+    async def _trail_stops_up(self):
+        """Trail stop losses UP when price rises - ONLY called when we have stops"""
+        current_unit = self.unit_tracker.current_unit
+
+        # Check if we already have a stop at current_unit - 1
+        target_unit = current_unit - 1
+        if target_unit not in self.unit_tracker.trailing_stop:
+            logger.info(f"📈 Adding new stop at unit {target_unit}")
+
+            # Place the new stop
+            order_id = await self._place_stop_loss_order(target_unit)
+            if order_id:
+                self.unit_tracker.add_trailing_stop(target_unit)
+
+                # If we now have 5 stops, remove the furthest one
+                if len(self.unit_tracker.trailing_stop) > 4:
+                    furthest = min(self.unit_tracker.trailing_stop)
+                    logger.info(f"🗑️ Removing furthest stop at unit {furthest}")
+                    await self._cancel_order(furthest)
+                    self.unit_tracker.remove_trailing_stop(furthest)
+        else:
+            logger.info(f"✓ Stop already exists at unit {target_unit}")
+
+    async def _trail_buys_down(self):
+        """Trail buy orders DOWN when price falls - ONLY called when we have buys"""
+        current_unit = self.unit_tracker.current_unit
+
+        # Check if we already have a buy at current_unit + 1
+        target_unit = current_unit + 1
+        if target_unit not in self.unit_tracker.trailing_buy:
+            logger.info(f"📉 Adding new buy at unit {target_unit}")
+
+            # Place the new buy
+            order_id = await self._place_stop_buy_order(target_unit)
+            if order_id:
+                self.unit_tracker.add_trailing_buy(target_unit)
+
+                # If we now have 5 buys, remove the furthest one
+                if len(self.unit_tracker.trailing_buy) > 4:
+                    furthest = max(self.unit_tracker.trailing_buy)
+                    logger.info(f"🗑️ Removing furthest buy at unit {furthest}")
+                    await self._cancel_order(furthest)
+                    self.unit_tracker.remove_trailing_buy(furthest)
+        else:
+            logger.info(f"✓ Buy already exists at unit {target_unit}")
+
+    async def _validate_and_repair_window(self):
+        """Validate and repair the window - ONLY fill gaps, don't trail"""
+        # This function should ONLY run after order fills to ensure we have 4 orders
+        # It should NOT reposition orders based on current price
+
+        stop_count = len(self.unit_tracker.trailing_stop)
+        buy_count = len(self.unit_tracker.trailing_buy)
+        total_orders = stop_count + buy_count
+
+        logger.info(f"🔧 WINDOW VALIDATION - Stops: {stop_count}, Buys: {buy_count}, Total: {total_orders}")
+
+        # If we already have 4 orders, we're good
+        if total_orders == 4:
+            logger.info(f"✅ Window already has 4 orders, no repair needed")
+            return
+
+        # If we have MORE than 4, something is wrong
+        if total_orders > 4:
+            logger.error(f"⚠️ ERROR: Have {total_orders} orders instead of 4!")
+            return
+
+        # Only log the issue - do NOT try to "repair" by adding orders
+        # The only time we should add orders is:
+        # 1. During initialization
+        # 2. After an order fill (replacement)
+        # 3. When trailing UP (stops) or DOWN (buys)
+        if total_orders < 4:
+            logger.warning(f"⚠️ Window has {total_orders} orders instead of 4 - Stops: {self.unit_tracker.trailing_stop}, Buys: {self.unit_tracker.trailing_buy}")
+
+    async def _cancel_orders_outside_window(self, desired_stops: List[int], desired_buys: List[int]):
+        """Cancel any orders that shouldn't be in the window"""
+
+        current_unit = self.unit_tracker.current_unit
+
+        # Cancel ALL stops that aren't in desired list
+        stops_to_cancel = [u for u in self.unit_tracker.trailing_stop if u not in desired_stops]
+        if stops_to_cancel:
+            logger.warning(f"🚫 CANCELLING STOPS outside window: {stops_to_cancel}")
+            for unit in stops_to_cancel:
+                if unit in self.position_map and self.position_map[unit].is_active:
+                    success = await self._cancel_order(unit)
                     if success:
-                        self.unit_tracker.remove_trailing_stop(oldest_stop)
-                        logger.info(f"🚫 Cancelled old stop at unit {oldest_stop}")
+                        self.unit_tracker.remove_trailing_stop(unit)
+                else:
+                    # Remove from list even if not in position_map
+                    self.unit_tracker.remove_trailing_stop(unit)
+                    logger.warning(f"   Removed stale stop at unit {unit} from tracking")
 
-        elif event.direction == 'down':
-            # Price went DOWN - as per data_flow.md step 10
-            # Place new buy at current_unit + 1
-            new_buy_unit = current_unit + 1
+        # CRITICAL: Handle buy cancellations carefully
+        buys_to_cancel = []
+        for unit in self.unit_tracker.trailing_buy:
+            if unit not in desired_buys:
+                # NEVER cancel the buy at current_unit + 1
+                if unit == current_unit + 1:
+                    logger.warning(f"🛡️ PROTECTING buy at unit {unit} (current+1) - will NOT cancel")
+                    continue
 
-            # Ensure unit exists in position map
-            if new_buy_unit not in self.position_map:
-                add_unit_level(self.position_state, self.position_map, new_buy_unit)
+                # Check if we would have too many buys
+                if len(self.unit_tracker.trailing_buy) > 4:
+                    # Only cancel furthest buy when we have 5+
+                    buys_to_cancel.append(unit)
+                else:
+                    logger.info(f"   Keeping buy at unit {unit} (only have {len(self.unit_tracker.trailing_buy)} buys)")
 
-            # Place new buy if not already there
-            if new_buy_unit not in self.unit_tracker.trailing_buy:
-                order_id = await self._place_stop_buy_order(new_buy_unit)
-                if order_id:
-                    self.unit_tracker.add_trailing_buy(new_buy_unit)
-                    logger.info(f"✅ Placed new buy at unit {new_buy_unit}")
+        # Sort buys to cancel by distance from current price (furthest first)
+        buys_to_cancel.sort(reverse=True)  # Highest unit numbers first (furthest from price)
 
-            # Cancel the oldest (furthest) buy if we have more than 4
-            if len(self.unit_tracker.trailing_buy) > 4:
-                # Sort to find the highest unit (furthest above current price)
-                sorted_buys = sorted(self.unit_tracker.trailing_buy, reverse=True)
-                oldest_buy = sorted_buys[0]
+        if buys_to_cancel:
+            logger.warning(f"🚫 CANCELLING BUYS outside window: {buys_to_cancel}")
+            for unit in buys_to_cancel:
+                # One more check - never cancel current+1
+                if unit == current_unit + 1:
+                    logger.error(f"⚠️ BLOCKED: Attempted to cancel protected buy at unit {unit}")
+                    continue
 
-                # Cancel and remove
-                if oldest_buy in self.position_map and self.position_map[oldest_buy].is_active:
-                    success = await self._cancel_order(oldest_buy)
+                if unit in self.position_map and self.position_map[unit].is_active:
+                    success = await self._cancel_order(unit)
                     if success:
-                        self.unit_tracker.remove_trailing_buy(oldest_buy)
-                        logger.info(f"🚫 Cancelled old buy at unit {oldest_buy}")
+                        self.unit_tracker.remove_trailing_buy(unit)
+                        logger.info(f"   Cancelled buy at unit {unit}")
+                else:
+                    # Remove from list even if not in position_map
+                    self.unit_tracker.remove_trailing_buy(unit)
+                    logger.warning(f"   Removed stale buy at unit {unit} from tracking")
 
-        # Log current state
-        logger.info(f"Window state: Stops={self.unit_tracker.trailing_stop}, Buys={self.unit_tracker.trailing_buy}")
+    async def _place_missing_orders(self, desired_stops: List[int], desired_buys: List[int]):
+        """Place any orders that are missing from the window"""
 
-    
+        # Place missing stops
+        stops_placed = 0
+        for unit in desired_stops:
+            if unit not in self.unit_tracker.trailing_stop:
+                # Ensure unit exists in position map
+                if unit not in self.position_map:
+                    add_unit_level(self.position_state, self.position_map, unit)
+
+                # Get the actual price for this unit
+                unit_price = self.position_map[unit].price
+                logger.warning(f"📌 Placing missing STOP at unit {unit} (price: ${unit_price:.2f})")
+
+                order_id = await self._place_stop_loss_order(unit)
+                if order_id:
+                    self.unit_tracker.add_trailing_stop(unit)
+                    stops_placed += 1
+                    logger.warning(f"✅ Placed stop at unit {unit} @ ${unit_price:.2f}")
+                else:
+                    logger.error(f"❌ Failed to place stop at unit {unit}")
+
+        # Place missing buys
+        buys_placed = 0
+        for unit in desired_buys:
+            if unit not in self.unit_tracker.trailing_buy:
+                # Ensure unit exists in position map
+                if unit not in self.position_map:
+                    add_unit_level(self.position_state, self.position_map, unit)
+
+                # Get the actual price for this unit
+                unit_price = self.position_map[unit].price
+                logger.warning(f"📌 Placing missing BUY at unit {unit} (price: ${unit_price:.2f})")
+
+                order_id = await self._place_stop_buy_order(unit)
+                if order_id:
+                    self.unit_tracker.add_trailing_buy(unit)
+                    buys_placed += 1
+                    logger.warning(f"✅ Placed buy at unit {unit} @ ${unit_price:.2f}")
+                else:
+                    logger.error(f"❌ Failed to place buy at unit {unit}")
+
+        if stops_placed > 0 or buys_placed > 0:
+            logger.warning(f"📊 WINDOW REPAIR: Placed {stops_placed} stops, {buys_placed} buys")
+
+
     async def _cancel_order(self, unit: int) -> bool:
         """Cancel an order at a specific unit"""
         config = self.position_map[unit]
         if config.order_id:
             order_id = config.order_id
             order_type = config.order_type.value if config.order_type else "unknown"
-            
+
             logger.warning(f"🚫 CANCELLING {order_type} at unit {unit} (ID: {order_id})")
-            
+
             # Cancel via SDK
             success = self.sdk_client.cancel_order(self.symbol, order_id)
             if success:
                 config.mark_cancelled()
+                # Clean up order ID mapping
+                if order_id in self.order_id_to_unit:
+                    del self.order_id_to_unit[order_id]
                 logger.warning(f"✅ CANCELLED {order_type} at unit {unit}")
                 return True
             else:
@@ -533,90 +820,130 @@ class HyperTrader:
         return False
     
     async def handle_order_fill(self, order_id: str, filled_price: Decimal, filled_size: Decimal):
-        """Handle order fill notification with proper list updates"""
+        """Handle order fill notification with O(1) lookup via order ID mapping"""
         logger.warning(f"🔔 FILL RECEIVED - Order ID: {order_id}, Price: ${filled_price:.2f}, Size: {filled_size}")
-        
+
         # Filter out initial position order
         if hasattr(self, 'initial_order_id') and order_id == self.initial_order_id:
             logger.info(f"Ignoring initial position order fill (ID: {order_id})")
             return
-        
-        # Log current order IDs in position map for debugging
-        active_orders = {unit: config.order_id for unit, config in self.position_map.items() if config.order_id}
-        logger.warning(f"📋 Active orders in position_map: {active_orders}")
-        logger.warning(f"📋 Trying to match incoming order ID: {order_id}")
-        
-        # Find the unit that was filled
-        filled_unit = None
-        filled_order_type = None
-        
-        for unit, config in self.position_map.items():
-            if config.order_id == order_id:
-                filled_unit = unit
-                filled_order_type = config.order_type
-                config.mark_filled(filled_price, filled_size)
-                logger.info(f"✅ Matched order {order_id} to unit {filled_unit}")
-                break
-        
-        if filled_unit is not None:
-            logger.info(f"Order filled at unit {filled_unit}: {filled_order_type.value} {filled_size:.6f} @ ${filled_price:.2f}")
 
-            # NEW LIST-BASED TRACKING: Update lists based on fill type
-            if filled_order_type == OrderType.STOP_LOSS_SELL:
-                # Stop-loss executed - remove from trailing_stop list
-                self.unit_tracker.remove_trailing_stop(filled_unit)
+        # FAST LOOKUP: Use order_id_to_unit mapping
+        if order_id not in self.order_id_to_unit:
+            logger.warning(f"⚠️ Order {order_id} not found in order_id_to_unit mapping!")
+            logger.warning(f"📋 Current mapping: {self.order_id_to_unit}")
 
-                # Track realized PnL (sell price - entry price)
-                self.unit_tracker.track_realized_pnl(
-                    sell_price=filled_price,
-                    buy_price=self.position_state.entry_price,
-                    size=filled_size
-                )
-                
-                # Add replacement buy at filled_unit + 1
-                replacement_unit = filled_unit + 1
-                
-                # Ensure unit exists in position map
-                if replacement_unit not in self.position_map:
-                    add_unit_level(self.position_state, self.position_map, replacement_unit)
-                
-                # Add to trailing_buy list and place order
-                if self.unit_tracker.add_trailing_buy(replacement_unit):
-                    order_id = await self._place_stop_buy_order(replacement_unit)
-                    if order_id:
-                        logger.info(f"✅ Stop filled at {filled_unit}, placed stop buy at {replacement_unit}")
-                    else:
-                        logger.error(f"❌ Failed to place replacement stop buy at {replacement_unit}")
+            # Fallback to old method for safety
+            filled_unit = None
+            for unit, config in self.position_map.items():
+                if config.order_id == order_id:
+                    filled_unit = unit
+                    break
 
-            elif filled_order_type == OrderType.STOP_BUY:
-                # Buy executed - remove from trailing_buy list
-                self.unit_tracker.remove_trailing_buy(filled_unit)
-                
-                # Add replacement stop at filled_unit - 1
-                replacement_unit = filled_unit - 1
-                
-                # Ensure unit exists in position map
-                if replacement_unit not in self.position_map:
-                    add_unit_level(self.position_state, self.position_map, replacement_unit)
-                
-                # Add to trailing_stop list and place order
-                if self.unit_tracker.add_trailing_stop(replacement_unit):
-                    order_id = await self._place_stop_loss_order(replacement_unit)
-                    if order_id:
-                        logger.info(f"✅ Buy filled at {filled_unit}, placed stop at {replacement_unit}")
-                    else:
-                        logger.error(f"❌ Failed to place replacement stop at {replacement_unit}")
-            
-            # Removed handle_order_execution call - not needed with list-based tracking
-            
-            # Log current list state
-            logger.info(f"Lists after fill: Stop={self.unit_tracker.trailing_stop}, Buy={self.unit_tracker.trailing_buy}")
-            
-            # Log window state after fill
-            window_state = self.unit_tracker.get_window_state()
-            logger.debug(f"Window state after fill: {window_state}")
+            if filled_unit is None:
+                logger.error(f"❌ Could not match order {order_id} to any unit in position_map!")
+                return
         else:
-            logger.warning(f"⚠️ Could not match order {order_id} to any unit in position_map!")
+            filled_unit = self.order_id_to_unit[order_id]
+            logger.info(f"✅ Fast lookup: Order {order_id} maps to unit {filled_unit}")
+
+        # Get the config and mark as filled
+        config = self.position_map[filled_unit]
+        filled_order_type = config.order_type
+        config.mark_filled(filled_price, filled_size)
+
+        # Clean up order ID mapping
+        if order_id in self.order_id_to_unit:
+            del self.order_id_to_unit[order_id]
+        
+        logger.info(f"Order filled at unit {filled_unit}: {filled_order_type.value} {filled_size:.6f} @ ${filled_price:.2f}")
+
+        # Update lists based on fill type
+        if filled_order_type == OrderType.STOP_LOSS_SELL:
+            # Stop-loss executed - remove from trailing_stop list
+            self.unit_tracker.remove_trailing_stop(filled_unit)
+
+            # Track realized PnL (sell price - entry price)
+            self.unit_tracker.track_realized_pnl(
+                sell_price=filled_price,
+                buy_price=self.position_state.entry_price,
+                size=filled_size
+            )
+
+            # Check if we still have a position after this fill
+            positions = self.sdk_client.get_positions()
+            remaining_position = 0
+            if self.symbol in positions:
+                remaining_position = positions[self.symbol].size
+
+            # IMPORTANT: After a stop loss, place a buy order for re-entry
+            replacement_unit = filled_unit + 1
+            logger.warning(f"🔄 Stop loss filled at unit {filled_unit}, placing BUY at unit {replacement_unit}")
+            logger.warning(f"📊 Remaining position after fill: {remaining_position} {self.symbol}")
+
+            # Ensure unit exists in position map
+            if replacement_unit not in self.position_map:
+                from strategy.position_map import add_unit_level
+                add_unit_level(self.position_state, self.position_map, replacement_unit)
+
+            # Place the buy order
+            order_id = await self._place_stop_buy_order(replacement_unit)
+            if order_id:
+                self.unit_tracker.add_trailing_buy(replacement_unit)
+                logger.warning(f"✅ Placed stop BUY at unit {replacement_unit} for re-entry")
+
+            # If we're completely out of position, switch to buy-only mode
+            if remaining_position == 0:
+                logger.warning(f"🚨 POSITION CLOSED - Switching to buy-only mode")
+                # Clear all stop orders
+                self.unit_tracker.trailing_stop.clear()
+                # The validation will handle setting up buy orders
+
+        elif filled_order_type == OrderType.STOP_BUY:
+            # Buy executed - remove from trailing_buy list
+            self.unit_tracker.remove_trailing_buy(filled_unit)
+
+            # Check our position after the buy
+            positions = self.sdk_client.get_positions()
+            current_position = 0
+            if self.symbol in positions:
+                current_position = positions[self.symbol].size
+
+            logger.warning(f"📊 Position after buy fill: {current_position} {self.symbol}")
+
+            # IMPORTANT: After a buy fill, place a stop loss for protection
+            replacement_unit = filled_unit - 1
+            logger.warning(f"🔄 Stop buy filled at unit {filled_unit}, placing STOP at unit {replacement_unit}")
+
+            # Ensure unit exists in position map
+            if replacement_unit not in self.position_map:
+                from strategy.position_map import add_unit_level
+                add_unit_level(self.position_state, self.position_map, replacement_unit)
+
+            # Place the stop order
+            order_id = await self._place_stop_loss_order(replacement_unit)
+            if order_id:
+                self.unit_tracker.add_trailing_stop(replacement_unit)
+                logger.warning(f"✅ Placed stop LOSS at unit {replacement_unit} for protection")
+
+            # If this was our first entry (we just got a position), we may need more stops
+            if current_position > 0 and len(self.unit_tracker.trailing_stop) < 3:
+                logger.warning(f"🔧 New position established - will add more stops in validation")
+
+        # CRITICAL: After placing replacement orders, validate and repair the window
+        # This ensures we always have exactly 4 orders properly positioned
+        logger.info(f"🔧 Validating window after fill at unit {filled_unit}")
+        await self._validate_and_repair_window()
+
+        # Log final state
+        logger.info(f"Lists after fill: Stop={self.unit_tracker.trailing_stop}, Buy={self.unit_tracker.trailing_buy}")
+
+        # Verify we have exactly 4 orders
+        total_orders = len(self.unit_tracker.trailing_stop) + len(self.unit_tracker.trailing_buy)
+        if total_orders != 4:
+            logger.error(f"⚠️ ERROR: After fill, have {total_orders} orders instead of 4!")
+            logger.error(f"   Stops: {self.unit_tracker.trailing_stop}")
+            logger.error(f"   Buys: {self.unit_tracker.trailing_buy}")
     
     async def run(self):
         """Main trading loop"""
@@ -636,13 +963,23 @@ class HyperTrader:
                 # Log detailed order status every 30 seconds
                 if not hasattr(self, '_last_detail_log'):
                     self._last_detail_log = 0
+                    self._last_validation = 0
+
                 self._last_detail_log += 1
+                self._last_validation += 1
 
                 if self._last_detail_log >= 3:  # Every 30 seconds (10s * 3)
                     self._log_order_summary(active_orders)
                     self._last_detail_log = 0
                 else:
                     logger.debug(f"Status - Phase: {window_state['phase']}, Active orders: {len(active_orders)}, Current unit: {window_state['current_unit']}")
+
+                # Periodically clean up invalid orders (every 20 seconds)
+                if self._last_validation >= 2:  # Every 20 seconds (10s * 2)
+                    logger.info("🔍 Periodic cleanup of invalid orders")
+                    await self._cancel_invalid_orders()  # Clean up bad orders
+                    # Do NOT call validate_and_repair - it was adding orders in wrong places!
+                    self._last_validation = 0
 
                 # Sleep for monitoring interval
                 await asyncio.sleep(10)

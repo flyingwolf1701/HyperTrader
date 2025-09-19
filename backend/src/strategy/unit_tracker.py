@@ -33,7 +33,7 @@ class UnitTracker:
         self.last_phase = "advance"  # Track last phase for recovery detection
 
         # Sliding window management - SIMPLE LIST-BASED TRACKING from data_flow.md
-        self.trailing_stop: List[int] = [-4, -3, -2, -1]  # Initial 4 stop-loss orders
+        self.trailing_stop: List[int] = [-1, -2, -3, -4]  # Initial 4 stop-loss orders (CLOSEST FIRST)
         self.trailing_buy: List[int] = []   # Initially empty
         self.current_realized_pnl = Decimal(0)  # Track PnL for reinvestment
 

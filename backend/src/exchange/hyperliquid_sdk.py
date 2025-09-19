@@ -501,16 +501,17 @@ class HyperliquidClient:
             )
             logger.debug(f"Original trigger: ${trigger_price}, Rounded: ${rounded_trigger}, Tick size: ${get_tick_size(symbol)}")
             
-            # Create stop loss order type - try with isMarket: false and proper limit
+            # Create stop loss order type
+            # Use limit orders for all stops with proper tick sizing
             order_type = {
                 "trigger": {
                     "triggerPx": float(rounded_trigger),
-                    "isMarket": False,  # Execute as limit when triggered
+                    "isMarket": False,  # Use limit orders with proper tick sizing
                     "tpsl": "sl"  # Stop loss type
                 }
             }
-            
-            # For stop orders, use the trigger price as the limit price
+
+            # Use the trigger price as the limit price
             limit_px = rounded_trigger
             
             # Get market info for proper decimal formatting

@@ -23,7 +23,7 @@ class Phase(Enum):
     ADVANCE = "advance"          # 100% long, all stop-losses
     RETRACEMENT = "retracement"  # Mixed position, mix of orders
     DECLINE = "decline"          # 100% cash, all limit buys
-    RECOVER = "recover"          # Mixed position returning to long
+    RECOVERY = "recovery"        # Mixed position returning to long
     RESET = "reset"             # Transitioning to new cycle
 
 
