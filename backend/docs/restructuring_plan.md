@@ -35,7 +35,7 @@ class Phase(Enum):
     ADVANCE = "advance"          # 100% long, all stop-losses
     RETRACEMENT = "retracement"  # Mixed position
     DECLINE = "decline"          # 100% cash, all limit buys
-    RECOVER = "recover"          # Mixed position returning
+    RECOVERY = "RECOVERY"          # Mixed position returning
     RESET = "reset"             # Transitioning to new cycle
 
 class ExecutionStatus(Enum):
@@ -123,11 +123,11 @@ def detect_phase(self, windows: WindowState) -> Phase:
     elif windows.is_all_limit_buys():
         return Phase.DECLINE
     elif len(windows.stop_loss_orders) > 0 and len(windows.limit_buy_orders) > 0:
-        # Mixed state - determine if RETRACEMENT or RECOVER
+        # Mixed state - determine if RETRACEMENT or RECOVERY
         if self.current_phase in [Phase.ADVANCE, Phase.RETRACEMENT]:
             return Phase.RETRACEMENT
         else:
-            return Phase.RECOVER
+            return Phase.RECOVERY
     return self.current_phase
 ```
 
@@ -169,7 +169,7 @@ def calculate_window_slide(self,
 def should_reset(self, windows: WindowState, phase: Phase) -> bool:
     """Check if RESET conditions are met"""
     # Reset when returning to 100% long from mixed phases
-    if phase == Phase.RECOVER and windows.is_all_stop_losses():
+    if phase == Phase.RECOVERY and windows.is_all_stop_losses():
         return True
     if phase == Phase.RETRACEMENT and windows.is_all_stop_losses():
         return True
@@ -543,7 +543,7 @@ class LongWalletConfig:
 
 ### Week 4: Polish and Deploy
 1. Day 1-2: Add comprehensive logging
-2. Day 3: Add error recovery
+2. Day 3: Add error RECOVERYy
 3. Day 4: Performance testing
 4. Day 5: Deploy to testnet
 
@@ -571,7 +571,7 @@ class LongWalletConfig:
 - [ ] Unit tests for each module
 - [ ] Integration tests for full cycle
 - [ ] Edge case handling
-- [ ] Error recovery tested
+- [ ] Error RECOVERYy tested
 - [ ] Performance benchmarks met
 
 ---

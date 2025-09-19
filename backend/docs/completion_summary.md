@@ -73,7 +73,7 @@ The codebase has been successfully restructured and verified to be fully complia
 - **ADVANCE**: 100% long, 4 stop-losses
 - **RETRACEMENT**: Mixed from ADVANCE
 - **DECLINE**: 100% cash, 4 limit buys
-- **RECOVER**: Mixed from DECLINE
+- **RECOVERY**: Mixed from DECLINE
 - **RESET**: Return to 100% long with compound growth
 
 ### ✅ Order Replacement
@@ -85,7 +85,7 @@ The codebase has been successfully restructured and verified to be fully complia
 - **DECLINE**: Add limit buy at `current+1`, remove at `current+5`
 
 ### ✅ RESET Mechanism
-- Detects return to 100% long from RETRACEMENT or RECOVER
+- Detects return to 100% long from RETRACEMENT or RECOVERY
 - Resets unit counters to 0
 - Updates fragments based on new position value
 - Tracks cumulative compound growth
@@ -129,7 +129,7 @@ backend/src/strategy/
 4. **Performance testing** with historical data
 
 ### Future Enhancements
-1. **Error recovery** - Add retry logic for failed orders
+1. **Error RECOVERYy** - Add retry logic for failed orders
 2. **Position validation** - Add reconciliation checks
 3. **Monitoring** - Add metrics and alerting
 4. **Hedge wallet** - Implement using same architecture

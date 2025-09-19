@@ -28,7 +28,7 @@
 **Requirement**: Detect phase based on order composition
 - All stop-losses = ADVANCE
 - All limit buys = DECLINE  
-- Mix = RETRACEMENT/RECOVER
+- Mix = RETRACEMENT/RECOVERYY
 - **Status**: ✅ IMPLEMENTED
 - **Location**: `strategy_engine.py:42-75` in `detect_phase()`
 - **Verification**: Correctly implements phase logic based on window composition
@@ -54,7 +54,7 @@
 - **Verification**: Correct sliding logic for DECLINE phase
 
 ### ✅ 8. RESET Mechanism
-**Requirement**: When returning to 100% long from RETRACEMENT/RECOVER:
+**Requirement**: When returning to 100% long from RETRACEMENT/RECOVERYYYY:
 - Reset unit counters to 0
 - Update allocation with compound growth
 - Reinitialize 4 stop-loss orders
@@ -89,11 +89,11 @@
 **Trigger**: All 4 stop-losses triggered (100% cash)
 - **Implementation**: `strategy_engine.py:54-55` - Detects all limit buys
 
-### ✅ DECLINE → RECOVER
+### ✅ DECLINE → RECOVERY
 **Trigger**: First limit buy fills
 - **Implementation**: `strategy_engine.py:59-61` - Detects mixed state from DECLINE
 
-### ✅ RECOVER → RESET
+### ✅ RECOVERY → RESET
 **Trigger**: All 4 limit buys filled (100% long)
 - **Implementation**: `strategy_engine.py:182-185` - Detects return to all stop-losses
 
@@ -166,7 +166,7 @@
 ## Remaining Tasks (Not Critical)
 
 1. **Configuration File**: Create `config.py` for constants
-2. **Error Recovery**: Add retry logic for failed orders
+2. **Error RECOVERYy**: Add retry logic for failed orders
 3. **Position Validation**: Add reconciliation checks
 4. **Performance Optimization**: Optimize hot paths
 

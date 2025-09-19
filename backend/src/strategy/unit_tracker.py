@@ -95,7 +95,7 @@ class UnitTracker:
                 phase=Phase.ADVANCE if current_phase == "advance" else
                       Phase.DECLINE if current_phase == "decline" else
                       Phase.RETRACEMENT if current_phase == "retracement" else
-                      Phase.RECOVER,
+                      Phase.RECOVERY,
                 current_unit=self.current_unit,
                 timestamp=datetime.now(),
                 direction=direction,

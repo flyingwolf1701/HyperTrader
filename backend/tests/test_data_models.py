@@ -324,7 +324,7 @@ class TestEnums:
         assert Phase.ADVANCE.value == "advance"
         assert Phase.RETRACEMENT.value == "retracement"
         assert Phase.DECLINE.value == "decline"
-        assert Phase.RECOVER.value == "recover"
+        assert Phase.RECOVERY.value == "recovery"
         assert Phase.RESET.value == "reset"
 
     def test_execution_status_values(self):

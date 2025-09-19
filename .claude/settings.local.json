@@ -11,7 +11,8 @@
       "Bash(python:*)",
       "Read(//c/Users/trini/Pictures/Screenshots/**)",
       "Bash(pytest:*)",
-      "Read(//c/Users/trini/Downloads/**)"
+      "Read(//c/Users/trini/Downloads/**)",
+      "Bash(/bashes)"
     ],
     "deny": [],
     "ask": [],

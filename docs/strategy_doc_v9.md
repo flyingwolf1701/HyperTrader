@@ -134,9 +134,9 @@ The strategy maintains **4 active orders** at all times (stop-loss sells OR limi
 - **Actions**:
     - As current unit decreases: Add limit buy at (current + 1), cancel limit buy at (current + 5)
     - Maintain 4 limit buy orders positioned 1 unit ahead of current price
-- **Transition**: Enters RECOVER when first limit buy fills
+- **Transition**: Enters RECOVERY when first limit buy fills
 
-**RECOVER Phase**:
+**RECOVERY Phase**:
 - **Trigger**: First limit buy fills from DECLINE phase
 - **State**: Mixed position (ETH + cash), mix of limit buy/stop-loss orders
 - **Actions**:
@@ -148,7 +148,7 @@ The strategy maintains **4 active orders** at all times (stop-loss sells OR limi
     - To DECLINE: All 4 stop-losses triggered (100% cash)
 
 **RESET Mechanism**:
-- **Trigger**: Portfolio returns to 100% long from RETRACEMENT or RECOVER
+- **Trigger**: Portfolio returns to 100% long from RETRACEMENT or RECOVERY
 - **Actions**:
     - Reset unit counters to 0
     - Update allocation values based on new position value (capturing compound growth)
@@ -210,7 +210,7 @@ The strategy maintains **4 active orders** at all times (stop-loss sells OR limi
 ### Phase Detection Logic
 
 The system automatically detects the current phase based on:
-- **Order composition**: All stop-losses = ADVANCE, All limit buys = DECLINE, Mix = RETRACEMENT/RECOVER
+- **Order composition**: All stop-losses = ADVANCE, All limit buys = DECLINE, Mix = RETRACEMENT/RECOVERY
 - **Position state**: 100% ETH = ADVANCE, 100% Cash = DECLINE, Mixed = transitional phases
 - **Recent executions**: Pattern of completed orders determines phase transitions
 
@@ -266,9 +266,9 @@ The hedge wallet transitions through distinct position states: Long → Cash →
 - **Actions**:
     - As current unit decreases: Add stop-loss at (current+1), cancel stop-loss at (current+5)
     - Maintain 4 stop-loss orders positioned 1 unit ahead of current price
-- **Transition**: Enters RECOVER when first stop-loss triggers
+- **Transition**: Enters RECOVERY when first stop-loss triggers
 
-**RECOVER Phase (Hedge Wallet)**:
+**RECOVERY Phase (Hedge Wallet)**:
 - **Trigger**: First stop-loss triggers from DECLINE phase
 - **State**: Mixed short position, combination of stop-losses and stop-entry shorts
 - **Actions**:
