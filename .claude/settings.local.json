@@ -14,7 +14,8 @@
       "Read(//c/Users/trini/Downloads/**)",
       "Bash(/bashes)",
       "Bash(timeout:*)",
-      "Bash(git fetch:*)"
+      "Bash(git fetch:*)",
+      "Bash(git checkout:*)"
     ],
     "deny": [],
     "ask": [],

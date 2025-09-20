@@ -94,7 +94,8 @@ class StrategyRunner:
             raise ValueError(f"Could not retrieve metadata for {self.config.symbol}")
 
         asset_config = {
-            "size_decimals": asset_meta.get("szDecimals", 2)
+            "size_decimals": asset_meta.get("szDecimals", 2),
+            "price_decimals": 1 if self.config.symbol == "BTC" else 2  # BTC uses 1 decimal
         }
 
         # Initialize v10 Strategy Manager

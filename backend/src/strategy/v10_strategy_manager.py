@@ -136,18 +136,26 @@ class V10StrategyManager:
         # Each order is 25% of position (fragment)
         fragment_size = self.position_state.long_fragment_asset
 
+        # Round fragment size to appropriate decimals
+        decimals = self.asset_config.get("size_decimals", 5)
+        rounded_size = round(float(fragment_size), decimals)
+
         for unit in [-1, -2, -3, -4]:
             trigger_price = self.position_state.get_price_for_unit(unit)
+            # Round trigger price based on asset config
+            price_decimals = self.asset_config.get("price_decimals", 2)
+            trigger_price_rounded = float(round(trigger_price, price_decimals))
+            limit_price = float(round(trigger_price * Decimal("0.99"), price_decimals))
 
             # Place stop-loss sell order using trigger format
             order_data = {
                 "coin": self.asset,
                 "is_buy": False,
-                "sz": float(fragment_size),
-                "limit_px": float(trigger_price * Decimal("0.99")),  # Limit price slightly below trigger
+                "sz": rounded_size,
+                "limit_px": limit_price,  # Limit price slightly below trigger
                 "order_type": {
                     "trigger": {
-                        "triggerPx": float(trigger_price),
+                        "triggerPx": trigger_price_rounded,
                         "isMarket": True,
                         "tpsl": "sl"  # Stop-loss
                     }
@@ -157,7 +165,16 @@ class V10StrategyManager:
             response = await self.exchange.place_order(order_data)
 
             if response and response.get("status") == "ok":
-                order_id = response["response"]["data"]["statuses"][0]["resting"]["oid"]
+                status = response["response"]["data"]["statuses"][0]
+                if "resting" in status:
+                    order_id = status["resting"]["oid"]
+                elif "filled" in status:
+                    order_id = status["filled"]["oid"]
+                    logger.info(f"Stop-loss order at unit {unit} filled immediately")
+                    return  # No need to track if already filled
+                else:
+                    logger.error(f"Unexpected order status: {status}")
+                    return
 
                 # Track order
                 self.active_orders[order_id] = {
@@ -217,7 +234,7 @@ class V10StrategyManager:
 
         # Log current grid state
         state = self.unit_tracker.get_window_state()
-        logger.info(f"Grid state after fill: {state['grid_state']}, Orders: {state['window_composition']}")
+        logger.info(f"Grid state after fill: {state['grid_state']}, Orders: {state.get('order_composition', 'N/A')}")
 
     async def _place_stop_sell(self, unit: int):
         """
@@ -229,14 +246,23 @@ class V10StrategyManager:
         trigger_price = self.position_state.get_price_for_unit(unit)
         fragment_size = self.position_state.long_fragment_asset
 
+        # Round fragment size to appropriate decimals
+        decimals = self.asset_config.get("size_decimals", 5)
+        rounded_size = round(float(fragment_size), decimals)
+
+        # Round prices based on asset config
+        price_decimals = self.asset_config.get("price_decimals", 2)
+        trigger_price_rounded = float(round(trigger_price, price_decimals))
+        limit_price = float(round(trigger_price * Decimal("0.99"), price_decimals))
+
         order_data = {
             "coin": self.asset,
             "is_buy": False,
-            "sz": float(fragment_size),
-            "limit_px": float(trigger_price * Decimal("0.99")),
+            "sz": rounded_size,
+            "limit_px": limit_price,
             "order_type": {
                 "trigger": {
-                    "triggerPx": float(trigger_price),
+                    "triggerPx": trigger_price_rounded,
                     "isMarket": True,
                     "tpsl": "sl"
                 }
@@ -246,7 +272,16 @@ class V10StrategyManager:
         response = await self.exchange.place_order(order_data)
 
         if response and response.get("status") == "ok":
-            order_id = response["response"]["data"]["statuses"][0]["resting"]["oid"]
+            status = response["response"]["data"]["statuses"][0]
+            if "resting" in status:
+                order_id = status["resting"]["oid"]
+            elif "filled" in status:
+                order_id = status["filled"]["oid"]
+                logger.info(f"Limit buy order at unit {unit} filled immediately")
+                return  # No need to track if already filled
+            else:
+                logger.error(f"Unexpected order status: {status}")
+                return
 
             self.active_orders[order_id] = {
                 "unit": unit,
@@ -277,16 +312,21 @@ class V10StrategyManager:
         decimals = self.asset_config.get("size_decimals", 2)
         asset_size = round(asset_size, decimals)
 
+        # Round prices based on asset config
+        price_decimals = self.asset_config.get("price_decimals", 2)
+        trigger_price_rounded = float(round(trigger_price, price_decimals))
+        limit_price = float(round(trigger_price * Decimal("1.01"), price_decimals))
+
         # Note: Hyperliquid uses stop-loss orders for both directions
         # A stop-loss buy triggers when price goes UP to the trigger price
         order_data = {
             "coin": self.asset,
             "is_buy": True,
             "sz": float(asset_size),
-            "limit_px": float(trigger_price * Decimal("1.01")),  # Limit above trigger for buys
+            "limit_px": limit_price,  # Limit above trigger for buys
             "order_type": {
                 "trigger": {
-                    "triggerPx": float(trigger_price),
+                    "triggerPx": trigger_price_rounded,
                     "isMarket": True,
                     "tpsl": "tp"  # Take-profit acts as stop-entry for buys
                 }
@@ -296,7 +336,16 @@ class V10StrategyManager:
         response = await self.exchange.place_order(order_data)
 
         if response and response.get("status") == "ok":
-            order_id = response["response"]["data"]["statuses"][0]["resting"]["oid"]
+            status = response["response"]["data"]["statuses"][0]
+            if "resting" in status:
+                order_id = status["resting"]["oid"]
+            elif "filled" in status:
+                order_id = status["filled"]["oid"]
+                logger.info(f"Limit buy order at unit {unit} filled immediately")
+                return  # No need to track if already filled
+            else:
+                logger.error(f"Unexpected order status: {status}")
+                return
 
             self.active_orders[order_id] = {
                 "unit": unit,
@@ -424,7 +473,7 @@ class V10StrategyManager:
             "asset": self.asset,
             "current_unit": window_state["current_unit"],
             "grid_state": window_state["grid_state"],
-            "order_composition": window_state["window_composition"],
+            "order_composition": window_state.get("order_composition", "N/A"),
             "active_orders": len(self.active_orders),
             "realized_pnl": window_state["current_realized_pnl"],
             "position_value": float(self.total_position_usd)
