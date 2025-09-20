@@ -1,837 +1,165 @@
-"""
-Hyperliquid SDK Wrapper
-Provides a clean interface to the Hyperliquid exchange
-"""
-
-from typing import Optional, Dict, Any, Tuple
+import os
 from decimal import Decimal
-from dataclasses import dataclass
+from typing import Dict, Any, Optional, List
+
+from eth_account import Account
+from eth_account.signers.local import LocalAccount
 from loguru import logger
 
 from hyperliquid.exchange import Exchange
 from hyperliquid.info import Info
-from hyperliquid.utils.signing import Account
-
-from .asset_config import get_tick_size, get_max_leverage, round_to_tick, is_valid_leverage
-
-@dataclass
-class Position:
-    """Represents an open position"""
-    symbol: str
-    is_long: bool
-    size: Decimal
-    entry_price: Decimal
-    unrealized_pnl: Decimal
-    margin_used: Decimal
-    
-    @property
-    def side(self) -> str:
-        return "LONG" if self.is_long else "SHORT"
+from hyperliquid.utils.signing import get_timestamp_ms
 
 
-@dataclass
-class Balance:
-    """Represents account balance"""
-    total_value: Decimal
-    margin_used: Decimal
-    available: Decimal
+class HyperliquidSDK:
+    """A wrapper for the Hyperliquid SDK to handle REST API calls."""
 
-
-@dataclass
-class OrderResult:
-    """Represents the result of an order"""
-    success: bool
-    order_id: Optional[str] = None
-    filled_size: Optional[Decimal] = None
-    average_price: Optional[Decimal] = None
-    error_message: Optional[str] = None
-
-
-class HyperliquidClient:
-    """
-    Main client for interacting with Hyperliquid exchange.
-    Handles both main wallet and sub-wallet operations.
-    """
-    
-    def __init__(self, use_testnet: bool = True, use_sub_wallet: bool = False):
+    def __init__(self, wallet_address: str, is_mainnet: bool = False):
         """
-        Initialize the Hyperliquid client.
-        
+        Initializes the Hyperliquid SDK wrapper.
+
         Args:
-            use_testnet: Whether to use testnet (True) or mainnet (False)
-            use_sub_wallet: Whether to use sub-wallet for trading
+            wallet_address: The user's wallet address.
+            is_mainnet: A boolean indicating whether to connect to the mainnet.
         """
-        self.use_testnet = use_testnet
-        self.use_sub_wallet = use_sub_wallet
+        self.wallet_address = wallet_address
+        self.is_mainnet = is_mainnet
+        self.info: Optional[Info] = None
+        self.exchange: Optional[Exchange] = None
+        self.meta: Optional[Dict[str, Any]] = None
+        self.account: Optional[LocalAccount] = None
         
-        # Set base URL based on network
-        self.base_url = (
-            "https://api.hyperliquid-testnet.xyz" if use_testnet 
-            else "https://api.hyperliquid.xyz"
-        )
-        
-        # Initialize wallet and clients
-        self._initialize_clients()
-        
-    def _initialize_clients(self):
-        """Initialize the SDK clients and wallet"""
-        # Get credentials from environment variables
-        import os
-        from dotenv import load_dotenv
-        load_dotenv()
-        
+        # Load private key from environment variables
         private_key = os.getenv("HYPERLIQUID_PRIVATE_KEY")
-        self.main_wallet_address = os.getenv("HYPERLIQUID_MAIN_WALLET_ADDRESS")
-        self.sub_wallet_address = os.getenv("HYPERLIQUID_SUB_WALLET_ADDRESS")
+        if not private_key:
+            raise ValueError("FATAL: HYPERLIQUID_PRIVATE_KEY environment variable not set.")
         
-        # Create LocalAccount from private key
-        wallet = Account.from_key(private_key)
-        
-        # Initialize Info client for read operations
-        self.info = Info(self.base_url, skip_ws=True)
-        
-        # Determine which wallet to use for trading
-        if self.use_sub_wallet:
-            # Trade on sub-wallet using vault_address
-            self.exchange = Exchange(
-                wallet=wallet,  # Pass LocalAccount object
-                base_url=self.base_url,
-                vault_address=self.sub_wallet_address
-            )
-            logger.info(f"Initialized with sub-wallet {self.sub_wallet_address[:8]}...")
-        else:
-            # Trade on main wallet
-            self.exchange = Exchange(
-                wallet=wallet,  # Pass LocalAccount object
-                base_url=self.base_url
-            )
-            logger.info(f"Initialized with main wallet {self.main_wallet_address[:8]}...")
-    
-    def get_user_address(self) -> str:
-        """
-        Get the current trading wallet address.
+        self.account = Account.from_key(private_key)
 
-        Returns:
-            The wallet address being used for trading
-        """
-        return self.sub_wallet_address if self.use_sub_wallet else self.main_wallet_address
-    
-    def switch_wallet(self, use_sub_wallet: bool):
-        """
-        Switch between main wallet and sub-wallet.
-        
-        Args:
-            use_sub_wallet: True to use sub-wallet, False for main wallet
-        """
-        if use_sub_wallet != self.use_sub_wallet:
-            self.use_sub_wallet = use_sub_wallet
-            self._initialize_clients()
-    
-    # ============================================================================
-    # ACCOUNT INFORMATION
-    # ============================================================================
-    
-    def get_balance(self) -> Balance:
-        """
-        Get account balance for the current wallet.
-        
-        Returns:
-            Balance object with total value, margin used, and available balance
-        """
+    async def initialize(self):
+        """Initializes the SDK clients and fetches metadata."""
+        logger.info("Initializing Hyperliquid REST SDK clients...")
         try:
-            user_state = self.info.user_state(self.get_user_address())
-            margin_summary = user_state.get("marginSummary", {})
-            
-            total_value = Decimal(str(margin_summary.get("accountValue", 0)))
-            margin_used = Decimal(str(margin_summary.get("totalMarginUsed", 0)))
-            
-            return Balance(
-                total_value=total_value,
-                margin_used=margin_used,
-                available=total_value - margin_used
-            )
+            self.info = Info(self.is_mainnet)
+            self.exchange = Exchange(self.account, self.is_mainnet)
+            self.meta = self.info.meta()
+            logger.success("Hyperliquid REST SDK initialized and metadata loaded.")
         except Exception as e:
-            logger.error(f"Failed to get balance: {e}")
-            raise
-    
-    def get_positions(self) -> Dict[str, Position]:
+            logger.error(f"Failed to initialize exchange metadata: {e}")
+
+    def get_asset_meta(self, symbol: str) -> Optional[Dict]:
         """
-        Get all open positions for the current wallet.
-        
-        Returns:
-            Dictionary mapping symbol to Position object
-        """
-        try:
-            user_state = self.info.user_state(self.get_user_address())
-            positions = {}
-            
-            for asset_position in user_state.get("assetPositions", []):
-                position_data = asset_position.get("position", {})
-                szi = float(position_data.get("szi", 0))
-                
-                if szi != 0:  # Has an open position
-                    symbol = position_data.get("coin")
-                    positions[symbol] = Position(
-                        symbol=symbol,
-                        is_long=szi > 0,
-                        size=Decimal(str(abs(szi))),
-                        entry_price=Decimal(str(position_data.get("entryPx", 0))),
-                        unrealized_pnl=Decimal(str(asset_position.get("unrealizedPnl", 0))),
-                        margin_used=Decimal(str(position_data.get("marginUsed", 0)))
-                    )
-            
-            return positions
-        except Exception as e:
-            logger.error(f"Failed to get positions: {e}")
-            raise
-    
-    def get_position(self, symbol: str) -> Optional[Position]:
-        """
-        Get position for a specific symbol.
-        
-        Args:
-            symbol: Trading symbol (e.g., "ETH")
-            
-        Returns:
-            Position object if exists, None otherwise
-        """
-        positions = self.get_positions()
-        return positions.get(symbol)
-    
-    # ============================================================================
-    # MARKET DATA
-    # ============================================================================
-    
-    def get_current_price(self, symbol: str) -> Decimal:
-        """
-        Get current market price for a symbol.
-        
-        Args:
-            symbol: Trading symbol (e.g., "ETH")
-            
-        Returns:
-            Current mid-market price
-        """
-        try:
-            all_mids = self.info.all_mids()
-            price = all_mids.get(symbol, 0)
-            if price == 0:
-                raise ValueError(f"Could not get price for {symbol}")
-            return Decimal(str(price))
-        except Exception as e:
-            logger.error(f"Failed to get price for {symbol}: {e}")
-            raise
-    
-    def get_market_info(self, symbol: str) -> Dict[str, Any]:
-        """
-        Get market metadata for a symbol including tickSize and szDecimals.
-        
-        Args:
-            symbol: Trading symbol
-            
-        Returns:
-            Market information including tickSize, szDecimals, etc.
-        """
-        try:
-            meta = self.info.meta()
-            # The asset details are in the 'universe' key
-            assets = meta.get("universe", [])
-            
-            for asset in assets:
-                if asset.get("name") == symbol:
-                    return asset
-            
-            raise ValueError(f"Market info not found for {symbol}")
-        except Exception as e:
-            logger.error(f"Failed to get market info: {e}")
-            raise
-    
-    # ============================================================================
-    # TRADING OPERATIONS
-    # ============================================================================
-    
-    def set_leverage(self, symbol: str, leverage: int) -> bool:
-        """
-        Set leverage for a symbol.
+        Retrieves the metadata for a specific asset from the cached universe data.
 
         Args:
-            symbol: Trading symbol
-            leverage: Leverage multiplier (e.g., 10 for 10x)
+            symbol: The asset symbol (e.g., "BTC", "SOL").
 
         Returns:
-            True if successful, False otherwise
+            A dictionary containing the asset's metadata, or None if not found.
         """
+        if self.meta and "universe" in self.meta:
+            for asset_info in self.meta["universe"]:
+                if asset_info.get("name") == symbol:
+                    return asset_info
+        logger.warning(f"Metadata for asset '{symbol}' not found.")
+        return None
+
+    async def set_leverage(self, symbol: str, leverage: int, is_cross_margin: bool = True):
+        """Set leverage for a specific asset."""
+        if not self.exchange:
+            logger.error("Exchange client not initialized.")
+            return
+        
+        logger.info(f"Setting leverage for {symbol} to {leverage}x {'(Cross Margin)' if is_cross_margin else '(Isolated)'}")
         try:
-            # Validate leverage against our config
-            max_allowed = get_max_leverage(symbol)
-            if leverage > max_allowed:
-                logger.warning(f"Requested {leverage}x exceeds max {max_allowed}x for {symbol}, using max")
-                leverage = max_allowed
-
-            logger.info(f"Setting leverage to {leverage}x for {symbol}")
-
-            # Try to set the leverage with cross margin
-            result = self.exchange.update_leverage(
-                leverage=leverage,
-                name=symbol,
-                is_cross=True  # Use cross margin
-            )
-
-            if result.get("status") == "ok":
-                logger.info(f"✅ Successfully set leverage to {leverage}x for {symbol}")
-                return True
+            response = self.exchange.update_leverage(leverage, symbol, is_cross_margin)
+            if response["status"] == "ok":
+                logger.success(f"Successfully set leverage for {symbol} to {leverage}x")
             else:
-                error_msg = result.get("response", "Unknown error")
-                logger.error(f"❌ Failed to set {leverage}x leverage: {error_msg}")
-                return False
+                logger.error(f"Failed to set leverage for {symbol}: {response}")
+        except Exception as e:
+            logger.error(f"An error occurred while setting leverage for {symbol}: {e}")
 
-        except Exception as e:
-            logger.error(f"Error setting leverage: {e}")
-            return False
-    
-    def calculate_position_size(self, symbol: str, usd_amount: Decimal) -> Decimal:
-        """
-        Calculate position size in base currency from USD amount.
+    async def get_open_orders(self) -> List[Dict]:
+        """Retrieve all open orders for the user."""
+        if not self.info:
+            logger.error("Info client not initialized.")
+            return []
         
-        Args:
-            symbol: Trading symbol
-            usd_amount: Position size in USD
-            
-        Returns:
-            Position size in base currency, properly rounded
-        """
-        current_price = self.get_current_price(symbol)
-        
-        # Get market info for decimals
-        market_info = self.get_market_info(symbol)
-        sz_decimals = int(market_info["szDecimals"])
-        
-        # Calculate and round to appropriate decimals
-        size = usd_amount / current_price
-        return Decimal(str(round(float(size), sz_decimals)))
-    
-    def open_position(
-        self, 
-        symbol: str, 
-        usd_amount: Decimal,
-        is_long: bool = True,
-        leverage: Optional[int] = None,
-        slippage: float = 0.01
-    ) -> OrderResult:
-        """
-        Open a new position.
-        
-        Args:
-            symbol: Trading symbol (e.g., "ETH")
-            usd_amount: Position size in USD
-            is_long: True for long, False for short
-            leverage: Optional leverage to set before opening
-            slippage: Maximum slippage tolerance (default 1%)
-            
-        Returns:
-            OrderResult with execution details
-        """
         try:
-            # Validate and set leverage if specified
-            if leverage:
-                if not is_valid_leverage(symbol, leverage):
-                    max_lev = get_max_leverage(symbol)
-                    return OrderResult(
-                        success=False,
-                        error_message=f"Invalid leverage {leverage} for {symbol}. Max allowed: {max_lev}"
-                    )
-                self.set_leverage(symbol, leverage)
-            
-            # Calculate position size
-            position_size = self.calculate_position_size(symbol, usd_amount)
-            
-            logger.info(
-                f"Opening {'LONG' if is_long else 'SHORT'} position: "
-                f"{position_size} {symbol} (${usd_amount})"
-            )
-            
-            # Place market order
-            result = self.exchange.market_open(
-                name=symbol,
-                is_buy=is_long,
-                sz=float(position_size),
-                px=None,  # Let SDK calculate
-                slippage=slippage
-            )
-            
-            # Parse result
-            if result.get("status") == "ok":
-                response = result.get("response", {})
-                data = response.get("data", {})
-                statuses = data.get("statuses", [])
-                
-                if statuses and "filled" in statuses[0]:
-                    filled = statuses[0]["filled"]
-                    return OrderResult(
-                        success=True,
-                        order_id=str(filled.get("oid")),
-                        filled_size=Decimal(str(filled.get("totalSz", 0))),
-                        average_price=Decimal(str(filled.get("avgPx", 0)))
-                    )
-                elif statuses and "error" in statuses[0]:
-                    return OrderResult(
-                        success=False,
-                        error_message=statuses[0]["error"]
-                    )
-            
-            return OrderResult(
-                success=False,
-                error_message=f"Unexpected response: {result}"
-            )
-            
-        except Exception as e:
-            logger.error(f"Failed to open position: {e}")
-            return OrderResult(
-                success=False,
-                error_message=str(e)
-            )
-    
-    def close_position(self, symbol: str, slippage: float = 0.01) -> OrderResult:
-        """
-        Close an existing position.
-        
-        Args:
-            symbol: Trading symbol
-            slippage: Maximum slippage tolerance
-            
-        Returns:
-            OrderResult with execution details
-        """
-        try:
-            # Get current position
-            position = self.get_position(symbol)
-            if not position:
-                return OrderResult(
-                    success=False,
-                    error_message=f"No position to close for {symbol}"
-                )
-            
-            logger.info(
-                f"Closing {position.side} position: "
-                f"{position.size} {symbol}"
-            )
-            
-            # Close by opening opposite position
-            # Note: market_close seems unreliable, using market_open instead
-            result = self.exchange.market_open(
-                name=symbol,
-                is_buy=not position.is_long,  # Opposite side to close
-                sz=float(position.size),
-                px=None,
-                slippage=slippage
-            )
-            
-            # Parse result
-            if result.get("status") == "ok":
-                response = result.get("response", {})
-                data = response.get("data", {})
-                statuses = data.get("statuses", [])
-                
-                if statuses and "filled" in statuses[0]:
-                    filled = statuses[0]["filled"]
-                    return OrderResult(
-                        success=True,
-                        order_id=str(filled.get("oid")),
-                        filled_size=Decimal(str(filled.get("totalSz", 0))),
-                        average_price=Decimal(str(filled.get("avgPx", 0)))
-                    )
-            
-            return OrderResult(
-                success=False,
-                error_message=f"Failed to close: {result}"
-            )
-            
-        except Exception as e:
-            logger.error(f"Failed to close position: {e}")
-            return OrderResult(
-                success=False,
-                error_message=str(e)
-            )
-    
-    def close_all_positions(self) -> Dict[str, OrderResult]:
-        """
-        Close all open positions.
-        
-        Returns:
-            Dictionary mapping symbol to OrderResult
-        """
-        results = {}
-        positions = self.get_positions()
-        
-        for symbol, position in positions.items():
-            logger.info(f"Closing {symbol} position...")
-            results[symbol] = self.close_position(symbol)
-        
-        return results
-    
-    def place_stop_order(
-        self,
-        symbol: str,
-        is_buy: bool,
-        size: Decimal,
-        trigger_price: Decimal,
-        reduce_only: bool = True
-    ) -> OrderResult:
-        """
-        Place a stop loss order that triggers at specified price.
-        
-        Args:
-            symbol: Trading symbol
-            is_buy: True for stop buy, False for stop sell
-            size: Order size in base currency
-            trigger_price: Price that triggers the stop
-            reduce_only: If True, only reduces position (default True for stops)
-            
-        Returns:
-            OrderResult with order details
-        """
-        try:
-            # Round trigger price to tick size
-            from .asset_config import round_to_tick
-            rounded_trigger = round_to_tick(trigger_price, symbol)
-            
-            logger.info(
-                f"Placing {'BUY' if is_buy else 'SELL'} stop order: "
-                f"{size} {symbol} triggers @ ${rounded_trigger:.2f}"
-            )
-            logger.debug(f"Original trigger: ${trigger_price}, Rounded: ${rounded_trigger}, Tick size: ${get_tick_size(symbol)}")
-            
-            # Create stop loss order type
-            # Use limit orders for all stops with proper tick sizing
-            order_type = {
-                "trigger": {
-                    "triggerPx": float(rounded_trigger),
-                    "isMarket": False,  # Use limit orders with proper tick sizing
-                    "tpsl": "sl"  # Stop loss type
-                }
-            }
-
-            # Use the trigger price as the limit price
-            limit_px = rounded_trigger
-            
-            # Get market info for proper decimal formatting
-            market_info = self.get_market_info(symbol)
-            sz_decimals = int(market_info.get("szDecimals", 4))
-            
-            # Round size to appropriate decimals
-            rounded_size = round(float(size), sz_decimals)
-            
-            result = self.exchange.order(
-                symbol, 
-                is_buy, 
-                rounded_size, 
-                float(limit_px), 
-                order_type, 
-                reduce_only
-            )
-            
-            # Parse result
-            if result.get("status") == "ok":
-                response = result.get("response", {})
-                data = response.get("data", {})
-                statuses = data.get("statuses", [])
-                
-                if statuses and "resting" in statuses[0]:
-                    resting = statuses[0]["resting"]
-                    return OrderResult(
-                        success=True,
-                        order_id=str(resting.get("oid")),
-                        filled_size=Decimal("0"),  # Not filled yet
-                        average_price=rounded_trigger
-                    )
-                else:
-                    return OrderResult(
-                        success=False,
-                        error_message=f"Unexpected response: {statuses}"
-                    )
-            else:
-                error_msg = result.get("response", "Unknown error")
-                return OrderResult(
-                    success=False,
-                    error_message=f"Stop order failed: {error_msg}"
-                )
-                
-        except Exception as e:
-            logger.error(f"Failed to place stop order: {e}")
-            return OrderResult(
-                success=False,
-                error_message=str(e)
-            )
-    
-    def place_stop_buy(
-        self,
-        symbol: str,
-        size: Decimal,
-        trigger_price: Decimal,
-        limit_price: Optional[Decimal] = None,
-        reduce_only: bool = False
-    ) -> OrderResult:
-        """
-        Place a stop limit buy order that triggers when price rises to specified level.
-        This is used for placing buy orders above current market price that wait for price to rise.
-        
-        Args:
-            symbol: Trading symbol
-            size: Order size in base currency
-            trigger_price: Price that triggers the order (above current market)
-            limit_price: Limit price for execution (if None, uses trigger_price)
-            reduce_only: If True, only reduces position (usually False for entries)
-            
-        Returns:
-            OrderResult with order details
-        """
-        try:
-            # Round trigger price to tick size
-            from .asset_config import round_to_tick
-            rounded_trigger = round_to_tick(trigger_price, symbol)
-            
-            # Use trigger as limit if not specified
-            if limit_price is None:
-                limit_price = trigger_price
-            rounded_limit = round_to_tick(limit_price, symbol)
-            
-            logger.info(
-                f"Placing STOP LIMIT BUY order: "
-                f"{size} {symbol} triggers @ ${rounded_trigger:.2f}, "
-                f"limit @ ${rounded_limit:.2f}"
-            )
-            
-            # Create stop loss order type (for buys, this triggers when price rises)
-            # Using "sl" because for a buy order, stop loss triggers above current price
-            order_type = {
-                "trigger": {
-                    "triggerPx": float(rounded_trigger),
-                    "isMarket": False,  # Execute as limit when triggered
-                    "tpsl": "sl"  # Stop loss type (for buy orders, triggers when price rises above)
-                }
-            }
-            
-            # Get market info for proper decimal formatting
-            market_info = self.get_market_info(symbol)
-            sz_decimals = int(market_info.get("szDecimals", 4))
-            
-            # Round size to appropriate decimals
-            rounded_size = round(float(size), sz_decimals)
-            
-            result = self.exchange.order(
-                symbol, 
-                True,  # is_buy = True
-                rounded_size, 
-                float(rounded_limit), 
-                order_type, 
-                reduce_only
-            )
-            
-            # Parse result
-            if result.get("status") == "ok":
-                response = result.get("response", {})
-                data = response.get("data", {})
-                statuses = data.get("statuses", [])
-                
-                if statuses and "resting" in statuses[0]:
-                    resting = statuses[0]["resting"]
-                    return OrderResult(
-                        success=True,
-                        order_id=str(resting.get("oid")),
-                        filled_size=Decimal("0"),  # Not filled yet
-                        average_price=rounded_limit
-                    )
-                else:
-                    return OrderResult(
-                        success=False,
-                        error_message=f"Unexpected response: {statuses}"
-                    )
-            else:
-                error_msg = result.get("response", "Unknown error")
-                return OrderResult(
-                    success=False,
-                    error_message=f"Stop limit buy order failed: {error_msg}"
-                )
-                
-        except Exception as e:
-            logger.error(f"Failed to place stop limit buy order: {e}")
-            return OrderResult(
-                success=False,
-                error_message=str(e)
-            )
-    
-    def place_limit_order(
-        self,
-        symbol: str,
-        is_buy: bool,
-        price: Decimal,
-        size: Decimal,
-        reduce_only: bool = False,
-        post_only: bool = True
-    ) -> OrderResult:
-        """
-        Place a limit order.
-        
-        Args:
-            symbol: Trading symbol (e.g., "ETH")
-            is_buy: True for buy, False for sell
-            price: Limit price
-            size: Order size in base currency
-            reduce_only: If True, order can only reduce position
-            post_only: If True, order will only make (not take)
-            
-        Returns:
-            OrderResult with order details
-        """
-        try:
-            # Get market info for proper decimal formatting
-            market_info = self.get_market_info(symbol)
-            sz_decimals = int(market_info.get("szDecimals", 4))
-            
-            # Get tick size from our config (since testnet doesn't provide it)
-            tick_size = float(get_tick_size(symbol))
-            
-            # Round price to the nearest tick size
-            rounded_price = round(float(price) / tick_size) * tick_size
-            
-            # Round size to appropriate decimals
-            rounded_size = round(float(size), sz_decimals)
-            
-            logger.info(
-                f"Placing {'BUY' if is_buy else 'SELL'} limit order: "
-                f"{rounded_size} {symbol} @ ${rounded_price:.2f}"
-            )
-            
-            # Create order request
-            order = {
-                "a": 1,  # Asset ID (1 for perp)
-                "b": is_buy,
-                "p": str(rounded_price),
-                "s": str(rounded_size),
-                "r": reduce_only,
-                "t": {"limit": {"tif": "Gtc"}},  # Good till cancelled
-                "c": None  # No client order ID for now
-            }
-            
-            if post_only:
-                order["t"]["limit"]["tif"] = "Alo"  # Add liquidity only
-            
-            # Place the order with rounded price
-            result = self.exchange.order(symbol, is_buy, rounded_size, rounded_price, 
-                                        {"limit": {"tif": "Gtc"}}, reduce_only=reduce_only)
-            
-            # Parse result
-            if result.get("status") == "ok":
-                response = result.get("response", {})
-                data = response.get("data", {})
-                statuses = data.get("statuses", [])
-                
-                if statuses and "resting" in statuses[0]:
-                    resting = statuses[0]["resting"]
-                    return OrderResult(
-                        success=True,
-                        order_id=str(resting.get("oid")),
-                        filled_size=Decimal("0"),  # Not filled yet
-                        average_price=Decimal(str(price))
-                    )
-                elif statuses and "filled" in statuses[0]:
-                    filled = statuses[0]["filled"]
-                    return OrderResult(
-                        success=True,
-                        order_id=str(filled.get("oid")),
-                        filled_size=Decimal(str(filled.get("totalSz", 0))),
-                        average_price=Decimal(str(filled.get("avgPx", 0)))
-                    )
-                elif statuses and "error" in statuses[0]:
-                    return OrderResult(
-                        success=False,
-                        error_message=statuses[0]["error"]
-                    )
-            
-            return OrderResult(
-                success=False,
-                error_message=f"Unexpected response: {result}"
-            )
-            
-        except Exception as e:
-            logger.error(f"Failed to place limit order: {e}")
-            return OrderResult(
-                success=False,
-                error_message=str(e)
-            )
-    
-    def cancel_order(self, symbol: str, order_id: str) -> bool:
-        """
-        Cancel an open order.
-        
-        Args:
-            symbol: Trading symbol
-            order_id: Order ID to cancel
-            
-        Returns:
-            True if successful, False otherwise
-        """
-        try:
-            result = self.exchange.cancel(symbol, int(order_id))
-            
-            if result.get("status") == "ok":
-                logger.info(f"Cancelled order {order_id} for {symbol}")
-                return True
-            else:
-                logger.warning(f"Failed to cancel order: {result}")
-                return False
-                
-        except Exception as e:
-            logger.error(f"Error cancelling order: {e}")
-            return False
-    
-    def cancel_all_orders(self, symbol: str) -> int:
-        """
-        Cancel all open orders for a symbol.
-        
-        Args:
-            symbol: Trading symbol
-            
-        Returns:
-            Number of orders cancelled
-        """
-        try:
-            result = self.exchange.cancel_by_coin(symbol)
-            
-            if result.get("status") == "ok":
-                response = result.get("response", {})
-                data = response.get("data", {})
-                statuses = data.get("statuses", [])
-                cancelled_count = len([s for s in statuses if "canceled" in s])
-                logger.info(f"Cancelled {cancelled_count} orders for {symbol}")
-                return cancelled_count
-            else:
-                logger.warning(f"Failed to cancel orders: {result}")
-                return 0
-                
-        except Exception as e:
-            logger.error(f"Error cancelling all orders: {e}")
-            return 0
-    
-    def get_open_orders(self, symbol: Optional[str] = None) -> list:
-        """
-        Get all open orders.
-        
-        Args:
-            symbol: Optional symbol to filter by
-            
-        Returns:
-            List of open orders
-        """
-        try:
-            user_state = self.info.user_state(self.get_user_address())
-            open_orders = user_state.get("openOrders", [])
-            
-            if symbol:
-                open_orders = [o for o in open_orders if o.get("coin") == symbol]
-            
+            open_orders = self.info.open_orders(self.wallet_address)
             return open_orders
-            
         except Exception as e:
             logger.error(f"Failed to get open orders: {e}")
             return []
+
+    async def place_order(self, order_data: Dict) -> Optional[Dict]:
+        """
+        Places an order on the exchange.
+
+        Args:
+            order_data: A dictionary containing order parameters.
+        
+        Returns:
+            The response from the exchange, or None if an error occurred.
+        """
+        if not self.exchange:
+            logger.error("Exchange client not initialized.")
+            return None
+        
+        logger.info(f"Placing order: {order_data}")
+        try:
+            response = self.exchange.order(
+                order_data["coin"],
+                order_data["is_buy"],
+                order_data["sz"],
+                order_data["limit_px"],
+                order_data["order_type"]
+            )
+            return response
+        except Exception as e:
+            logger.error(f"An error occurred while placing order: {e}")
+            return None
+
+    async def cancel_all_orders(self):
+        """Cancels all open orders for all assets."""
+        if not self.exchange or not self.meta:
+            logger.error("Exchange client or metadata not initialized.")
+            return
+
+        logger.warning("Cancelling all open orders...")
+        try:
+            open_orders = await self.get_open_orders()
+            if not open_orders:
+                logger.info("No open orders to cancel.")
+                return
+
+            cancellation_requests = []
+            for order in open_orders:
+                cancellation_requests.append({"coin": order["coin"], "oid": order["oid"]})
+            
+            if cancellation_requests:
+                response = self.exchange.bulk_cancel(cancellation_requests)
+                if response.get("status") == "ok":
+                    logger.success("Successfully cancelled all open orders.")
+                else:
+                    logger.error(f"Failed to cancel all orders: {response}")
+            else:
+                logger.info("No open orders found to create cancellation requests.")
+
+        except Exception as e:
+            logger.error(f"An error occurred while cancelling all orders: {e}")
+
+    async def get_user_state(self) -> Optional[Dict]:
+        """Retrieve the user's current state, including positions and margin."""
+        if not self.info:
+            logger.error("Info client not initialized.")
+            return None
+        
+        try:
+            user_state = self.info.user_state(self.wallet_address)
+            return user_state
+        except Exception as e:
+            logger.error(f"Failed to get user state: {e}")
+            return None
+
