@@ -18,13 +18,11 @@ class OrderType(Enum):
     MARKET_SELL = "market_sell"        # Market sell for emergency
 
 
-class Phase(Enum):
-    """Trading phases based on order composition"""
-    ADVANCE = "advance"          # 100% long, all stop-losses
-    RETRACEMENT = "retracement"  # Mixed position, mix of orders
-    DECLINE = "decline"          # 100% cash, all limit buys
-    RECOVERY = "recovery"        # Mixed position returning to long
-    RESET = "reset"             # Transitioning to new cycle
+class GridState(Enum):
+    """Simple grid state based on order composition (v10 strategy)"""
+    FULL_POSITION = "full_position"    # 4 sell orders, 0 buy orders (100% in asset)
+    MIXED = "mixed"                     # Mix of sell and buy orders (partial position)
+    FULL_CASH = "full_cash"             # 0 sell orders, 4 buy orders (100% in cash)
 
 
 class ExecutionStatus(Enum):
@@ -129,7 +127,7 @@ class PositionConfig:
 class UnitChangeEvent:
     """Event triggered when unit boundary is crossed"""
     price: Decimal
-    phase: Phase
+    grid_state: GridState
     current_unit: int
     timestamp: datetime
     direction: str  # 'up' or 'down'
@@ -145,7 +143,7 @@ class OrderFillEvent:
     filled_price: Decimal
     filled_size: Decimal
     timestamp: datetime
-    phase_before: Phase
-    phase_after: Optional[Phase] = None
+    grid_state_before: GridState
+    grid_state_after: Optional[GridState] = None
 
 

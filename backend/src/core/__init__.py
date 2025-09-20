@@ -1,4 +1,6 @@
-"""Core models and websocket functionality"""
-from ..exchange.websocket_client import HyperliquidWebSocketClient
+"""Core configuration and strategy runner"""
 
-__all__ = ['HyperliquidWebSocketClient']
+from .config import StrategyConfig
+from .strategy_runner import StrategyRunner
+
+__all__ = ['StrategyConfig', 'StrategyRunner']

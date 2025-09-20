@@ -121,6 +121,28 @@ class HyperliquidSDK:
             logger.error(f"An error occurred while placing order: {e}")
             return None
 
+    async def cancel_order(self, coin: str, order_id: str) -> Optional[Dict]:
+        """
+        Cancels a specific order.
+
+        Args:
+            coin: The asset symbol
+            order_id: The order ID to cancel
+
+        Returns:
+            The response from the exchange
+        """
+        if not self.exchange:
+            logger.error("Exchange client not initialized.")
+            return None
+
+        try:
+            response = self.exchange.cancel(coin, order_id)
+            return response
+        except Exception as e:
+            logger.error(f"Failed to cancel order {order_id}: {e}")
+            return None
+
     async def cancel_all_orders(self):
         """Cancels all open orders for all assets."""
         if not self.exchange or not self.meta:
@@ -137,7 +159,7 @@ class HyperliquidSDK:
             cancellation_requests = []
             for order in open_orders:
                 cancellation_requests.append({"coin": order["coin"], "oid": order["oid"]})
-            
+
             if cancellation_requests:
                 response = self.exchange.bulk_cancel(cancellation_requests)
                 if response.get("status") == "ok":

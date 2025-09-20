@@ -7,7 +7,7 @@ from typing import Optional, Dict, List
 from loguru import logger
 
 # Import from centralized data models
-from .data_models import Phase, UnitChangeEvent
+from .data_models import GridState, UnitChangeEvent
 
 
 class UnitTracker:
@@ -30,9 +30,8 @@ class UnitTracker:
         self.position_state = position_state
         self.position_map = position_map
         self.current_unit = 0
-        self.last_phase = "advance"  # Track last phase for recovery detection
 
-        # Sliding window management - SIMPLE LIST-BASED TRACKING from data_flow.md
+        # Sliding window management - SIMPLE LIST-BASED TRACKING from v10 strategy
         self.trailing_stop: List[int] = [-1, -2, -3, -4]  # Initial 4 stop-loss orders (CLOSEST FIRST)
         self.trailing_buy: List[int] = []   # Initially empty
         self.current_realized_pnl = Decimal(0)  # Track PnL for reinvestment
@@ -85,17 +84,14 @@ class UnitTracker:
 
         # If unit changed, create event
         if self.current_unit != previous_unit:
-            current_phase = self.get_phase()
+            current_state = self.get_grid_state()
 
             # Create window composition string
             window_comp = f"{len(self.trailing_stop)}S/{len(self.trailing_buy)}B"
 
             return UnitChangeEvent(
                 price=current_price,
-                phase=Phase.ADVANCE if current_phase == "advance" else
-                      Phase.DECLINE if current_phase == "decline" else
-                      Phase.RETRACEMENT if current_phase == "retracement" else
-                      Phase.RECOVERY,
+                grid_state=current_state,
                 current_unit=self.current_unit,
                 timestamp=datetime.now(),
                 direction=direction,
@@ -105,39 +101,20 @@ class UnitTracker:
         return None
     
     
-    def get_phase(self) -> str:
+    def get_grid_state(self) -> GridState:
         """
-        Simple phase detection based on list lengths as per data_flow.md.
-        Phase names are mostly for documentation and logging.
+        Simple state detection based on order composition (v10 strategy).
         """
         stop_count = len(self.trailing_stop)
         buy_count = len(self.trailing_buy)
 
-        # Determine the current phase
-        match (stop_count, buy_count):
-            case (4, 0):
-                # Pure long position with stops
-                current_phase = "advance"
-
-            case (0, 4):
-                # Pure cash position with buy orders
-                current_phase = "decline"
-
-            case (s, b) if s > 0 and b > 0:
-                # Mixed state - have both stops and buys
-                # Retracement if we were in advance, recovery if we were in decline
-                if self.last_phase in ["advance", "retracement"]:
-                    current_phase = "retracement"
-                else:
-                    current_phase = "recovery"
-
-            case _:
-                # Edge case - shouldn't normally happen
-                current_phase = self.last_phase if hasattr(self, 'last_phase') else "advance"
-
-        # Update last_phase for next call
-        self.last_phase = current_phase
-        return current_phase
+        # Determine grid state based on order composition
+        if stop_count == 4 and buy_count == 0:
+            return GridState.FULL_POSITION
+        elif stop_count == 0 and buy_count == 4:
+            return GridState.FULL_CASH
+        else:
+            return GridState.MIXED
     
     
     def _ensure_sufficient_units(self):
@@ -180,7 +157,7 @@ class UnitTracker:
         """
         return {
             'current_unit': self.current_unit,
-            'phase': self.get_phase(),
+            'grid_state': self.get_grid_state().value,
             'trailing_stop': self.trailing_stop.copy(),
             'trailing_buy': self.trailing_buy.copy(),
             'total_orders': len(self.trailing_stop) + len(self.trailing_buy),
@@ -234,12 +211,13 @@ class UnitTracker:
         logger.info(f"Realized PnL: ${pnl:.2f} (Total: ${self.current_realized_pnl:.2f})")
 
     def get_adjusted_fragment_usd(self) -> Decimal:
-        """Get fragment size adjusted for realized PnL (for recovery phase)
+        """Get fragment size adjusted for realized PnL (for compounding)
 
-        In recovery phase, we reinvest PnL by dividing it by 4 and adding to fragments
+        When we have cash available and PnL, reinvest by dividing it by active buy orders
         """
-        if self.get_phase() == "recovery" and self.current_realized_pnl > 0:
-            pnl_per_fragment = self.current_realized_pnl / Decimal("4")
+        buy_count = len(self.trailing_buy)
+        if buy_count > 0 and self.current_realized_pnl > 0:
+            pnl_per_fragment = self.current_realized_pnl / Decimal(str(buy_count))
             adjusted_fragment = self.position_state.long_fragment_usd + pnl_per_fragment
             logger.debug(f"Adjusted fragment: ${adjusted_fragment:.2f} (base: ${self.position_state.long_fragment_usd:.2f} + pnl: ${pnl_per_fragment:.2f})")
             return adjusted_fragment

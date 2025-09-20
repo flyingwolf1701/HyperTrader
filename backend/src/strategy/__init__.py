@@ -3,7 +3,7 @@
 # Import from data models
 from .data_models import (
     OrderType,
-    Phase,
+    GridState,
     ExecutionStatus,
     PositionState,
     PositionConfig,
@@ -27,7 +27,7 @@ from .unit_tracker import UnitTracker
 __all__ = [
     # Data models
     'OrderType',
-    'Phase',
+    'GridState',
     'ExecutionStatus',
     'PositionState',
     'PositionConfig',
