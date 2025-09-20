@@ -42,7 +42,7 @@ class PositionConfig:
 - Must track whether order is stop or limit type
 
 ### 4. Missing Phase Tracking
-**Problem**: No phase tracking (ADVANCE, RETRACEMENT, DECLINE, RECOVER, RESET) which is critical for long wallet strategy execution.
+**Problem**: No phase tracking (ADVANCE, RETRACEMENT, DECLINE, RECOVERY, RESET) which is critical for long wallet strategy execution.
 
 **Proposed Solution**: Phase tracking should be in unit_tracker.py, but position_map needs to support it:
 ```python
@@ -51,7 +51,7 @@ class Phase(Enum):
     ADVANCE = "advance"
     RETRACEMENT = "retracement"
     DECLINE = "decline"
-    RECOVER = "recover"
+    RECOVERY = "RECOVERY"
     RESET = "reset"
 ```
 

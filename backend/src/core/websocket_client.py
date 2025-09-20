@@ -10,7 +10,6 @@ from datetime import datetime
 from typing import Optional
 from loguru import logger
 
-from strategy.unit_tracker import UnitTracker
 
 class HyperliquidWebSocketClient:
     """WebSocket client with CORRECT Hyperliquid heartbeat implementation"""
@@ -19,7 +18,6 @@ class HyperliquidWebSocketClient:
         self.ws_url = "wss://api.hyperliquid-testnet.xyz/ws" if testnet else "wss://api.hyperliquid.xyz/ws"
         self.websocket: Optional[websockets.WebSocketClientProtocol] = None
         self.is_connected = False
-        self.unit_trackers = {}  # Dict[symbol, UnitTracker] for multiple symbols
         self.price_callbacks = {}  # Dict[symbol, callable] for price change callbacks
         self.fill_callbacks = {}  # Dict[symbol, callable] for order fill callbacks
         self.user_address = user_address  # User's wallet address for order tracking
@@ -84,31 +82,19 @@ class HyperliquidWebSocketClient:
             logger.error(f"Failed to subscribe to user fills: {e}")
             return False
     
-    async def subscribe_to_trades(self, symbol: str, unit_size_usd: Decimal = Decimal("2.0"), unit_tracker: UnitTracker = None, price_callback: callable = None, fill_callback: callable = None) -> bool:
-        """Subscribe to trade data for a symbol and initialize unit tracking"""
+    async def subscribe_to_trades(self, symbol: str, price_callback: callable = None, fill_callback: callable = None) -> bool:
+        """Subscribe to trade data for a symbol"""
         if not self.is_connected or not self.websocket:
             logger.error("WebSocket not connected. Call connect() first.")
             return False
-        
-        # Use provided tracker (required for new sliding window strategy)
-        if unit_tracker:
-            self.unit_trackers[symbol] = unit_tracker
-        else:
-            logger.error(f"UnitTracker is required for {symbol} subscription")
-            return False
-        
-        # Store price callback if provided (can be None initially)
+
+        # Store price callback if provided
         if price_callback:
             self.price_callbacks[symbol] = price_callback
-        elif symbol not in self.price_callbacks:
-            # Initialize with None if no callback provided yet
-            self.price_callbacks[symbol] = None
-        
+
         # Store fill callback if provided
         if fill_callback:
             self.fill_callbacks[symbol] = fill_callback
-        elif symbol not in self.fill_callbacks:
-            self.fill_callbacks[symbol] = None
         
         subscription_message = {
             "method": "subscribe",
@@ -120,7 +106,7 @@ class HyperliquidWebSocketClient:
         
         try:
             await self.websocket.send(json.dumps(subscription_message))
-            logger.info(f"Subscribed to {symbol} trades with unit size ${unit_size_usd}")
+            logger.info(f"Subscribed to {symbol} trades")
             return True
         except Exception as e:
             logger.error(f"Failed to subscribe to {symbol} trades: {e}")
@@ -248,7 +234,7 @@ class HyperliquidWebSocketClient:
             self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
             
             # Re-subscribe to all symbols
-            for symbol, tracker in self.unit_trackers.items():
+            for symbol in self.price_callbacks.keys():
                 subscription_message = {
                     "method": "subscribe",
                     "subscription": {
@@ -316,56 +302,46 @@ class HyperliquidWebSocketClient:
             logger.error(f"Error processing message: {e} - Message: {message[:100]}")
     
     async def _handle_trades(self, data: dict):
-        """Handle trade data and update unit tracking - RATE LIMITED VERSION"""
+        """Handle trade data and pass to callbacks"""
         if "data" not in data or len(data["data"]) == 0:
             return
-            
+
         trades = data["data"]
-        
-        # CRITICAL FIX: Only process the LAST trade to prevent rapid oscillation
+
+        # Only process the LAST trade to prevent rapid updates
         if trades:
             trade = trades[-1]  # Only process the most recent trade
             coin = trade.get("coin")
             price_str = trade.get("px")
-            
-            if coin and price_str and coin in self.unit_trackers:
+
+            if coin and price_str:
                 price = Decimal(price_str)
-                
-                # Get unit tracker for this symbol
-                tracker = self.unit_trackers[coin]
-                
-                # CRITICAL FIX: Always call price callback for every price update
-                # The main.py handler needs to see ALL prices to properly manage orders
+
+                # Pass price to callback if registered
                 if coin in self.price_callbacks and self.price_callbacks[coin] is not None:
-                    self.price_callbacks[coin](Decimal(str(price)))
-                
-                # Check for unit changes (for logging purposes)
-                unit_changed = tracker.calculate_unit_change(price)
-                
+                    self.price_callbacks[coin](price)
+
                 # Simple periodic logging (every 60 seconds)
-                if not hasattr(tracker, 'last_logged_time'):
-                    tracker.last_logged_time = datetime.now()
-                    if hasattr(tracker, 'position_state') and tracker.position_state:
-                        logger.info(f"{coin} tracking started at ${tracker.position_state.entry_price:.2f}")
+                if not hasattr(self, '_last_price_log'):
+                    self._last_price_log = {}
+
+                if coin not in self._last_price_log:
+                    self._last_price_log[coin] = datetime.now()
+                    logger.info(f"{coin} price feed started: ${price:.2f}")
                 else:
-                    time_since_log = (datetime.now() - tracker.last_logged_time).total_seconds()
+                    time_since_log = (datetime.now() - self._last_price_log[coin]).total_seconds()
                     if time_since_log >= 60:  # Every 60 seconds
-                        logger.info(f"{coin}: ${price:.2f} | Unit: {tracker.current_unit}")
-                        tracker.last_logged_time = datetime.now()
-                
-                # Unit change logging (unit_changed already calculated above)
-                if unit_changed:
-                    logger.warning(f"{coin} UNIT CHANGE DETECTED in WebSocket!")
-                    self._log_phase_info(coin, tracker)
-                        
+                        logger.debug(f"{coin}: ${price:.2f}")
+                        self._last_price_log[coin] = datetime.now()
+
                 # Add periodic connection verification
                 if not hasattr(self, '_last_heartbeat_log'):
                     self._last_heartbeat_log = datetime.now()
-                    
+
                 # Log connection status every 2 minutes
                 time_since_heartbeat = datetime.now() - self._last_heartbeat_log
                 if time_since_heartbeat.total_seconds() >= 120:
-                    logger.info(f"Connection healthy - Last {coin} trade: ${price:.2f}")
+                    logger.debug(f"Connection healthy - Last {coin} trade: ${price:.2f}")
                     self._last_heartbeat_log = datetime.now()
     
     async def _handle_user_fills(self, data: dict):
@@ -436,13 +412,3 @@ class HyperliquidWebSocketClient:
                         price,         # filled_price  
                         size           # filled_size
                     )
-    
-    def _log_phase_info(self, coin: str, tracker: UnitTracker):
-        """Log phase-relevant information after unit change"""
-        window_state = tracker.get_window_state()
-        logger.info(
-            f"{coin} Phase Info - "
-            f"Phase: {tracker.phase.value} | "
-            f"Current Unit: {tracker.current_unit} | "
-            f"Window: {len(window_state['sell_orders'])}S/{len(window_state['buy_orders'])}B"
-        )

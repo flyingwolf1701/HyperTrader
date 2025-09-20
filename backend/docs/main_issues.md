@@ -39,7 +39,7 @@ async def _place_window_orders(self):
 ### 3. Missing Dual Window Management
 **Problem**: Doesn't track two separate windows for long wallet:
 - `stop_loss_orders` window (4 stop-losses)
-- `limit_buy_orders` window (4 limit buys when in DECLINE/RECOVER)
+- `limit_buy_orders` window (4 limit buys when in DECLINE/RECOVERY)
 
 **Proposed Solution**: Track both windows separately in unit_tracker and coordinate in main:
 ```python
@@ -145,8 +145,8 @@ class GrowthTracker:
     cycle_end_value: Decimal
 ```
 
-### 9. Incomplete Error Recovery
-**Problem**: No recovery mechanism if orders fail or connection drops.
+### 9. Incomplete Error RECOVERYy
+**Problem**: No RECOVERYy mechanism if orders fail or connection drops.
 
 **Proposed Solution**: Add retry logic:
 ```python
@@ -183,7 +183,7 @@ async def _validate_position_state(self):
 6. **Complete RESET implementation** with proper compounding
 7. **Add phase-specific order management**
 8. **Track compound growth** properly
-9. **Implement error recovery** with retries
+9. **Implement error RECOVERYy** with retries
 10. **Add position validation** and reconciliation
 
 ## Priority Recommendations
@@ -199,6 +199,6 @@ async def _validate_position_state(self):
 - Add position validation
 
 **Low Priority**:
-- Add error recovery
+- Add error RECOVERYy
 - Track compound growth metrics
 - Enhance logging

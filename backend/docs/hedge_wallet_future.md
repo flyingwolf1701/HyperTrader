@@ -77,7 +77,7 @@ class HedgePositionState:
 - **Window Sliding**: As price falls, stop-losses trail downward
 - **Transition**: To RECOVER when first stop-loss cover triggers
 
-### RECOVER Phase (Hedge)
+### RECOVERY Phase (Hedge)
 - **State**: Partially covered shorts
 - **Orders**: Mix of stop-loss covers and stop-entry shorts
 - **Transitions**:
