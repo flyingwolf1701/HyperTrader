@@ -42,21 +42,38 @@ class StrategyRunner:
         elif Path('.env').exists():
             load_dotenv('.env')  # From backend directory
 
-        # Load wallet - check both possible env variable names
-        private_key = os.getenv("HYPERLIQUID_PRIVATE_KEY") or os.getenv("HYPERLIQUID_TESTNET_PRIVATE_KEY")
+        # Load wallet and addresses from environment
+        private_key = os.getenv("HYPERLIQUID_PRIVATE_KEY")
         if not private_key:
-            raise ValueError("HYPERLIQUID_PRIVATE_KEY or HYPERLIQUID_TESTNET_PRIVATE_KEY environment variable not set")
+            raise ValueError("HYPERLIQUID_PRIVATE_KEY environment variable not set")
+
+        main_wallet_address = os.getenv("HYPERLIQUID_MAIN_WALLET_ADDRESS")
+        if not main_wallet_address:
+            raise ValueError("HYPERLIQUID_MAIN_WALLET_ADDRESS environment variable not set")
+
+        sub_wallet_address = os.getenv("HYPERLIQUID_SUB_WALLET_ADDRESS")
 
         account = Account.from_key(private_key)
-        user_address = account.address
+
+        # Determine which wallet to use based on config
+        if self.config.wallet == "hedge":
+            user_address = sub_wallet_address
+            vault_address = sub_wallet_address
+            logger.info(f"Using sub-wallet (hedge): {sub_wallet_address[:8]}...")
+        else:
+            user_address = main_wallet_address
+            vault_address = None  # No vault for main wallet
+            logger.info(f"Using main wallet: {main_wallet_address[:8]}...")
+
         # Mask the wallet address for security
         masked_address = f"{user_address[:6]}...{user_address[-4:]}" if user_address else "Unknown"
         logger.success(f"Wallet loaded: {masked_address}")
 
-        # Initialize REST API Client
+        # Initialize REST API Client with account and vault if needed
         self.exchange_sdk = HyperliquidSDK(
-            wallet_address=user_address,
-            is_mainnet=not self.config.testnet
+            account=account,
+            is_mainnet=not self.config.testnet,
+            vault_address=vault_address
         )
         await self.exchange_sdk.initialize()
 
@@ -79,8 +96,8 @@ class StrategyRunner:
             asset_config=asset_config
         )
 
-        # Initialize WebSocket Client
-        self.ws_client = HyperliquidSDKClient(account=account, testnet=self.config.testnet)
+        # Initialize WebSocket Client with the correct wallet address
+        self.ws_client = HyperliquidSDKClient(account=account, testnet=self.config.testnet, wallet_address=user_address)
         await self.ws_client.connect()
 
         logger.success("All components initialized")

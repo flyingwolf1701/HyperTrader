@@ -14,16 +14,19 @@ from hyperliquid.info import Info
 class HyperliquidSDKClient:
     """A WebSocket client that uses Hyperliquid SDK's Info class for subscriptions."""
 
-    def __init__(self, account: LocalAccount, testnet: bool = True):
+    def __init__(self, account: LocalAccount, testnet: bool = True, wallet_address: Optional[str] = None):
         """
         Initializes the SDK-based WebSocket client.
 
         Args:
             account: An eth_account.LocalAccount object for authentication.
             testnet: A boolean indicating whether to connect to the testnet.
+            wallet_address: Optional wallet address to use (for sub-wallets).
         """
         self.account = account
         self.testnet = testnet
+        # Use provided wallet address or derive from account
+        self.wallet_address = wallet_address if wallet_address else account.address
         self.info: Optional[Info] = None
 
         # Callbacks for processing different types of events
@@ -112,7 +115,7 @@ class HyperliquidSDKClient:
         self.cancel_callback = cancel_callback
 
         # Subscribe to user events
-        subscription = {"type": "userEvents", "user": self.account.address}
+        subscription = {"type": "userEvents", "user": self.wallet_address}
 
         def handle_user_events(data):
             """Handle incoming user event data"""
@@ -128,7 +131,7 @@ class HyperliquidSDKClient:
 
         self.info.subscribe(subscription, handle_user_events)
         # Mask the wallet address for security
-        masked_address = f"{self.account.address[:6]}...{self.account.address[-4:]}"
+        masked_address = f"{self.wallet_address[:6]}...{self.wallet_address[-4:]}"
         logger.success(f"Subscribed to userEvents for address: {masked_address}")
 
     def _process_user_event(self, event_data: Dict):

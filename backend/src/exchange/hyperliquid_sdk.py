@@ -14,27 +14,23 @@ from hyperliquid.utils.signing import get_timestamp_ms
 class HyperliquidSDK:
     """A wrapper for the Hyperliquid SDK to handle REST API calls."""
 
-    def __init__(self, wallet_address: str, is_mainnet: bool = False):
+    def __init__(self, account: LocalAccount, is_mainnet: bool = False, vault_address: Optional[str] = None):
         """
         Initializes the Hyperliquid SDK wrapper.
 
         Args:
-            wallet_address: The user's wallet address.
+            account: The LocalAccount object with signing capability.
             is_mainnet: A boolean indicating whether to connect to the mainnet.
+            vault_address: Optional vault address for sub-wallet trading.
         """
-        self.wallet_address = wallet_address
+        self.account = account
+        self.vault_address = vault_address
+        # Use vault address if provided, otherwise use account address
+        self.wallet_address = vault_address if vault_address else account.address
         self.is_mainnet = is_mainnet
         self.info: Optional[Info] = None
         self.exchange: Optional[Exchange] = None
         self.meta: Optional[Dict[str, Any]] = None
-        self.account: Optional[LocalAccount] = None
-        
-        # Load private key from environment variables - check both possible names
-        private_key = os.getenv("HYPERLIQUID_PRIVATE_KEY") or os.getenv("HYPERLIQUID_TESTNET_PRIVATE_KEY")
-        if not private_key:
-            raise ValueError("FATAL: HYPERLIQUID_PRIVATE_KEY or HYPERLIQUID_TESTNET_PRIVATE_KEY environment variable not set.")
-        
-        self.account = Account.from_key(private_key)
 
     async def initialize(self):
         """Initializes the SDK clients and fetches metadata."""
@@ -42,7 +38,12 @@ class HyperliquidSDK:
         logger.info(f"Initializing Hyperliquid REST SDK clients on {network}...")
         try:
             self.info = Info(self.is_mainnet)
-            self.exchange = Exchange(self.account, self.is_mainnet)
+            # Pass vault_address if we're using a sub-wallet
+            if self.vault_address:
+                self.exchange = Exchange(self.account, self.is_mainnet, vault_address=self.vault_address)
+                logger.info(f"Using vault address: {self.vault_address[:8]}...")
+            else:
+                self.exchange = Exchange(self.account, self.is_mainnet)
             self.meta = self.info.meta()
             logger.success("Hyperliquid REST SDK initialized and metadata loaded.")
         except Exception as e:
