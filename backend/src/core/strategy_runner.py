@@ -43,37 +43,48 @@ class StrategyRunner:
             load_dotenv('.env')  # From backend directory
 
         # Load wallet and addresses from environment
-        private_key = os.getenv("HYPERLIQUID_PRIVATE_KEY")
+        # Use the API wallet private key for signing transactions
+        private_key = os.getenv("HYPERLIQUID_TESTNET_API_PRIVATE_KEY")
         if not private_key:
-            raise ValueError("HYPERLIQUID_PRIVATE_KEY environment variable not set")
+            raise ValueError("HYPERLIQUID_TESTNET_API_PRIVATE_KEY environment variable not set")
 
-        main_wallet_address = os.getenv("HYPERLIQUID_MAIN_WALLET_ADDRESS")
+        # Main wallet address that we're trading for
+        main_wallet_address = os.getenv("HYPERLIQUID_WALLET_ADDRESS")
         if not main_wallet_address:
-            raise ValueError("HYPERLIQUID_MAIN_WALLET_ADDRESS environment variable not set")
+            raise ValueError("HYPERLIQUID_WALLET_ADDRESS environment variable not set")
 
-        sub_wallet_address = os.getenv("HYPERLIQUID_SUB_WALLET_ADDRESS")
+        # API wallet address (for reference/logging)
+        api_wallet_address = os.getenv("HYPERLIQUID_TESTNET_API_ADDRESS")
 
+        # Create account from API wallet private key
         account = Account.from_key(private_key)
 
-        # Determine which wallet to use based on config
-        if self.config.wallet == "hedge":
-            user_address = sub_wallet_address
-            vault_address = sub_wallet_address
-            logger.info(f"Using sub-wallet (hedge): {sub_wallet_address[:8]}...")
-        else:
+        # When using an API wallet to trade for the main wallet:
+        # - The API wallet (account) signs the transactions
+        # - We don't use vault_address (that's only for sub-accounts)
+        # - The wallet_address tells the SDK which wallet we're tracking
+        if self.config.wallet == "long":
             user_address = main_wallet_address
-            vault_address = None  # No vault for main wallet
+            vault_address = None  # No vault for main wallet trading
+            logger.info(f"Trading for main wallet: {main_wallet_address[:8]}...")
+            logger.info(f"Using API wallet for signing: {api_wallet_address[:8] if api_wallet_address else account.address[:8]}...")
+        else:
+            # For other wallet types, adjust as needed
+            user_address = main_wallet_address
+            vault_address = None
             logger.info(f"Using main wallet: {main_wallet_address[:8]}...")
 
         # Mask the wallet address for security
         masked_address = f"{user_address[:6]}...{user_address[-4:]}" if user_address else "Unknown"
         logger.success(f"Wallet loaded: {masked_address}")
 
-        # Initialize REST API Client with account and vault if needed
+        # Initialize REST API Client
+        # Pass the wallet_address to track the correct wallet's state
         self.exchange_sdk = HyperliquidSDK(
             account=account,
             is_mainnet=not self.config.testnet,
-            vault_address=vault_address
+            vault_address=vault_address,
+            wallet_address=user_address
         )
         await self.exchange_sdk.initialize()
 

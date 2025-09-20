@@ -14,19 +14,21 @@ from hyperliquid.utils.signing import get_timestamp_ms
 class HyperliquidSDK:
     """A wrapper for the Hyperliquid SDK to handle REST API calls."""
 
-    def __init__(self, account: LocalAccount, is_mainnet: bool = False, vault_address: Optional[str] = None):
+    def __init__(self, account: LocalAccount, is_mainnet: bool = False,
+                 vault_address: Optional[str] = None, wallet_address: Optional[str] = None):
         """
         Initializes the Hyperliquid SDK wrapper.
 
         Args:
-            account: The LocalAccount object with signing capability.
+            account: The LocalAccount object with signing capability (API wallet).
             is_mainnet: A boolean indicating whether to connect to the mainnet.
             vault_address: Optional vault address for sub-wallet trading.
+            wallet_address: The wallet address we're trading for (if different from account).
         """
         self.account = account
         self.vault_address = vault_address
-        # Use vault address if provided, otherwise use account address
-        self.wallet_address = vault_address if vault_address else account.address
+        # Use the specified wallet address, vault address, or account address (in that order)
+        self.wallet_address = wallet_address or vault_address or account.address
         self.is_mainnet = is_mainnet
         self.info: Optional[Info] = None
         self.exchange: Optional[Exchange] = None
@@ -36,14 +38,22 @@ class HyperliquidSDK:
         """Initializes the SDK clients and fetches metadata."""
         network = "MAINNET" if self.is_mainnet else "TESTNET"
         logger.info(f"Initializing Hyperliquid REST SDK clients on {network}...")
+
+        # Set the correct base URL for testnet or mainnet
+        base_url = None if self.is_mainnet else "https://api.hyperliquid-testnet.xyz"
+
         try:
             self.info = Info(self.is_mainnet)
-            # Pass vault_address if we're using a sub-wallet
+            # Pass vault_address to ensure orders are placed for the correct wallet
             if self.vault_address:
-                self.exchange = Exchange(self.account, self.is_mainnet, vault_address=self.vault_address)
+                self.exchange = Exchange(
+                    self.account,
+                    base_url=base_url,
+                    vault_address=self.vault_address
+                )
                 logger.info(f"Using vault address: {self.vault_address[:8]}...")
             else:
-                self.exchange = Exchange(self.account, self.is_mainnet)
+                self.exchange = Exchange(self.account, base_url=base_url)
             self.meta = self.info.meta()
             logger.success("Hyperliquid REST SDK initialized and metadata loaded.")
         except Exception as e:
