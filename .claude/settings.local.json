@@ -12,7 +12,8 @@
       "Read(//c/Users/trini/Pictures/Screenshots/**)",
       "Bash(pytest:*)",
       "Read(//c/Users/trini/Downloads/**)",
-      "Bash(/bashes)"
+      "Bash(/bashes)",
+      "Bash(timeout:*)"
     ],
     "deny": [],
     "ask": [],

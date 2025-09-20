@@ -79,10 +79,13 @@ class HyperliquidSDKClient:
         # The SDK's subscribe method returns a callback function
         def handle_trades(data):
             """Handle incoming trade data"""
+            # Don't try to slice data - it might not be a list
+            logger.trace(f"Received trade data for {symbol}")
             if data and isinstance(data, list) and len(data) > 0:
                 latest_trade = data[-1]
                 if "px" in latest_trade:
                     price = Decimal(str(latest_trade["px"]))
+                    logger.debug(f"Trade price for {symbol}: ${price}")
                     # Run callback in event loop if it's async
                     if asyncio.iscoroutinefunction(price_callback):
                         asyncio.create_task(price_callback(price))
@@ -124,7 +127,9 @@ class HyperliquidSDKClient:
                     self._process_user_event(event)
 
         self.info.subscribe(subscription, handle_user_events)
-        logger.success(f"Subscribed to userEvents for address: {self.account.address}")
+        # Mask the wallet address for security
+        masked_address = f"{self.account.address[:6]}...{self.account.address[-4:]}"
+        logger.success(f"Subscribed to userEvents for address: {masked_address}")
 
     def _process_user_event(self, event_data: Dict):
         """Process a single user event"""

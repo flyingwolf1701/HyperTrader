@@ -12,8 +12,22 @@ from dotenv import load_dotenv
 from core.config import StrategyConfig
 from core.strategy_runner import run_strategy
 
-# Load environment variables
-load_dotenv()
+# Load environment variables from backend directory
+import os
+from pathlib import Path
+
+# Find the .env file - it's in the backend directory
+if Path('../.env').exists():
+    # Running from src directory
+    load_dotenv('../.env')
+elif Path('.env').exists():
+    # Running from backend directory
+    load_dotenv('.env')
+else:
+    # Try to find it relative to the script
+    backend_dir = Path(__file__).parent.parent
+    env_path = backend_dir / '.env'
+    load_dotenv(env_path)
 
 
 def parse_arguments():

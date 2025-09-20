@@ -87,12 +87,13 @@ class V10StrategyManager:
 
         logger.info(f"Placing market buy for {asset_size} {self.asset} at ~${current_price:.2f}")
 
+        # Use limit order with IOC for market-like execution
         order_data = {
             "coin": self.asset,
             "is_buy": True,
             "sz": float(asset_size),
-            "limit_px": None,  # Market order
-            "order_type": {"market": {}}
+            "limit_px": float(current_price * Decimal("1.01")),  # 1% slippage tolerance
+            "order_type": {"limit": {"tif": "Ioc"}}  # Immediate or Cancel
         }
 
         response = await self.exchange.place_order(order_data)
@@ -138,17 +139,17 @@ class V10StrategyManager:
         for unit in [-1, -2, -3, -4]:
             trigger_price = self.position_state.get_price_for_unit(unit)
 
-            # Place stop-loss sell order
+            # Place stop-loss sell order using trigger format
             order_data = {
                 "coin": self.asset,
                 "is_buy": False,
                 "sz": float(fragment_size),
-                "limit_px": float(trigger_price),
+                "limit_px": float(trigger_price * Decimal("0.99")),  # Limit price slightly below trigger
                 "order_type": {
                     "trigger": {
-                        "trigger_px": float(trigger_price),
-                        "is_market": True,
-                        "tp_sl": "sl"  # Stop-loss
+                        "triggerPx": float(trigger_price),
+                        "isMarket": True,
+                        "tpsl": "sl"  # Stop-loss
                     }
                 }
             }
@@ -232,12 +233,12 @@ class V10StrategyManager:
             "coin": self.asset,
             "is_buy": False,
             "sz": float(fragment_size),
-            "limit_px": float(trigger_price),
+            "limit_px": float(trigger_price * Decimal("0.99")),
             "order_type": {
                 "trigger": {
-                    "trigger_px": float(trigger_price),
-                    "is_market": True,
-                    "tp_sl": "sl"
+                    "triggerPx": float(trigger_price),
+                    "isMarket": True,
+                    "tpsl": "sl"
                 }
             }
         }
@@ -282,12 +283,12 @@ class V10StrategyManager:
             "coin": self.asset,
             "is_buy": True,
             "sz": float(asset_size),
-            "limit_px": float(trigger_price),
+            "limit_px": float(trigger_price * Decimal("1.01")),  # Limit above trigger for buys
             "order_type": {
                 "trigger": {
-                    "trigger_px": float(trigger_price),
-                    "is_market": True,
-                    "tp_sl": "sl"  # Stop-loss (acts as stop-entry for buys)
+                    "triggerPx": float(trigger_price),
+                    "isMarket": True,
+                    "tpsl": "tp"  # Take-profit acts as stop-entry for buys
                 }
             }
         }

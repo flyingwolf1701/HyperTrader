@@ -29,16 +29,17 @@ class HyperliquidSDK:
         self.meta: Optional[Dict[str, Any]] = None
         self.account: Optional[LocalAccount] = None
         
-        # Load private key from environment variables
-        private_key = os.getenv("HYPERLIQUID_PRIVATE_KEY")
+        # Load private key from environment variables - check both possible names
+        private_key = os.getenv("HYPERLIQUID_PRIVATE_KEY") or os.getenv("HYPERLIQUID_TESTNET_PRIVATE_KEY")
         if not private_key:
-            raise ValueError("FATAL: HYPERLIQUID_PRIVATE_KEY environment variable not set.")
+            raise ValueError("FATAL: HYPERLIQUID_PRIVATE_KEY or HYPERLIQUID_TESTNET_PRIVATE_KEY environment variable not set.")
         
         self.account = Account.from_key(private_key)
 
     async def initialize(self):
         """Initializes the SDK clients and fetches metadata."""
-        logger.info("Initializing Hyperliquid REST SDK clients...")
+        network = "MAINNET" if self.is_mainnet else "TESTNET"
+        logger.info(f"Initializing Hyperliquid REST SDK clients on {network}...")
         try:
             self.info = Info(self.is_mainnet)
             self.exchange = Exchange(self.account, self.is_mainnet)
@@ -109,11 +110,20 @@ class HyperliquidSDK:
         
         logger.info(f"Placing order: {order_data}")
         try:
+            # Handle market orders - SDK requires a limit_px even for market orders
+            limit_px = order_data.get("limit_px")
+            if limit_px is None:
+                # For market orders, use a very high/low price to ensure execution
+                if order_data["is_buy"]:
+                    limit_px = 1000000.0  # High price for market buy
+                else:
+                    limit_px = 0.01  # Low price for market sell
+
             response = self.exchange.order(
                 order_data["coin"],
                 order_data["is_buy"],
                 order_data["sz"],
-                order_data["limit_px"],
+                limit_px,
                 order_data["order_type"]
             )
             return response

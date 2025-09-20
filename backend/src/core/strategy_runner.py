@@ -30,14 +30,28 @@ class StrategyRunner:
         """Initialize all components"""
         logger.info(f"Initializing strategy for {self.config.symbol}")
 
-        # Load wallet
-        private_key = os.getenv("HYPERLIQUID_PRIVATE_KEY")
+        # Ensure environment variables are loaded
+        from pathlib import Path
+        from dotenv import load_dotenv
+
+        # Try to find .env file in various locations
+        if Path('../../.env').exists():
+            load_dotenv('../../.env')  # From core directory
+        elif Path('../.env').exists():
+            load_dotenv('../.env')  # From src directory
+        elif Path('.env').exists():
+            load_dotenv('.env')  # From backend directory
+
+        # Load wallet - check both possible env variable names
+        private_key = os.getenv("HYPERLIQUID_PRIVATE_KEY") or os.getenv("HYPERLIQUID_TESTNET_PRIVATE_KEY")
         if not private_key:
-            raise ValueError("HYPERLIQUID_PRIVATE_KEY environment variable not set")
+            raise ValueError("HYPERLIQUID_PRIVATE_KEY or HYPERLIQUID_TESTNET_PRIVATE_KEY environment variable not set")
 
         account = Account.from_key(private_key)
         user_address = account.address
-        logger.success(f"Wallet loaded: {user_address}")
+        # Mask the wallet address for security
+        masked_address = f"{user_address[:6]}...{user_address[-4:]}" if user_address else "Unknown"
+        logger.success(f"Wallet loaded: {masked_address}")
 
         # Initialize REST API Client
         self.exchange_sdk = HyperliquidSDK(
@@ -85,6 +99,7 @@ class StrategyRunner:
 
             def update_price(price: Decimal):
                 self.current_price = price
+                logger.debug(f"Price updated: ${price}")
 
             def get_current_price():
                 return self.current_price
@@ -131,18 +146,40 @@ class StrategyRunner:
         """Main strategy loop"""
         logger.info("Starting v10 strategy loop...")
 
-        # Wait for price feed
-        await asyncio.sleep(5)
+        # Wait for price feed or fetch directly
+        max_attempts = 10
+        for attempt in range(max_attempts):
+            await asyncio.sleep(2)
+            current_price = get_current_price()
+
+            if not current_price:
+                # Try to get price directly from REST API
+                logger.info(f"Waiting for price feed... attempt {attempt + 1}/{max_attempts}")
+
+                # Fetch price using the Info API
+                try:
+                    if self.exchange_sdk and self.exchange_sdk.info:
+                        # Get the mid price for the asset
+                        mids = self.exchange_sdk.info.all_mids()
+                        if mids and self.config.symbol in mids:
+                            current_price = Decimal(str(mids[self.config.symbol]))
+                            self.current_price = current_price
+                            logger.info(f"Fetched price from REST API: ${current_price}")
+                except Exception as e:
+                    logger.debug(f"Could not fetch price from REST: {e}")
+
+            if current_price:
+                break
 
         # Initialize position
-        current_price = get_current_price()
         if current_price:
+            logger.info(f"Initializing position at price: ${current_price}")
             success = await self.strategy_manager.initialize_position(current_price)
             if not success:
                 logger.error("Failed to initialize strategy position")
                 return
         else:
-            logger.error("No price available to initialize strategy")
+            logger.error(f"No price available after {max_attempts} attempts")
             return
 
         # Main loop
