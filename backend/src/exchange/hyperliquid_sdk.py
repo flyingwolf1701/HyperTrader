@@ -509,7 +509,7 @@ class HyperliquidClient:
             order_type = {
                 "trigger": {
                     "triggerPx": float(rounded_trigger),
-                    "isMarket": False,  # Use limit orders with proper tick sizing
+                    "isMarket": True, 
                     "tpsl": "sl"  # Stop loss type
                 }
             }
@@ -604,13 +604,13 @@ class HyperliquidClient:
                 f"limit @ ${rounded_limit:.2f}"
             )
             
-            # Create trigger order (NOT a TP/SL order, since we're opening/increasing position)
-            # This is a regular stop order that triggers when price rises
+            # Create stop buy order type (triggers when price rises)
+            # Using "tp" (take profit) for buy orders that trigger when price goes UP
             order_type = {
                 "trigger": {
                     "triggerPx": float(rounded_trigger),
-                    "isMarket": False  # Execute as limit when triggered
-                    # NOTE: Removed "tpsl" parameter - TP/SL orders are only for closing positions
+                    "isMarket": True,
+                    "tpsl": "tp"  # Take profit type (for buy orders, triggers when price rises above)
                 }
             }
             
@@ -788,6 +788,116 @@ class HyperliquidClient:
             logger.error(f"Error cancelling order: {e}")
             return False
     
+    def modify_stop_order(
+        self,
+        order_id: int,
+        symbol: str,
+        is_buy: bool,
+        size: Decimal,
+        new_trigger_price: Decimal
+    ) -> OrderResult:
+        """
+        Modifies an existing stop order by changing its trigger price.
+        More efficient than cancel/replace for trailing stops.
+
+        Args:
+            order_id: The existing order ID to modify
+            symbol: Trading pair symbol (e.g., 'ETH', 'BTC')
+            is_buy: True for buy, False for sell
+            size: Order size in base currency
+            new_trigger_price: New trigger price for the stop order
+
+        Returns:
+            OrderResult with modification details
+        """
+        try:
+            # Round trigger price to tick size
+            from .asset_config import round_to_tick
+            rounded_trigger = round_to_tick(new_trigger_price, symbol)
+
+            logger.info(
+                f"Modifying stop order {order_id}: New trigger @ ${rounded_trigger:.2f}"
+            )
+
+            # Create modified order type
+            if is_buy:
+                # For stop buys (trigger when price rises)
+                order_type = {
+                    "trigger": {
+                        "triggerPx": float(rounded_trigger),
+                        "isMarket": True,
+                        "tpsl": "tp"  # Take profit for buys
+                    }
+                }
+            else:
+                # For stop sells (trigger when price falls)
+                order_type = {
+                    "trigger": {
+                        "triggerPx": float(rounded_trigger),
+                        "isMarket": True,
+                        "tpsl": "sl"  # Stop loss for sells
+                    }
+                }
+
+            # Get market info for proper decimal formatting
+            market_info = self.get_market_info(symbol)
+            sz_decimals = int(market_info.get("szDecimals", 4))
+
+            # Round size to appropriate decimals
+            rounded_size = round(float(size), sz_decimals)
+
+            # Modify the order
+            result = self.exchange.modify_order(
+                order_id,
+                {
+                    "a": self.asset_id(symbol),
+                    "b": is_buy,
+                    "p": float(rounded_trigger),  # Use trigger as limit
+                    "s": rounded_size,
+                    "r": True,  # reduce_only for stops
+                    "t": order_type
+                }
+            )
+
+            # Parse result
+            if result.get("status") == "ok":
+                response = result.get("response", {})
+                data = response.get("data", {})
+                statuses = data.get("statuses", [])
+
+                if statuses and "resting" in statuses[0]:
+                    modified_oid = statuses[0]["resting"]["oid"]
+                    logger.info(f"✅ Successfully modified stop order {order_id} -> {modified_oid}")
+                    return OrderResult(
+                        success=True,
+                        order_id=modified_oid,
+                        error_message=None
+                    )
+                else:
+                    error_msg = f"Unexpected response: {statuses}"
+                    logger.error(error_msg)
+                    return OrderResult(
+                        success=False,
+                        order_id=None,
+                        error_message=error_msg
+                    )
+            else:
+                error_msg = result.get("response", "Unknown error")
+                logger.error(f"Failed to modify order: {error_msg}")
+                return OrderResult(
+                    success=False,
+                    order_id=None,
+                    error_message=error_msg
+                )
+
+        except Exception as e:
+            logger.error(f"Error modifying stop order: {e}")
+            return OrderResult(
+                success=False,
+                order_id=None,
+                error_message=f"Error modifying order: {e}"
+            )
+
     def cancel_all_orders(self, symbol: str) -> int:
         """
         Cancel all open orders for a symbol.
