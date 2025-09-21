@@ -328,6 +328,11 @@ class HyperTrader:
 
         price = config.price
 
+        # Safety check: Don't place stop buys that would trigger immediately
+        if self.current_price and price < self.current_price:
+            logger.error(f"❌ Stop-buy at ${price:.2f} would trigger immediately (current: ${self.current_price:.2f})")
+            return None
+
         # Check for duplicate prices in active orders
         active_prices = []
         for u, cfg in self.position_map.items():
@@ -344,55 +349,26 @@ class HyperTrader:
         size = fragment_usd / price
 
         logger.info(f"📊 Stop buy details: Unit {unit}, Price ${price:.2f}, Size {size:.6f} {self.symbol}, Value ${fragment_usd:.2f}")
-        
-        # Check if price is above current market
-        current_market_price = await self._get_current_price()
-        
-        if price > current_market_price:
-            # Price is above market - use stop limit buy
-            logger.warning(f"🎯 Price ${price:.2f} > Market ${current_market_price:.2f} - Using STOP BUY")
 
-            result = self.sdk_client.place_stop_buy(
-                symbol=self.symbol,
-                size=size,
-                trigger_price=price,
-                limit_price=price,  # Use same price for limit
-                reduce_only=False  # Stop buys are for re-entry, not reduce-only
-            )
-            
-            if result.success:
-                config.set_active_order(result.order_id, OrderType.STOP_BUY)
-                # Track order ID to unit mapping (ensure string for consistency)
-                self.order_id_to_unit[str(result.order_id)] = unit
-                logger.warning(f"✅ STOP BUY SUCCESSFULLY PLACED at unit {unit} (triggers @ ${price:.2f})")
-                logger.warning(f"📝 ORDER ID TRACKING: Stop buy at unit {unit} = {result.order_id}")
-                return result.order_id
-            else:
-                logger.error(f"❌ STOP BUY FAILED at unit {unit}: {result.error_message}")
-                return None
+        # ALL buy orders are stop orders (as per v10 doc)
+        result = self.sdk_client.place_stop_buy(
+            symbol=self.symbol,
+            size=size,
+            trigger_price=price,
+            limit_price=price,  # Use same price for limit
+            reduce_only=False  # Stop buys are for re-entry, not reduce-only
+        )
+
+        if result.success:
+            config.set_active_order(result.order_id, OrderType.STOP_BUY)
+            # Track order ID to unit mapping (ensure string for consistency)
+            self.order_id_to_unit[str(result.order_id)] = unit
+            logger.warning(f"✅ STOP BUY PLACED at unit {unit} (triggers when price rises to ${price:.2f})")
+            logger.warning(f"📝 ORDER ID TRACKING: Stop buy at unit {unit} = {result.order_id}")
+            return result.order_id
         else:
-            # Price is at or below market - use LIMIT buy order
-            logger.info(f"📉 Price ${price:.2f} <= Market ${current_market_price:.2f} - Using LIMIT BUY")
-
-            result = self.sdk_client.place_limit_order(
-                symbol=self.symbol,
-                is_buy=True,
-                price=price,
-                size=size,
-                reduce_only=False,
-                post_only=True  # Maker order to avoid fees
-            )
-
-            if result.success:
-                config.set_active_order(result.order_id, OrderType.STOP_BUY)  # Track as stop buy for strategy
-                # Track order ID to unit mapping (ensure string for consistency)
-                self.order_id_to_unit[str(result.order_id)] = unit
-                logger.warning(f"✅ LIMIT BUY SUCCESSFULLY PLACED at unit {unit} @ ${price:.2f}")
-                logger.warning(f"📝 ORDER ID TRACKING: Limit buy at unit {unit} = {result.order_id}")
-                return result.order_id
-            else:
-                logger.error(f"❌ LIMIT BUY FAILED at unit {unit}: {result.error_message}")
-                return None
+            logger.error(f"❌ STOP BUY FAILED at unit {unit}: {result.error_message}")
+            return None
     
     async def _place_stop_loss_order(self, unit: int) -> Optional[str]:
         """Place a stop loss order at a specific unit"""
@@ -414,6 +390,11 @@ class HyperTrader:
             return config.order_id
 
         trigger_price = config.price
+
+        # Safety check: Don't place stops that would trigger immediately
+        if self.current_price and trigger_price > self.current_price:
+            logger.error(f"❌ Stop-loss at ${trigger_price:.2f} would trigger immediately (current: ${self.current_price:.2f})")
+            return None
 
         # Check for duplicate prices in active orders
         active_prices = []
@@ -539,19 +520,44 @@ class HyperTrader:
         logger.info(f"Current stops: {sorted(self.unit_tracker.trailing_stop)}")
         logger.info(f"Current buys: {sorted(self.unit_tracker.trailing_buy)}")
 
-        if event.direction == 'up' and stop_count == 4 and buy_count == 0:
-            # FULL POSITION - slide the entire grid up
-            logger.warning(f"📈 FULL POSITION - Sliding 4-stop grid UP from unit {previous_unit} to {current_unit}")
-            await self._slide_stops_up()
+        if event.direction == 'up' and stop_count > 0:
+            # Trail stops upward when price rises (whether full position or mixed)
+            logger.warning(f"📈 TRAILING STOPS UP - {stop_count} stops moving from unit {previous_unit} to {current_unit}")
 
-        elif event.direction == 'down' and stop_count == 0 and buy_count == 4:
-            # FULL CASH - slide the entire grid down
-            logger.warning(f"📉 FULL CASH - Sliding 4-buy grid DOWN from unit {previous_unit} to {current_unit}")
-            await self._slide_buys_down()
+            # Keep sliding until stops are in the right position
+            # This handles cases where price moved multiple units
+            max_iterations = abs(current_unit - previous_unit) + 1
+            for i in range(max_iterations):
+                await self._slide_stops_up()
+                # Check if we're done
+                if self.unit_tracker.trailing_stop and max(self.unit_tracker.trailing_stop) >= current_unit - 1:
+                    break  # Closest stop is at current_unit - 1, we're done
+
+            # If we have buys, slide them up too
+            if buy_count > 0:
+                logger.warning(f"📈 Also sliding {buy_count} buys upward")
+                await self._slide_buys_up()
+
+        elif event.direction == 'down' and buy_count > 0:
+            # Trail buys downward when price falls (whether full cash or mixed)
+            logger.warning(f"📉 TRAILING BUYS DOWN - {buy_count} buys moving from unit {previous_unit} to {current_unit}")
+
+            # Keep sliding until buys are in the right position
+            max_iterations = abs(current_unit - previous_unit) + 1
+            for i in range(max_iterations):
+                await self._slide_buys_down()
+                # Check if we're done
+                if self.unit_tracker.trailing_buy and min(self.unit_tracker.trailing_buy) <= current_unit + 1:
+                    break  # Closest buy is at current_unit + 1, we're done
+
+            # If we have stops, slide them down too
+            if stop_count > 0:
+                logger.warning(f"📉 Also sliding {stop_count} stops downward")
+                await self._slide_stops_down()
 
         else:
-            # MIXED state - orders are already positioned correctly
-            logger.info(f"Mixed state ({stop_count}S/{buy_count}B) - no sliding needed")
+            # No orders to trail
+            logger.info(f"No orders to trail ({stop_count}S/{buy_count}B)")
 
         # Log final state
         logger.info(f"Window state: Stops={sorted(self.unit_tracker.trailing_stop, reverse=True)}, Buys={sorted(self.unit_tracker.trailing_buy)}")
@@ -629,27 +635,214 @@ class HyperTrader:
             return False
 
     async def _slide_stops_up(self):
-        """Slide the 4-stop grid up when in FULL POSITION (v10 grid sliding)"""
+        """Slide stops upward when price rises - use modification for efficiency"""
         current_unit = self.unit_tracker.current_unit
+        current_stops = sorted(self.unit_tracker.trailing_stop)
 
-        # The window should be: [current-1, current-2, current-3, current-4]
-        desired_stops = [current_unit - 1, current_unit - 2, current_unit - 3, current_unit - 4]
+        if not current_stops:
+            logger.warning("No stops to slide")
+            return
 
-        logger.info(f"Sliding stops UP to unit {current_unit}")
+        # Ideal stop positions relative to current unit
+        ideal_stops = [current_unit - 1, current_unit - 2, current_unit - 3, current_unit - 4]
+
+        logger.info(f"📈 SLIDING STOPS UP to unit {current_unit}")
+        logger.info(f"   Current stops: {current_stops}")
+        logger.info(f"   Target stops: {ideal_stops[:len(current_stops)]}")
+
+        # Strategy: Modify the furthest stop to move it closer, one unit at a time
+        # This walks the stops up gradually until they're in the right positions
+
+        # Find the furthest stop that needs to move
+        stops_to_modify = []
+        for i, stop_unit in enumerate(current_stops):
+            if i < len(ideal_stops) and stop_unit < ideal_stops[i]:
+                # This stop needs to move up
+                target_unit = min(stop_unit + 1, ideal_stops[i])  # Move up by 1 unit max
+                stops_to_modify.append((stop_unit, target_unit))
+
+        if not stops_to_modify:
+            logger.info("✅ Stops already in ideal positions")
+            return
+
+        # Modify stops one by one, starting with the furthest
+        for old_unit, new_unit in stops_to_modify:
+            logger.info(f"🔄 Moving stop from unit {old_unit} to unit {new_unit}")
+
+            # Get the order details
+            if old_unit not in self.position_map:
+                logger.error(f"Unit {old_unit} not in position map!")
+                continue
+
+            old_config = self.position_map[old_unit]
+            if not old_config.is_active:
+                logger.warning(f"No active order at unit {old_unit}")
+                continue
+
+            # Ensure new unit exists in position map
+            if new_unit not in self.position_map:
+                from strategy.position_map import add_unit_level
+                add_unit_level(self.position_state, self.position_map, new_unit)
+
+            new_config = self.position_map[new_unit]
+
+            # Modify the order to the new trigger price
+            result = self.sdk_client.modify_stop_order(
+                order_id=int(old_config.order_id),
+                symbol=self.symbol,
+                is_buy=False,  # Stop-loss is always a sell
+                size=old_config.size,
+                new_trigger_price=new_config.price
+            )
+
+            if result.success:
+                # Update tracking
+                logger.info(f"✅ Modified stop: {old_unit} -> {new_unit} (new order ID: {result.order_id})")
+
+                # Clear old unit
+                old_config.clear_order()
+                self.unit_tracker.remove_trailing_stop(old_unit)
+                if str(old_config.order_id) in self.order_id_to_unit:
+                    del self.order_id_to_unit[str(old_config.order_id)]
+
+                # Set new unit
+                new_config.set_active_order(result.order_id, OrderType.STOP_LOSS_SELL)
+                new_config.size = old_config.size  # Keep the same size
+                self.unit_tracker.add_trailing_stop(new_unit)
+                self.order_id_to_unit[str(result.order_id)] = new_unit
+            else:
+                logger.error(f"❌ Failed to modify stop from {old_unit} to {new_unit}: {result.error_message}")
+                # Fall back to cancel/replace
+                logger.info("Falling back to cancel/replace method")
+                await self._cancel_order(old_unit)
+                self.unit_tracker.remove_trailing_stop(old_unit)
+                order_id = await self._place_stop_loss_order(new_unit)
+                if order_id:
+                    self.unit_tracker.add_trailing_stop(new_unit)
+
+        logger.info(f"Final stops after sliding: {sorted(self.unit_tracker.trailing_stop)}")
+
+    async def _slide_buys_down(self):
+        """Slide buys downward when price falls - use modification for efficiency"""
+        current_unit = self.unit_tracker.current_unit
+        current_buys = sorted(self.unit_tracker.trailing_buy, reverse=True)  # Highest first
+
+        if not current_buys:
+            logger.warning("No buys to slide")
+            return
+
+        # Ideal buy positions relative to current unit
+        ideal_buys = [current_unit + 1, current_unit + 2, current_unit + 3, current_unit + 4]
+
+        logger.info(f"📉 SLIDING BUYS DOWN to unit {current_unit}")
+        logger.info(f"   Current buys: {current_buys}")
+        logger.info(f"   Target buys: {ideal_buys[:len(current_buys)]}")
+
+        # Strategy: Modify the furthest buy to move it closer, one unit at a time
+        buys_to_modify = []
+        for i, buy_unit in enumerate(current_buys):
+            if i < len(ideal_buys) and buy_unit > ideal_buys[i]:
+                # This buy needs to move down
+                target_unit = max(buy_unit - 1, ideal_buys[i])  # Move down by 1 unit max
+                buys_to_modify.append((buy_unit, target_unit))
+
+        if not buys_to_modify:
+            logger.info("✅ Buys already in ideal positions")
+            return
+
+        # Modify buys one by one
+        for old_unit, new_unit in buys_to_modify:
+            logger.info(f"🔄 Moving buy from unit {old_unit} to unit {new_unit}")
+
+            # Get the order details
+            if old_unit not in self.position_map:
+                logger.error(f"Unit {old_unit} not in position map!")
+                continue
+
+            old_config = self.position_map[old_unit]
+            if not old_config.is_active:
+                logger.warning(f"No active order at unit {old_unit}")
+                continue
+
+            # Ensure new unit exists in position map
+            if new_unit not in self.position_map:
+                from strategy.position_map import add_unit_level
+                add_unit_level(self.position_state, self.position_map, new_unit)
+
+            new_config = self.position_map[new_unit]
+
+            # Modify the order to the new trigger price
+            result = self.sdk_client.modify_stop_order(
+                order_id=int(old_config.order_id),
+                symbol=self.symbol,
+                is_buy=True,  # Stop-buy
+                size=old_config.size,
+                new_trigger_price=new_config.price
+            )
+
+            if result.success:
+                # Update tracking
+                logger.info(f"✅ Modified buy: {old_unit} -> {new_unit} (new order ID: {result.order_id})")
+
+                # Clear old unit
+                old_config.clear_order()
+                self.unit_tracker.remove_trailing_buy(old_unit)
+                if str(old_config.order_id) in self.order_id_to_unit:
+                    del self.order_id_to_unit[str(old_config.order_id)]
+
+                # Set new unit
+                new_config.set_active_order(result.order_id, OrderType.STOP_BUY)
+                new_config.size = old_config.size  # Keep the same size
+                self.unit_tracker.add_trailing_buy(new_unit)
+                self.order_id_to_unit[str(result.order_id)] = new_unit
+            else:
+                logger.error(f"❌ Failed to modify buy from {old_unit} to {new_unit}: {result.error_message}")
+                # Fall back to cancel/replace
+                logger.info("Falling back to cancel/replace method")
+                await self._cancel_order(old_unit)
+                self.unit_tracker.remove_trailing_buy(old_unit)
+                order_id = await self._place_stop_buy_order(new_unit)
+                if order_id:
+                    self.unit_tracker.add_trailing_buy(new_unit)
+
+        logger.info(f"Final buys after sliding: {sorted(self.unit_tracker.trailing_buy)}")
+
+    async def _slide_stops_down(self):
+        """Slide stops downward when price is falling (for mixed positions)"""
+        current_unit = self.unit_tracker.current_unit
+        current_stop_count = len(self.unit_tracker.trailing_stop)
+
+        # Stops slide down by 1 unit when price moves down
+        desired_stops = []
+        for stop in self.unit_tracker.trailing_stop:
+            new_stop = stop - 1
+            # Keep all stops that are below current unit
+            if new_stop < current_unit:
+                desired_stops.append(new_stop)
+
+        # Maintain the same number of stops
+        while len(desired_stops) < current_stop_count and len(desired_stops) < 4:
+            # Add stops further below if needed
+            lowest_stop = min(desired_stops) if desired_stops else current_unit - 1
+            new_stop = lowest_stop - 1
+            if new_stop not in desired_stops:
+                desired_stops.append(new_stop)
+
+        logger.info(f"Sliding {current_stop_count} stops DOWN (current unit: {current_unit})")
         logger.info(f"Current stops: {sorted(self.unit_tracker.trailing_stop)}")
         logger.info(f"Desired stops: {sorted(desired_stops)}")
 
         # Cancel stops that are outside the new window
         for stop_unit in list(self.unit_tracker.trailing_stop):
             if stop_unit not in desired_stops:
-                logger.info(f"🗑️ Cancelling stop at unit {stop_unit} (outside new window)")
+                logger.info(f"🗑️ Cancelling stop at unit {stop_unit} (adjusting for downward move)")
                 await self._cancel_order(stop_unit)
                 self.unit_tracker.remove_trailing_stop(stop_unit)
 
         # Add stops that are missing from the new window
         for stop_unit in desired_stops:
             if stop_unit not in self.unit_tracker.trailing_stop:
-                logger.info(f"📈 Adding stop at unit {stop_unit}")
+                logger.info(f"📉 Adding stop at unit {stop_unit}")
 
                 # Ensure unit exists in position map
                 if stop_unit not in self.position_map:
@@ -660,30 +853,44 @@ class HyperTrader:
                 if order_id:
                     self.unit_tracker.add_trailing_stop(stop_unit)
 
-        logger.info(f"Final stops after sliding: {sorted(self.unit_tracker.trailing_stop)}")
+        logger.info(f"Final stops after sliding down: {sorted(self.unit_tracker.trailing_stop)}")
 
-    async def _slide_buys_down(self):
-        """Slide the 4-buy grid down when in FULL CASH (v10 grid sliding)"""
+    async def _slide_buys_up(self):
+        """Slide buys upward when price is rising (for mixed positions)"""
         current_unit = self.unit_tracker.current_unit
+        current_buy_count = len(self.unit_tracker.trailing_buy)
 
-        # The window should be: [current+1, current+2, current+3, current+4]
-        desired_buys = [current_unit + 1, current_unit + 2, current_unit + 3, current_unit + 4]
+        # Buys slide up by 1 unit when price moves up
+        desired_buys = []
+        for buy in self.unit_tracker.trailing_buy:
+            new_buy = buy + 1
+            # Keep all buys that are above current unit
+            if new_buy > current_unit:
+                desired_buys.append(new_buy)
 
-        logger.info(f"Sliding buys DOWN to unit {current_unit}")
+        # Maintain the same number of buys
+        while len(desired_buys) < current_buy_count and len(desired_buys) < 4:
+            # Add buys further above if needed
+            highest_buy = max(desired_buys) if desired_buys else current_unit + 1
+            new_buy = highest_buy + 1
+            if new_buy not in desired_buys:
+                desired_buys.append(new_buy)
+
+        logger.info(f"Sliding {current_buy_count} buys UP (current unit: {current_unit})")
         logger.info(f"Current buys: {sorted(self.unit_tracker.trailing_buy)}")
         logger.info(f"Desired buys: {sorted(desired_buys)}")
 
         # Cancel buys that are outside the new window
         for buy_unit in list(self.unit_tracker.trailing_buy):
             if buy_unit not in desired_buys:
-                logger.info(f"🗑️ Cancelling buy at unit {buy_unit} (outside new window)")
+                logger.info(f"🗑️ Cancelling buy at unit {buy_unit} (adjusting for upward move)")
                 await self._cancel_order(buy_unit)
                 self.unit_tracker.remove_trailing_buy(buy_unit)
 
         # Add buys that are missing from the new window
         for buy_unit in desired_buys:
             if buy_unit not in self.unit_tracker.trailing_buy:
-                logger.info(f"📉 Adding buy at unit {buy_unit}")
+                logger.info(f"📈 Adding buy at unit {buy_unit}")
 
                 # Ensure unit exists in position map
                 if buy_unit not in self.position_map:
@@ -694,7 +901,7 @@ class HyperTrader:
                 if order_id:
                     self.unit_tracker.add_trailing_buy(buy_unit)
 
-        logger.info(f"Final buys after sliding: {sorted(self.unit_tracker.trailing_buy)}")
+        logger.info(f"Final buys after sliding up: {sorted(self.unit_tracker.trailing_buy)}")
 
     async def _validate_window_integrity(self):
         """Simple validation for v10 - ensure we maintain exactly 4 orders"""
@@ -703,7 +910,7 @@ class HyperTrader:
         total_orders = stop_count + buy_count
 
         if total_orders != 4:
-            logger.warning(f"⚠️ Window integrity check: {total_orders} orders (expected 4)")
+            logger.warning(f"⚠️ Window integrity check [Current Unit: {self.unit_tracker.current_unit}]: {total_orders} orders (expected 4)")
             logger.warning(f"   Stops: {self.unit_tracker.trailing_stop}")
             logger.warning(f"   Buys: {self.unit_tracker.trailing_buy}")
             return False
@@ -971,7 +1178,7 @@ class HyperTrader:
 
                 # Periodically validate window integrity (every 20 seconds)
                 if self._last_validation >= 2:  # Every 20 seconds (10s * 2)
-                    logger.info("🔍 Periodic window integrity check")
+                    logger.info(f"🔍 Periodic window integrity check [Current Unit: {self.unit_tracker.current_unit}]")
                     await self._cancel_invalid_orders()  # Clean up bad orders
                     await self._validate_window_integrity()  # v10 simple validation
                     self._last_validation = 0
@@ -1001,8 +1208,8 @@ class HyperTrader:
                 stop_buys.append(f"Unit {unit}: ${self.position_map[unit].price:.2f}")
         
         
-        # Log using actual list counts
-        logger.info(f"📊 ORDERS - Stop sells: {len(self.unit_tracker.trailing_stop)}, Stop buys: {len(self.unit_tracker.trailing_buy)}")
+        # Log using actual list counts with current unit for context
+        logger.info(f"📊 ORDERS [Current Unit: {self.unit_tracker.current_unit}] - Stop sells: {len(self.unit_tracker.trailing_stop)}, Stop buys: {len(self.unit_tracker.trailing_buy)}")
         if stop_losses:
             logger.info(f"   Stop-losses: {', '.join(stop_losses[:4])}")
         if stop_buys:

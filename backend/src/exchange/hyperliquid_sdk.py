@@ -171,22 +171,104 @@ class HyperliquidSDK:
             order_data: A dictionary containing order parameters.
         
         Returns:
-            The response from the exchange, or None if an error occurred.
+            Dictionary mapping symbol to OrderResult
         """
-        if not self.exchange:
-            logger.error("Exchange client not initialized.")
-            return None
+        results = {}
+        positions = self.get_positions()
         
-        logger.info(f"Placing order: {order_data}")
+        for symbol, position in positions.items():
+            logger.info(f"Closing {symbol} position...")
+            results[symbol] = self.close_position(symbol)
+        
+        return results
+    
+    def place_stop_order(
+        self,
+        symbol: str,
+        is_buy: bool,
+        size: Decimal,
+        trigger_price: Decimal,
+        reduce_only: bool = True
+    ) -> OrderResult:
+        """
+        Place a stop loss order that triggers at specified price.
+        
+        Args:
+            symbol: Trading symbol
+            is_buy: True for stop buy, False for stop sell
+            size: Order size in base currency
+            trigger_price: Price that triggers the stop
+            reduce_only: If True, only reduces position (default True for stops)
+            
+        Returns:
+            OrderResult with order details
+        """
         try:
-            response = self.exchange.order(
-                order_data["coin"],
-                order_data["is_buy"],
-                order_data["sz"],
-                order_data["limit_px"],
-                order_data["order_type"]
+            # Round trigger price to tick size
+            from .asset_config import round_to_tick
+            rounded_trigger = round_to_tick(trigger_price, symbol)
+            
+            logger.info(
+                f"Placing {'BUY' if is_buy else 'SELL'} stop order: "
+                f"{size} {symbol} triggers @ ${rounded_trigger:.2f}"
             )
-            return response
+            logger.debug(f"Original trigger: ${trigger_price}, Rounded: ${rounded_trigger}, Tick size: ${get_tick_size(symbol)}")
+            
+            # Create stop loss order type
+            # Use limit orders for all stops with proper tick sizing
+            order_type = {
+                "trigger": {
+                    "triggerPx": float(rounded_trigger),
+                    "isMarket": True, 
+                    "tpsl": "sl"  # Stop loss type
+                }
+            }
+
+            # Use the trigger price as the limit price
+            limit_px = rounded_trigger
+            
+            # Get market info for proper decimal formatting
+            market_info = self.get_market_info(symbol)
+            sz_decimals = int(market_info.get("szDecimals", 4))
+            
+            # Round size to appropriate decimals
+            rounded_size = round(float(size), sz_decimals)
+            
+            result = self.exchange.order(
+                symbol, 
+                is_buy, 
+                rounded_size, 
+                float(limit_px), 
+                order_type, 
+                reduce_only
+            )
+            
+            # Parse result
+            if result.get("status") == "ok":
+                response = result.get("response", {})
+                data = response.get("data", {})
+                statuses = data.get("statuses", [])
+                
+                if statuses and "resting" in statuses[0]:
+                    resting = statuses[0]["resting"]
+                    return OrderResult(
+                        success=True,
+                        order_id=str(resting.get("oid")),
+                        filled_size=Decimal("0"),  # Not filled yet
+                        average_price=rounded_trigger
+                    )
+                else:
+                    return OrderResult(
+                        success=False,
+                        error_message=f"Unexpected response: {statuses}"
+                    )
+            else:
+                error_msg = result.get("response", "Unknown error")
+                return OrderResult(
+                    success=False,
+                    error_message=f"Stop order failed: {error_msg}"
+                )
+                
         except Exception as e:
             logger.error(f"Failed to place stop order: {e}")
             return OrderResult(
@@ -232,13 +314,13 @@ class HyperliquidSDK:
                 f"limit @ ${rounded_limit:.2f}"
             )
             
-            # Create trigger order (NOT a TP/SL order, since we're opening/increasing position)
-            # This is a regular stop order that triggers when price rises
+            # Create stop buy order type (triggers when price rises)
+            # Using "tp" (take profit) for buy orders that trigger when price goes UP
             order_type = {
                 "trigger": {
                     "triggerPx": float(rounded_trigger),
-                    "isMarket": False  # Execute as limit when triggered
-                    # NOTE: Removed "tpsl" parameter - TP/SL orders are only for closing positions
+                    "isMarket": True,
+                    "tpsl": "tp"  # Take profit type (for buy orders, triggers when price rises above)
                 }
             }
             
@@ -290,6 +372,194 @@ class HyperliquidSDK:
             user_state = self.info.user_state(self.wallet_address)
             return user_state
         except Exception as e:
-            logger.error(f"Failed to get user state: {e}")
-            return None
+            logger.error(f"Failed to place limit order: {e}")
+            return OrderResult(
+                success=False,
+                error_message=str(e)
+            )
+    
+    def cancel_order(self, symbol: str, order_id: str) -> bool:
+        """
+        Cancel an open order.
+        
+        Args:
+            symbol: Trading symbol
+            order_id: Order ID to cancel
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            result = self.exchange.cancel(symbol, int(order_id))
+            
+            if result.get("status") == "ok":
+                logger.info(f"Cancelled order {order_id} for {symbol}")
+                return True
+            else:
+                logger.warning(f"Failed to cancel order: {result}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error cancelling order: {e}")
+            return False
+    
+    def modify_stop_order(
+        self,
+        order_id: int,
+        symbol: str,
+        is_buy: bool,
+        size: Decimal,
+        new_trigger_price: Decimal
+    ) -> OrderResult:
+        """
+        Modifies an existing stop order by changing its trigger price.
+        More efficient than cancel/replace for trailing stops.
 
+        Args:
+            order_id: The existing order ID to modify
+            symbol: Trading pair symbol (e.g., 'ETH', 'BTC')
+            is_buy: True for buy, False for sell
+            size: Order size in base currency
+            new_trigger_price: New trigger price for the stop order
+
+        Returns:
+            OrderResult with modification details
+        """
+        try:
+            # Round trigger price to tick size
+            from .asset_config import round_to_tick
+            rounded_trigger = round_to_tick(new_trigger_price, symbol)
+
+            logger.info(
+                f"Modifying stop order {order_id}: New trigger @ ${rounded_trigger:.2f}"
+            )
+
+            # Create modified order type
+            if is_buy:
+                # For stop buys (trigger when price rises)
+                order_type = {
+                    "trigger": {
+                        "triggerPx": float(rounded_trigger),
+                        "isMarket": True,
+                        "tpsl": "tp"  # Take profit for buys
+                    }
+                }
+            else:
+                # For stop sells (trigger when price falls)
+                order_type = {
+                    "trigger": {
+                        "triggerPx": float(rounded_trigger),
+                        "isMarket": True,
+                        "tpsl": "sl"  # Stop loss for sells
+                    }
+                }
+
+            # Get market info for proper decimal formatting
+            market_info = self.get_market_info(symbol)
+            sz_decimals = int(market_info.get("szDecimals", 4))
+
+            # Round size to appropriate decimals
+            rounded_size = round(float(size), sz_decimals)
+
+            # Modify the order
+            result = self.exchange.modify_order(
+                order_id,
+                {
+                    "a": self.asset_id(symbol),
+                    "b": is_buy,
+                    "p": float(rounded_trigger),  # Use trigger as limit
+                    "s": rounded_size,
+                    "r": True,  # reduce_only for stops
+                    "t": order_type
+                }
+            )
+
+            # Parse result
+            if result.get("status") == "ok":
+                response = result.get("response", {})
+                data = response.get("data", {})
+                statuses = data.get("statuses", [])
+
+                if statuses and "resting" in statuses[0]:
+                    modified_oid = statuses[0]["resting"]["oid"]
+                    logger.info(f"✅ Successfully modified stop order {order_id} -> {modified_oid}")
+                    return OrderResult(
+                        success=True,
+                        order_id=modified_oid,
+                        error_message=None
+                    )
+                else:
+                    error_msg = f"Unexpected response: {statuses}"
+                    logger.error(error_msg)
+                    return OrderResult(
+                        success=False,
+                        order_id=None,
+                        error_message=error_msg
+                    )
+            else:
+                error_msg = result.get("response", "Unknown error")
+                logger.error(f"Failed to modify order: {error_msg}")
+                return OrderResult(
+                    success=False,
+                    order_id=None,
+                    error_message=error_msg
+                )
+
+        except Exception as e:
+            logger.error(f"Error modifying stop order: {e}")
+            return OrderResult(
+                success=False,
+                order_id=None,
+                error_message=f"Error modifying order: {e}"
+            )
+
+    def cancel_all_orders(self, symbol: str) -> int:
+        """
+        Cancel all open orders for a symbol.
+        
+        Args:
+            symbol: Trading symbol
+            
+        Returns:
+            Number of orders cancelled
+        """
+        try:
+            result = self.exchange.cancel_by_coin(symbol)
+            
+            if result.get("status") == "ok":
+                response = result.get("response", {})
+                data = response.get("data", {})
+                statuses = data.get("statuses", [])
+                cancelled_count = len([s for s in statuses if "canceled" in s])
+                logger.info(f"Cancelled {cancelled_count} orders for {symbol}")
+                return cancelled_count
+            else:
+                logger.warning(f"Failed to cancel orders: {result}")
+                return 0
+                
+        except Exception as e:
+            logger.error(f"Error cancelling all orders: {e}")
+            return 0
+    
+    def get_open_orders(self, symbol: Optional[str] = None) -> list:
+        """
+        Get all open orders.
+        
+        Args:
+            symbol: Optional symbol to filter by
+            
+        Returns:
+            List of open orders
+        """
+        try:
+            user_state = self.info.user_state(self.get_user_address())
+            open_orders = user_state.get("openOrders", [])
+            
+            if symbol:
+                open_orders = [o for o in open_orders if o.get("coin") == symbol]
+            
+            return open_orders
+            
+        except Exception as e:
+            logger.error(f"Failed to get open orders: {e}")
+            return []
