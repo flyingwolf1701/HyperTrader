@@ -80,9 +80,12 @@ class HyperliquidClient:
         from dotenv import load_dotenv
         load_dotenv()
         
-        private_key = os.getenv("HYPERLIQUID_PRIVATE_KEY")
-        self.main_wallet_address = os.getenv("HYPERLIQUID_MAIN_WALLET_ADDRESS")
-        self.sub_wallet_address = os.getenv("HYPERLIQUID_SUB_WALLET_ADDRESS")
+        # Use the testnet API private key from .env
+        private_key = os.getenv("HYPERLIQUID_TESTNET_API_PRIVATE_KEY")
+        # Use the wallet address from .env
+        self.main_wallet_address = os.getenv("HYPERLIQUID_WALLET_ADDRESS")
+        # For now, sub-wallet is same as main (can be updated later if needed)
+        self.sub_wallet_address = os.getenv("HYPERLIQUID_WALLET_ADDRESS")
         
         # Create LocalAccount from private key
         wallet = Account.from_key(private_key)
@@ -601,13 +604,13 @@ class HyperliquidClient:
                 f"limit @ ${rounded_limit:.2f}"
             )
             
-            # Create stop loss order type (for buys, this triggers when price rises)
-            # Using "sl" because for a buy order, stop loss triggers above current price
+            # Create trigger order (NOT a TP/SL order, since we're opening/increasing position)
+            # This is a regular stop order that triggers when price rises
             order_type = {
                 "trigger": {
                     "triggerPx": float(rounded_trigger),
-                    "isMarket": False,  # Execute as limit when triggered
-                    "tpsl": "sl"  # Stop loss type (for buy orders, triggers when price rises above)
+                    "isMarket": False  # Execute as limit when triggered
+                    # NOTE: Removed "tpsl" parameter - TP/SL orders are only for closing positions
                 }
             }
             
