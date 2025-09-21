@@ -22,28 +22,98 @@ class HyperliquidSDK:
             wallet_address: The user's wallet address.
             is_mainnet: A boolean indicating whether to connect to the mainnet.
         """
-        self.wallet_address = wallet_address
-        self.is_mainnet = is_mainnet
-        self.info: Optional[Info] = None
-        self.exchange: Optional[Exchange] = None
-        self.meta: Optional[Dict[str, Any]] = None
-        self.account: Optional[LocalAccount] = None
+        self.use_testnet = use_testnet
+        self.use_sub_wallet = use_sub_wallet
         
-        # Load private key from environment variables
-        private_key = os.getenv("HYPERLIQUID_PRIVATE_KEY")
-        if not private_key:
-            raise ValueError("FATAL: HYPERLIQUID_PRIVATE_KEY environment variable not set.")
+        # Set base URL based on network
+        self.base_url = (
+            "https://api.hyperliquid-testnet.xyz" if use_testnet 
+            else "https://api.hyperliquid.xyz"
+        )
         
-        self.account = Account.from_key(private_key)
+        # Initialize wallet and clients
+        self._initialize_clients()
+        
+    def _initialize_clients(self):
+        """Initialize the SDK clients and wallet"""
+        # Get credentials from environment variables
+        import os
+        from dotenv import load_dotenv
+        load_dotenv()
+        
+        # Use the testnet API private key from .env
+        private_key = os.getenv("HYPERLIQUID_TESTNET_API_PRIVATE_KEY")
+        # Use the wallet address from .env
+        self.main_wallet_address = os.getenv("HYPERLIQUID_WALLET_ADDRESS")
+        # For now, sub-wallet is same as main (can be updated later if needed)
+        self.sub_wallet_address = os.getenv("HYPERLIQUID_WALLET_ADDRESS")
+        
+        # Create LocalAccount from private key
+        wallet = Account.from_key(private_key)
+        
+        # Initialize Info client for read operations
+        self.info = Info(self.base_url, skip_ws=True)
+        
+        # Determine which wallet to use for trading
+        if self.use_sub_wallet:
+            # Trade on sub-wallet using vault_address
+            self.exchange = Exchange(
+                wallet=wallet,  # Pass LocalAccount object
+                base_url=self.base_url,
+                vault_address=self.sub_wallet_address
+            )
+            logger.info(f"Initialized with sub-wallet {self.sub_wallet_address[:8]}...")
+        else:
+            # Trade on main wallet
+            self.exchange = Exchange(
+                wallet=wallet,  # Pass LocalAccount object
+                base_url=self.base_url
+            )
+            logger.info(f"Initialized with main wallet {self.main_wallet_address[:8]}...")
+    
+    def get_user_address(self) -> str:
+        """
+        Get the current trading wallet address.
 
-    async def initialize(self):
-        """Initializes the SDK clients and fetches metadata."""
-        logger.info("Initializing Hyperliquid REST SDK clients...")
+        Returns:
+            The wallet address being used for trading
+        """
+        return self.sub_wallet_address if self.use_sub_wallet else self.main_wallet_address
+    
+    def switch_wallet(self, use_sub_wallet: bool):
+        """
+        Switch between main wallet and sub-wallet.
+        
+        Args:
+            use_sub_wallet: True to use sub-wallet, False for main wallet
+        """
+        if use_sub_wallet != self.use_sub_wallet:
+            self.use_sub_wallet = use_sub_wallet
+            self._initialize_clients()
+    
+    # ============================================================================
+    # ACCOUNT INFORMATION
+    # ============================================================================
+    
+    def get_balance(self) -> Balance:
+        """
+        Get account balance for the current wallet.
+        
+        Returns:
+            Balance object with total value, margin used, and available balance
+        """
         try:
-            self.info = Info(self.is_mainnet)
-            self.exchange = Exchange(self.account, self.is_mainnet)
-            self.meta = self.info.meta()
-            logger.success("Hyperliquid REST SDK initialized and metadata loaded.")
+            user_state = self.info.user_state(self.get_user_address())
+            margin_summary = user_state.get("marginSummary", {})
+            
+            total_value = Decimal(str(margin_summary.get("accountValue", 0)))
+            margin_used = Decimal(str(margin_summary.get("totalMarginUsed", 0)))
+            
+            return Balance(
+                total_value=total_value,
+                margin_used=margin_used,
+                available=total_value - margin_used
+            )
         except Exception as e:
             logger.error(f"Failed to initialize exchange metadata: {e}")
 
@@ -118,30 +188,90 @@ class HyperliquidSDK:
             )
             return response
         except Exception as e:
-            logger.error(f"An error occurred while placing order: {e}")
-            return None
-
-    async def cancel_all_orders(self):
-        """Cancels all open orders for all assets."""
-        if not self.exchange or not self.meta:
-            logger.error("Exchange client or metadata not initialized.")
-            return
-
-        logger.warning("Cancelling all open orders...")
-        try:
-            open_orders = await self.get_open_orders()
-            if not open_orders:
-                logger.info("No open orders to cancel.")
-                return
-
-            cancellation_requests = []
-            for order in open_orders:
-                cancellation_requests.append({"coin": order["coin"], "oid": order["oid"]})
+            logger.error(f"Failed to place stop order: {e}")
+            return OrderResult(
+                success=False,
+                error_message=str(e)
+            )
+    
+    def place_stop_buy(
+        self,
+        symbol: str,
+        size: Decimal,
+        trigger_price: Decimal,
+        limit_price: Optional[Decimal] = None,
+        reduce_only: bool = False
+    ) -> OrderResult:
+        """
+        Place a stop limit buy order that triggers when price rises to specified level.
+        This is used for placing buy orders above current market price that wait for price to rise.
+        
+        Args:
+            symbol: Trading symbol
+            size: Order size in base currency
+            trigger_price: Price that triggers the order (above current market)
+            limit_price: Limit price for execution (if None, uses trigger_price)
+            reduce_only: If True, only reduces position (usually False for entries)
             
-            if cancellation_requests:
-                response = self.exchange.bulk_cancel(cancellation_requests)
-                if response.get("status") == "ok":
-                    logger.success("Successfully cancelled all open orders.")
+        Returns:
+            OrderResult with order details
+        """
+        try:
+            # Round trigger price to tick size
+            from .asset_config import round_to_tick
+            rounded_trigger = round_to_tick(trigger_price, symbol)
+            
+            # Use trigger as limit if not specified
+            if limit_price is None:
+                limit_price = trigger_price
+            rounded_limit = round_to_tick(limit_price, symbol)
+            
+            logger.info(
+                f"Placing STOP LIMIT BUY order: "
+                f"{size} {symbol} triggers @ ${rounded_trigger:.2f}, "
+                f"limit @ ${rounded_limit:.2f}"
+            )
+            
+            # Create trigger order (NOT a TP/SL order, since we're opening/increasing position)
+            # This is a regular stop order that triggers when price rises
+            order_type = {
+                "trigger": {
+                    "triggerPx": float(rounded_trigger),
+                    "isMarket": False  # Execute as limit when triggered
+                    # NOTE: Removed "tpsl" parameter - TP/SL orders are only for closing positions
+                }
+            }
+            
+            # Get market info for proper decimal formatting
+            market_info = self.get_market_info(symbol)
+            sz_decimals = int(market_info.get("szDecimals", 4))
+            
+            # Round size to appropriate decimals
+            rounded_size = round(float(size), sz_decimals)
+            
+            result = self.exchange.order(
+                symbol, 
+                True,  # is_buy = True
+                rounded_size, 
+                float(rounded_limit), 
+                order_type, 
+                reduce_only
+            )
+            
+            # Parse result
+            if result.get("status") == "ok":
+                response = result.get("response", {})
+                data = response.get("data", {})
+                statuses = data.get("statuses", [])
+                
+                if statuses and "resting" in statuses[0]:
+                    resting = statuses[0]["resting"]
+                    return OrderResult(
+                        success=True,
+                        order_id=str(resting.get("oid")),
+                        filled_size=Decimal("0"),  # Not filled yet
+                        average_price=rounded_limit
+                    )
                 else:
                     logger.error(f"Failed to cancel all orders: {response}")
             else:
