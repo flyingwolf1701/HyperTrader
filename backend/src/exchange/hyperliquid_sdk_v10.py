@@ -111,14 +111,14 @@ class HyperliquidSDK:
 
         Args:
             order_data: A dictionary containing order parameters.
-        
+
         Returns:
             The response from the exchange, or None if an error occurred.
         """
         if not self.exchange:
             logger.error("Exchange client not initialized.")
             return None
-        
+
         logger.info(f"Placing order: {order_data}")
         try:
             # Handle market orders - SDK requires a limit_px even for market orders
@@ -130,12 +130,16 @@ class HyperliquidSDK:
                 else:
                     limit_px = 0.01  # Low price for market sell
 
+            # Extract reduce_only if present
+            reduce_only = order_data.get("reduce_only", False)
+
             response = self.exchange.order(
                 order_data["coin"],
                 order_data["is_buy"],
                 order_data["sz"],
                 limit_px,
-                order_data["order_type"]
+                order_data["order_type"],
+                reduce_only=reduce_only
             )
             return response
         except Exception as e:

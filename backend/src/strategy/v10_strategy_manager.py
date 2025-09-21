@@ -102,6 +102,30 @@ class V10StrategyManager:
             logger.error(f"Failed to place initial market buy: {response}")
             return False
 
+        # Wait for position to be established
+        logger.info("Waiting for position to be established...")
+        await asyncio.sleep(3)
+
+        # Verify position exists before placing stop orders
+        user_state = await self.exchange.get_user_state()
+        if not user_state:
+            logger.error("Could not get user state")
+            return False
+
+        position_exists = False
+        for asset_pos in user_state.get("assetPositions", []):
+            if asset_pos["position"]["coin"] == self.asset:
+                actual_size = abs(float(asset_pos["position"]["szi"]))
+                if actual_size > 0:
+                    logger.info(f"Position confirmed: {actual_size} {self.asset}")
+                    asset_size = Decimal(str(actual_size))
+                    position_exists = True
+                    break
+
+        if not position_exists:
+            logger.error("Position not established after market buy")
+            return False
+
         # Step 2: Initialize position tracking
         self.position_state = PositionState(
             entry_price=current_price,
@@ -147,19 +171,20 @@ class V10StrategyManager:
             trigger_price_rounded = float(round(trigger_price, price_decimals))
             limit_price = float(round(trigger_price * Decimal("0.99"), price_decimals))
 
-            # Place stop-loss sell order using trigger format
+            # Place stop-loss sell order using v9 approach
             order_data = {
                 "coin": self.asset,
                 "is_buy": False,
                 "sz": rounded_size,
-                "limit_px": limit_price,  # Limit price slightly below trigger
+                "limit_px": trigger_price_rounded,  # Use trigger price as limit (v9 style)
                 "order_type": {
                     "trigger": {
                         "triggerPx": trigger_price_rounded,
-                        "isMarket": True,
+                        "isMarket": False,  # Use limit order (v9 style)
                         "tpsl": "sl"  # Stop-loss
                     }
-                }
+                },
+                "reduce_only": True  # This reduces position
             }
 
             response = await self.exchange.place_order(order_data)

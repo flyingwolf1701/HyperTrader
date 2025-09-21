@@ -9,8 +9,8 @@ from loguru import logger
 from eth_account import Account
 
 from core.config import StrategyConfig
-from exchange.websocket_client import HyperliquidSDKClient
-from exchange.hyperliquid_sdk import HyperliquidSDK
+from backend.src.exchange.websocket_client_v10 import HyperliquidSDKClient
+from backend.src.exchange.hyperliquid_sdk_v10 import HyperliquidSDK
 from strategy.v10_strategy_manager import V10StrategyManager
 
 
