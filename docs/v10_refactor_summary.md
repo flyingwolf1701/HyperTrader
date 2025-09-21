@@ -1,3 +1,4 @@
+
 # V10 Strategy Refactoring Summary
 
 ## Overview

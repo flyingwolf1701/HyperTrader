@@ -27,8 +27,10 @@ class HyperliquidSDK:
         """
         self.account = account
         self.vault_address = vault_address
-        # Use the specified wallet address, vault address, or account address (in that order)
+        # Use the specified wallet address for tracking positions
         self.wallet_address = wallet_address or vault_address or account.address
+        # For agent mode, we need to specify the account_address separately
+        self.account_address = wallet_address if wallet_address and wallet_address != account.address else None
         self.is_mainnet = is_mainnet
         self.info: Optional[Info] = None
         self.exchange: Optional[Exchange] = None
@@ -43,9 +45,23 @@ class HyperliquidSDK:
         base_url = None if self.is_mainnet else "https://api.hyperliquid-testnet.xyz"
 
         try:
-            self.info = Info(self.is_mainnet)
-            # Pass vault_address to ensure orders are placed for the correct wallet
-            if self.vault_address:
+            # Info needs the base_url for testnet, but uses a different parameter name
+            if self.is_mainnet:
+                self.info = Info(True)  # Mainnet
+            else:
+                from hyperliquid.utils import constants
+                self.info = Info(constants.TESTNET_API_URL, skip_ws=True)  # Testnet with URL
+            # Initialize Exchange with proper agent mode configuration
+            if self.account_address:
+                # Agent mode: API wallet signs for main wallet
+                self.exchange = Exchange(
+                    self.account,
+                    base_url=base_url,
+                    account_address=self.account_address
+                )
+                logger.info(f"Agent mode: API wallet signing for {self.account_address[:8]}...")
+            elif self.vault_address:
+                # Sub-account mode
                 self.exchange = Exchange(
                     self.account,
                     base_url=base_url,
@@ -53,6 +69,7 @@ class HyperliquidSDK:
                 )
                 logger.info(f"Using vault address: {self.vault_address[:8]}...")
             else:
+                # Direct trading mode
                 self.exchange = Exchange(self.account, base_url=base_url)
             self.meta = self.info.meta()
             logger.success("Hyperliquid REST SDK initialized and metadata loaded.")
@@ -202,9 +219,24 @@ class HyperliquidSDK:
         if not self.info:
             logger.error("Info client not initialized.")
             return None
-        
+
         try:
+            logger.info(f"Getting user state for wallet: {self.wallet_address}")
             user_state = self.info.user_state(self.wallet_address)
+
+            # Log what we received for debugging
+            if user_state:
+                margin_summary = user_state.get("marginSummary", {})
+                account_value = margin_summary.get("accountValue", "N/A")
+                positions_count = len(user_state.get("assetPositions", []))
+                logger.info(f"User state retrieved: Balance=${account_value}, Positions={positions_count}")
+
+                # Check for SOL position specifically
+                for ap in user_state.get("assetPositions", []):
+                    pos = ap.get("position", {})
+                    if pos.get("coin") == "SOL" and float(pos.get("szi", 0)) != 0:
+                        logger.info(f"SOL position found: {pos.get('szi')} @ {pos.get('entryPx')}")
+
             return user_state
         except Exception as e:
             logger.error(f"Failed to get user state: {e}")

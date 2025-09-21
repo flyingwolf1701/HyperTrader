@@ -1,6 +1,7 @@
 """
 V10 Strategy Manager - Implements the simplified 4-order sliding window strategy
 """
+import asyncio
 from decimal import Decimal
 from typing import Dict, Optional, List
 from loguru import logger
@@ -78,33 +79,81 @@ class V10StrategyManager:
 
         logger.info(f"Initializing v10 strategy at price ${current_price:.2f}")
 
-        # Step 1: Execute market buy for full position
-        asset_size = self.total_position_usd / current_price
+        # Check if we already have a position first
+        user_state = await self.exchange.get_user_state()
+        existing_position = None
+        if user_state:
+            for asset_pos in user_state.get("assetPositions", []):
+                pos = asset_pos.get("position", {})
+                if pos.get("coin") == self.asset and float(pos.get("szi", 0)) != 0:
+                    existing_position = float(pos.get("szi", 0))
+                    logger.info(f"Found existing {self.asset} position: {existing_position}")
+                    break
+
+        # Step 1: Execute market buy for full position (if we don't have one)
+        if existing_position:
+            asset_size = Decimal(str(abs(existing_position)))
+            logger.info(f"Using existing position size: {asset_size} {self.asset}")
+        else:
+            asset_size = self.total_position_usd / current_price
 
         # Round to asset decimals
         decimals = self.asset_config.get("size_decimals", 2)
         asset_size = round(asset_size, decimals)
 
-        logger.info(f"Placing market buy for {asset_size} {self.asset} at ~${current_price:.2f}")
+        # Only place market buy if we don't have an existing position
+        if not existing_position:
+            logger.info(f"Placing market buy for {asset_size} {self.asset} at ~${current_price:.2f}")
 
-        # Use limit order with IOC for market-like execution
-        order_data = {
-            "coin": self.asset,
-            "is_buy": True,
-            "sz": float(asset_size),
-            "limit_px": float(current_price * Decimal("1.01")),  # 1% slippage tolerance
-            "order_type": {"limit": {"tif": "Ioc"}}  # Immediate or Cancel
-        }
+            # Round price to proper tick size
+            price_decimals = self.asset_config.get("price_decimals", 2)
+            limit_price = float(round(current_price * Decimal("1.01"), price_decimals))
 
-        response = await self.exchange.place_order(order_data)
+            # Use limit order with IOC for market-like execution
+            order_data = {
+                "coin": self.asset,
+                "is_buy": True,
+                "sz": float(asset_size),
+                "limit_px": limit_price,  # 1% slippage tolerance with proper rounding
+                "order_type": {"limit": {"tif": "Ioc"}}  # Immediate or Cancel
+            }
 
-        if not response or response.get("status") != "ok":
-            logger.error(f"Failed to place initial market buy: {response}")
-            return False
+            response = await self.exchange.place_order(order_data)
+
+            if not response or response.get("status") != "ok":
+                logger.error(f"Failed to place initial market buy: {response}")
+                return False
+
+            # Log the response details
+            logger.info(f"Market buy order response: {response}")
+
+            # Check if order was filled
+            if response.get("response", {}).get("data", {}).get("statuses"):
+                order_status = response["response"]["data"]["statuses"][0]
+                logger.info(f"Order status: {order_status}")
+
+                # Check if immediately filled
+                if "filled" in order_status:
+                    logger.info(f"Order filled immediately")
+                elif "resting" in order_status:
+                    logger.warning(f"Order is resting (not filled) - this shouldn't happen with IOC")
 
         # Wait for position to be established
         logger.info("Waiting for position to be established...")
         await asyncio.sleep(3)
+
+        # Log which wallet we're checking
+        logger.info(f"Checking positions for wallet: {self.exchange.wallet_address}")
+
+        # Also double check with raw SDK call
+        import hyperliquid.info as hl_info
+        from hyperliquid.utils import constants
+        raw_info = hl_info.Info(constants.TESTNET_API_URL, skip_ws=True)
+        raw_state = raw_info.user_state(self.exchange.wallet_address)
+        logger.info(f"Direct SDK check - Balance: ${raw_state.get('marginSummary', {}).get('accountValue', 0)}")
+        for ap in raw_state.get('assetPositions', []):
+            if ap['position']['coin'] == 'SOL' and float(ap['position']['szi']) != 0:
+                logger.info(f"Direct SDK check - SOL position: {ap['position']['szi']}")
 
         # Verify position exists before placing stop orders
         user_state = await self.exchange.get_user_state()
@@ -112,10 +161,22 @@ class V10StrategyManager:
             logger.error("Could not get user state")
             return False
 
+        # Log what keys are in user_state
+        logger.info(f"User state keys: {list(user_state.keys())}")
+
+        # Log the entire user state for debugging
+        asset_positions = user_state.get("assetPositions", [])
+        logger.info(f"User state assetPositions count: {len(asset_positions)}")
+
         position_exists = False
         for asset_pos in user_state.get("assetPositions", []):
-            if asset_pos["position"]["coin"] == self.asset:
-                actual_size = abs(float(asset_pos["position"]["szi"]))
+            pos = asset_pos.get("position", {})
+            coin = pos.get("coin", "")
+            szi = pos.get("szi", "0")
+            logger.info(f"Position for {coin}: size={szi}")
+
+            if coin == self.asset:
+                actual_size = abs(float(szi))
                 if actual_size > 0:
                     logger.info(f"Position confirmed: {actual_size} {self.asset}")
                     asset_size = Decimal(str(actual_size))
@@ -123,7 +184,11 @@ class V10StrategyManager:
                     break
 
         if not position_exists:
-            logger.error("Position not established after market buy")
+            logger.error(f"Position not established after market buy for {self.asset}")
+            # Log available balance
+            if "marginSummary" in user_state:
+                balance = user_state["marginSummary"].get("accountValue", 0)
+                logger.error(f"Account value: ${balance}")
             return False
 
         # Step 2: Initialize position tracking
@@ -352,10 +417,11 @@ class V10StrategyManager:
             "order_type": {
                 "trigger": {
                     "triggerPx": trigger_price_rounded,
-                    "isMarket": True,
-                    "tpsl": "tp"  # Take-profit acts as stop-entry for buys
+                    "isMarket": False,  # Use limit order like v9
+                    "tpsl": "sl"  # Stop loss type (for buy orders, triggers when price rises above)
                 }
-            }
+            },
+            "reduce_only": False  # Buy orders increase position
         }
 
         response = await self.exchange.place_order(order_data)

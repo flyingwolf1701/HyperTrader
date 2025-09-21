@@ -9,8 +9,8 @@ from loguru import logger
 from eth_account import Account
 
 from core.config import StrategyConfig
-from backend.src.exchange.websocket_client_v10 import HyperliquidSDKClient
-from backend.src.exchange.hyperliquid_sdk_v10 import HyperliquidSDK
+from exchange.websocket_client_v10 import HyperliquidSDKClient
+from exchange.hyperliquid_sdk_v10 import HyperliquidSDK
 from strategy.v10_strategy_manager import V10StrategyManager
 
 
@@ -61,13 +61,14 @@ class StrategyRunner:
 
         # When using an API wallet to trade for the main wallet:
         # - The API wallet (account) signs the transactions
-        # - We don't use vault_address (that's only for sub-accounts)
-        # - The wallet_address tells the SDK which wallet we're tracking
+        # - The main wallet is where the funds and positions are
+        # - We track the main wallet's state
         if self.config.wallet == "long":
+            # Use main wallet address for tracking positions/funds
             user_address = main_wallet_address
-            vault_address = None  # No vault for main wallet trading
-            logger.info(f"Trading for main wallet: {main_wallet_address[:8]}...")
-            logger.info(f"Using API wallet for signing: {api_wallet_address[:8] if api_wallet_address else account.address[:8]}...")
+            vault_address = None  # No vault needed
+            logger.info(f"Trading on main wallet: {main_wallet_address[:8]}...")
+            logger.info(f"Using API wallet for signing: {account.address[:8]}...")
         else:
             # For other wallet types, adjust as needed
             user_address = main_wallet_address
