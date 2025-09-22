@@ -32,14 +32,15 @@ class UnitTracker:
         self.current_unit = 0
 
         # Sliding window management - v10 simplified tracking
-        self.trailing_stop: List[int] = [-1, -2, -3, -4]  # Initial 4 stop-loss orders
-        self.trailing_buy: List[int] = []   # Initially empty
+        # Start empty - will be populated as orders are actually placed
+        self.trailing_stop: List[int] = []  # Will hold stop-loss order units
+        self.trailing_buy: List[int] = []   # Will hold buy order units
         self.current_realized_pnl = Decimal(0)  # Track PnL for organic compounding
 
         if 0 not in self.position_map:
             raise ValueError("Unit 0 missing from position map")
 
-        logger.info(f"UnitTracker initialized with stop-losses at {self.trailing_stop}")
+        logger.info(f"UnitTracker initialized (empty, will populate as orders are placed)")
     
     
     def calculate_unit_change(self, current_price: Decimal) -> Optional[UnitChangeEvent]:
