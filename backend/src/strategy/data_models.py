@@ -19,12 +19,10 @@ class OrderType(Enum):
 
 
 class Phase(Enum):
-    """Trading phases based on order composition"""
-    ADVANCE = "advance"          # 100% long, all stop-losses
-    RETRACEMENT = "retracement"  # Mixed position, mix of orders
-    DECLINE = "decline"          # 100% cash, all limit buys
-    RECOVERY = "recovery"        # Mixed position returning to long
-    RESET = "reset"             # Transitioning to new cycle
+    """Trading phases based on order composition (simplified for v10)"""
+    FULL_POSITION = "full_position"  # 4 sells, 0 buys (100% position)
+    MIXED = "mixed"                  # Mix of sells and buys
+    FULL_CASH = "full_cash"          # 0 sells, 4 buys (100% cash)
 
 
 class ExecutionStatus(Enum):

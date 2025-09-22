@@ -20,8 +20,8 @@ class UnitTracker:
                  position_state,
                  position_map: Dict[int, any]):
         """
-        Initialize unit tracker with sliding window management.
-        As per data_flow.md - simple list-based tracking.
+        Initialize unit tracker with sliding window management (v10).
+        Simple list-based tracking for 4-order window.
 
         Args:
             position_state: Static position configuration
@@ -30,17 +30,17 @@ class UnitTracker:
         self.position_state = position_state
         self.position_map = position_map
         self.current_unit = 0
-        self.last_phase = "advance"  # Track last phase for recovery detection
 
-        # Sliding window management - SIMPLE LIST-BASED TRACKING from data_flow.md
-        self.trailing_stop: List[int] = [-1, -2, -3, -4]  # Initial 4 stop-loss orders (CLOSEST FIRST)
-        self.trailing_buy: List[int] = []   # Initially empty
-        self.current_realized_pnl = Decimal(0)  # Track PnL for reinvestment
+        # Sliding window management - v10 simplified tracking
+        # Start empty - will be populated as orders are actually placed
+        self.trailing_stop: List[int] = []  # Will hold stop-loss order units
+        self.trailing_buy: List[int] = []   # Will hold buy order units
+        self.current_realized_pnl = Decimal(0)  # Track PnL for organic compounding
 
         if 0 not in self.position_map:
             raise ValueError("Unit 0 missing from position map")
 
-        logger.info(f"UnitTracker initialized with stop-losses at {self.trailing_stop}")
+        logger.info(f"UnitTracker initialized (empty, will populate as orders are placed)")
     
     
     def calculate_unit_change(self, current_price: Decimal) -> Optional[UnitChangeEvent]:
@@ -90,12 +90,14 @@ class UnitTracker:
             # Create window composition string
             window_comp = f"{len(self.trailing_stop)}S/{len(self.trailing_buy)}B"
 
+            # Map phase names to enum values
+            phase_enum = Phase.FULL_POSITION if current_phase == "full_position" else \
+                        Phase.FULL_CASH if current_phase == "full_cash" else \
+                        Phase.MIXED
+
             return UnitChangeEvent(
                 price=current_price,
-                phase=Phase.ADVANCE if current_phase == "advance" else
-                      Phase.DECLINE if current_phase == "decline" else
-                      Phase.RETRACEMENT if current_phase == "retracement" else
-                      Phase.RECOVERY,
+                phase=phase_enum,
                 current_unit=self.current_unit,
                 timestamp=datetime.now(),
                 direction=direction,
@@ -107,37 +109,23 @@ class UnitTracker:
     
     def get_phase(self) -> str:
         """
-        Simple phase detection based on list lengths as per data_flow.md.
-        Phase names are mostly for documentation and logging.
+        Simple phase detection for v10 - based purely on order composition.
+        Returns descriptive phase name for logging.
         """
         stop_count = len(self.trailing_stop)
         buy_count = len(self.trailing_buy)
 
         # Determine the current phase
-        match (stop_count, buy_count):
-            case (4, 0):
-                # Pure long position with stops
-                current_phase = "advance"
-
-            case (0, 4):
-                # Pure cash position with buy orders
-                current_phase = "decline"
-
-            case (s, b) if s > 0 and b > 0:
-                # Mixed state - have both stops and buys
-                # Retracement if we were in advance, recovery if we were in decline
-                if self.last_phase in ["advance", "retracement"]:
-                    current_phase = "retracement"
-                else:
-                    current_phase = "recovery"
-
-            case _:
-                # Edge case - shouldn't normally happen
-                current_phase = self.last_phase if hasattr(self, 'last_phase') else "advance"
-
-        # Update last_phase for next call
-        self.last_phase = current_phase
-        return current_phase
+        if stop_count == 4 and buy_count == 0:
+            return "full_position"  # 100% position, 4 sells
+        elif stop_count == 0 and buy_count == 4:
+            return "full_cash"      # 100% cash, 4 buys
+        elif stop_count + buy_count == 4:
+            return "mixed"          # Mix of sells and buys
+        else:
+            # This shouldn't happen in normal operation
+            logger.warning(f"Unexpected order composition: {stop_count} stops, {buy_count} buys")
+            return "unknown"
     
     
     def _ensure_sufficient_units(self):
@@ -234,13 +222,22 @@ class UnitTracker:
         logger.info(f"Realized PnL: ${pnl:.2f} (Total: ${self.current_realized_pnl:.2f})")
 
     def get_adjusted_fragment_usd(self) -> Decimal:
-        """Get fragment size adjusted for realized PnL (for recovery phase)
+        """Get fragment size adjusted for realized PnL (v10 organic compounding)
 
-        In recovery phase, we reinvest PnL by dividing it by 4 and adding to fragments
+        When placing buy orders, add accumulated PnL divided by number of active buys.
+        This provides organic compounding without explicit reset phases.
         """
-        if self.get_phase() == "recovery" and self.current_realized_pnl > 0:
-            pnl_per_fragment = self.current_realized_pnl / Decimal("4")
-            adjusted_fragment = self.position_state.long_fragment_usd + pnl_per_fragment
-            logger.debug(f"Adjusted fragment: ${adjusted_fragment:.2f} (base: ${self.position_state.long_fragment_usd:.2f} + pnl: ${pnl_per_fragment:.2f})")
+        buy_count = len(self.trailing_buy)
+
+        # Base fragment is 25% of original position
+        base_fragment = self.position_state.long_fragment_usd
+
+        # If we have buy orders and realized PnL, add the PnL
+        if buy_count > 0 and self.current_realized_pnl > 0:
+            # Divide PnL by number of active buy orders
+            pnl_per_buy = self.current_realized_pnl / Decimal(str(buy_count))
+            adjusted_fragment = base_fragment + pnl_per_buy
+            logger.debug(f"Adjusted buy fragment: ${adjusted_fragment:.2f} (base: ${base_fragment:.2f} + pnl: ${pnl_per_buy:.2f})")
             return adjusted_fragment
-        return self.position_state.long_fragment_usd
+
+        return base_fragment
