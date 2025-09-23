@@ -28,7 +28,7 @@ from strategy.position_map import (
 )
 from strategy.unit_tracker import UnitTracker
 from exchange.hyperliquid_sdk import HyperliquidClient, OrderResult
-from exchange.websocket_client import HyperliquidWebSocketClient
+from exchange.hyperliquid_sdk_websocket import HyperliquidSDKWebSocketClient
 
 
 class HyperTrader:
@@ -51,7 +51,7 @@ class HyperTrader:
         
         # Initialize components
         self.sdk_client: Optional[HyperliquidClient] = None
-        self.ws_client: Optional[HyperliquidWebSocketClient] = None
+        self.ws_client: Optional[HyperliquidSDKWebSocketClient] = None
         self.position_state: Optional[PositionState] = None
         self.position_map: Optional[Dict[int, PositionConfig]] = None
         self.unit_tracker: Optional[UnitTracker] = None
@@ -88,7 +88,7 @@ class HyperTrader:
             user_address = self.sdk_client.get_user_address()
             
             # Initialize WebSocket client with user address
-            self.ws_client = HyperliquidWebSocketClient(
+            self.ws_client = HyperliquidSDKWebSocketClient(
                 testnet=self.use_testnet,
                 user_address=user_address
             )

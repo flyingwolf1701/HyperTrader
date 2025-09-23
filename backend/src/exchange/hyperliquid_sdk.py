@@ -491,8 +491,7 @@ class HyperliquidClient:
             OrderResult with order details
         """
         try:
-            # Round trigger price to tick size
-            from .asset_config import round_to_tick
+            # Round trigger price to tick sizethe met
             rounded_trigger = round_to_tick(trigger_price, symbol)
             
             logger.info(
@@ -587,7 +586,6 @@ class HyperliquidClient:
         """
         try:
             # Round trigger price to tick size
-            from .asset_config import round_to_tick
             rounded_trigger = round_to_tick(trigger_price, symbol)
             
             # Use trigger as limit if not specified
