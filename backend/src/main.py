@@ -28,7 +28,7 @@ from strategy.position_map import (
 )
 from strategy.unit_tracker import UnitTracker
 from exchange.hyperliquid_sdk import HyperliquidClient, OrderResult
-from backend.src.exchange.websocket_client import HyperliquidWebSocketClient
+from exchange.websocket_client import HyperliquidWebSocketClient
 
 
 class HyperTrader:
