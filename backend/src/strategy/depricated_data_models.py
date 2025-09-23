@@ -1,6 +1,5 @@
 """
-Data Models for HyperTrader Long Wallet Strategy
-Pure data structures with no business logic
+Most of these are horrible! AI should be ashamed of writing such crap!
 """
 
 from enum import Enum
@@ -107,21 +106,7 @@ class PositionConfig:
         self.order_statuses.append(ExecutionStatus.PENDING)
         self.is_active = True
 
-    @property
-    def order_id(self) -> Optional[str]:
-        """Get the current/latest order ID for backward compatibility"""
-        return self.order_ids[-1] if self.order_ids else None
-
-    @property
-    def order_type(self) -> Optional[OrderType]:
-        """Get the current/latest order type for backward compatibility"""
-        return self.order_types[-1] if self.order_types else None
-
-    @property
-    def execution_status(self) -> ExecutionStatus:
-        """Get the current/latest execution status for backward compatibility"""
-        return self.order_statuses[-1] if self.order_statuses else ExecutionStatus.PENDING
-
+   
 
 @dataclass
 class UnitChangeEvent:

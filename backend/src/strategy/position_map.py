@@ -9,7 +9,7 @@ from typing import Optional, Dict
 from loguru import logger
 
 # Import from centralized data models
-from .data_models import (
+from .depricated_data_models import (
     OrderType, ExecutionStatus, PositionState, PositionConfig
 )
 

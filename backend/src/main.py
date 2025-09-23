@@ -15,7 +15,7 @@ src_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, src_dir)
 
 # Import new strategy components
-from strategy.data_models import (
+from backend.src.strategy.depricated_data_models import (
     OrderType, Phase, ExecutionStatus, PositionState, 
     PositionConfig, UnitChangeEvent, OrderFillEvent
 )
@@ -339,14 +339,6 @@ class HyperTrader:
 
         price = config.price
 
-        # Safety check: Stop-buy triggers when price RISES to trigger_price
-        # So trigger_price should be ABOVE current price for a valid stop-buy
-        # (We're buying when price rises)
-        # NOTE: This check was also backwards - removing it for now
-        # if self.current_price and price < self.current_price:
-        #     logger.error(f"❌ Stop-buy at ${price:.2f} would trigger immediately (current: ${self.current_price:.2f})")
-        #     return None
-
         # Check for duplicate prices in active orders
         active_prices = []
         for u, cfg in self.position_map.items():
@@ -404,14 +396,6 @@ class HyperTrader:
             return config.order_id
 
         trigger_price = config.price
-
-        # Safety check: Stop-loss triggers when price FALLS to trigger_price
-        # So trigger_price should be BELOW current price for a valid stop-loss
-        # (We're selling when price drops)
-        # NOTE: This check was backwards before - removing it for now as it may not be needed
-        # if self.current_price and trigger_price > self.current_price:
-        #     logger.error(f"❌ Stop-loss at ${trigger_price:.2f} would trigger immediately (current: ${self.current_price:.2f})")
-        #     return None
 
         # Check for duplicate prices in active orders
         active_prices = []

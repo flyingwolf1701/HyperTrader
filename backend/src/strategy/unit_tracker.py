@@ -7,7 +7,7 @@ from typing import Optional, Dict, List
 from loguru import logger
 
 # Import from centralized data models
-from .data_models import Phase, UnitChangeEvent
+from .depricated_data_models import Phase, UnitChangeEvent
 
 
 class UnitTracker:

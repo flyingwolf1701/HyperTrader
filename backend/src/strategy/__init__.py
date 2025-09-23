@@ -1,7 +1,7 @@
 """Strategy components for sliding window trading"""
 
 # Import from data models
-from .data_models import (
+from .depricated_data_models import (
     OrderType,
     Phase,
     ExecutionStatus,
