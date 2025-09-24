@@ -507,7 +507,7 @@ class HyperliquidClient:
             order_type = {
                 "trigger": {
                     "triggerPx": float(rounded_trigger),
-                    "isMarket": False,  # Use limit orders with proper tick sizing
+                    "isMarket": True, 
                     "tpsl": "sl"  # Stop loss type
                 }
             }
@@ -588,6 +588,7 @@ class HyperliquidClient:
         """
         try:
             # Round trigger price to tick size
+            from .asset_config import round_to_tick
             rounded_trigger = round_to_tick(trigger_price, symbol)
             
             # Use trigger as limit if not specified
@@ -601,13 +602,13 @@ class HyperliquidClient:
                 f"limit @ ${rounded_limit:.2f}"
             )
             
-            # Create stop loss order type (for buys, this triggers when price rises)
-            # Using "sl" because for a buy order, stop loss triggers above current price
+            # Create stop buy order type (triggers when price rises)
+            # Using "tp" (take profit) for buy orders that trigger when price goes UP
             order_type = {
                 "trigger": {
                     "triggerPx": float(rounded_trigger),
-                    "isMarket": False,  # Execute as limit when triggered
-                    "tpsl": "sl"  # Stop loss type (for buy orders, triggers when price rises above)
+                    "isMarket": True,
+                    "tpsl": "tp"  # Take profit type (for buy orders, triggers when price rises above)
                 }
             }
             
@@ -642,23 +643,12 @@ class HyperliquidClient:
                         average_price=rounded_limit
                     )
                 else:
-                    return OrderResult(
-                        success=False,
-                        error_message=f"Unexpected response: {statuses}"
-                    )
+                    logger.error(f"Failed to cancel all orders: {response}")
             else:
-                error_msg = result.get("response", "Unknown error")
-                return OrderResult(
-                    success=False,
-                    error_message=f"Stop limit buy order failed: {error_msg}"
-                )
-                
+                logger.info("No open orders found to create cancellation requests.")
+
         except Exception as e:
-            logger.error(f"Failed to place stop limit buy order: {e}")
-            return OrderResult(
-                success=False,
-                error_message=str(e)
-            )
+            logger.error(f"An error occurred while cancelling all orders: {e}")
     
     def place_limit_order(
         self,
