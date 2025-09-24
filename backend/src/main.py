@@ -10,7 +10,6 @@ from decimal import Decimal
 from typing import Optional, Dict, List
 from datetime import datetime
 from loguru import logger
-from dotenv import load_dotenv
 
 # Add src directory to path for absolute imports
 src_dir = os.path.dirname(os.path.abspath(__file__))
@@ -29,6 +28,7 @@ from strategy.position_map import (
 from strategy.unit_tracker import UnitTracker
 from exchange.hyperliquid_sdk import HyperliquidClient, OrderResult
 from exchange.hyperliquid_sdk_websocket import HyperliquidSDKWebSocketClient
+from exchange.wallet_config import WalletConfig, WalletType
 
 
 class HyperTrader:
@@ -73,14 +73,16 @@ class HyperTrader:
     async def initialize(self):
         """Initialize all components and connections"""
         try:
-            # Load environment variables
-            load_dotenv()
-            
-            # Initialize SDK client (determines wallet based on type)
-            use_sub_wallet = (self.wallet_type == "hedge")
+            # Load wallet configuration from environment
+            wallet_config = WalletConfig.from_env()
+
+            # Initialize SDK client with explicit configuration
+            # Map wallet_type string to WalletType
+            wallet_type: WalletType = self.wallet_type  # type: ignore
             self.sdk_client = HyperliquidClient(
-                use_testnet=self.use_testnet,
-                use_sub_wallet=use_sub_wallet
+                config=wallet_config,
+                wallet_type=wallet_type,
+                use_testnet=self.use_testnet
             )
             logger.info(f"SDK client initialized for {self.wallet_type} wallet")
             

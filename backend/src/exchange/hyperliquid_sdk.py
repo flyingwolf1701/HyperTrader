@@ -6,13 +6,14 @@ Provides a clean interface to the Hyperliquid exchange
 from typing import Optional, Dict, Any, Tuple
 from decimal import Decimal
 from dataclasses import dataclass
-from loguru import logger
 
+from loguru import logger
 from hyperliquid.exchange import Exchange
 from hyperliquid.info import Info
 from hyperliquid.utils.signing import Account
 
 from .asset_config import get_tick_size, get_max_leverage, round_to_tick, is_valid_leverage
+from .wallet_config import WalletConfig, WalletType
 
 @dataclass
 class Position:
@@ -53,59 +54,59 @@ class HyperliquidClient:
     Handles both main wallet and sub-wallet operations.
     """
     
-    def __init__(self, use_testnet: bool = True, use_sub_wallet: bool = False):
+    def __init__(self, config: WalletConfig, wallet_type: WalletType = "main", use_testnet: bool = True):
         """
-        Initialize the Hyperliquid client.
-        
+        Initialize the Hyperliquid client with explicit configuration.
+
         Args:
+            config: WalletConfig object containing credentials and addresses
+            wallet_type: Which wallet to use for trading ("main", "sub", "long", "short", "hedge")
             use_testnet: Whether to use testnet (True) or mainnet (False)
-            use_sub_wallet: Whether to use sub-wallet for trading
         """
+        self.config = config
+        self.wallet_type = wallet_type
         self.use_testnet = use_testnet
-        self.use_sub_wallet = use_sub_wallet
-        
+
         # Set base URL based on network
         self.base_url = (
-            "https://api.hyperliquid-testnet.xyz" if use_testnet 
+            "https://api.hyperliquid-testnet.xyz" if use_testnet
             else "https://api.hyperliquid.xyz"
         )
-        
+
+        # Get the active wallet address based on type
+        self.active_wallet_address = config.get_wallet_address(wallet_type)
+
         # Initialize wallet and clients
         self._initialize_clients()
         
     def _initialize_clients(self):
-        """Initialize the SDK clients and wallet"""
-        # Get credentials from environment variables
-        import os
-        from dotenv import load_dotenv
-        load_dotenv()
-        
-        private_key = os.getenv("HYPERLIQUID_PRIVATE_KEY")
-        self.main_wallet_address = os.getenv("HYPERLIQUID_MAIN_WALLET_ADDRESS")
-        self.sub_wallet_address = os.getenv("HYPERLIQUID_SUB_WALLET_ADDRESS")
-        
+        """Initialize the SDK clients with provided configuration"""
         # Create LocalAccount from private key
-        wallet = Account.from_key(private_key)
-        
+        wallet = Account.from_key(self.config.private_key)
+
         # Initialize Info client for read operations
         self.info = Info(self.base_url, skip_ws=True)
-        
-        # Determine which wallet to use for trading
-        if self.use_sub_wallet:
-            # Trade on sub-wallet using vault_address
+
+        # Determine vault_address parameter based on wallet type
+        # If using sub wallet, we need to pass it as vault_address
+        # If using main wallet, we don't pass vault_address
+        is_using_sub = self.active_wallet_address == self.config.sub_wallet_address
+
+        if is_using_sub:
+            # Trade on sub-wallet using vault_address parameter
             self.exchange = Exchange(
-                wallet=wallet,  # Pass LocalAccount object
+                wallet=wallet,
                 base_url=self.base_url,
-                vault_address=self.sub_wallet_address
+                vault_address=self.active_wallet_address
             )
-            logger.info(f"Initialized with sub-wallet {self.sub_wallet_address[:8]}...")
+            logger.info(f"Initialized with {self.wallet_type} wallet (sub): {self.active_wallet_address[:8]}...")
         else:
-            # Trade on main wallet
+            # Trade on main wallet (no vault_address needed)
             self.exchange = Exchange(
-                wallet=wallet,  # Pass LocalAccount object
+                wallet=wallet,
                 base_url=self.base_url
             )
-            logger.info(f"Initialized with main wallet {self.main_wallet_address[:8]}...")
+            logger.info(f"Initialized with {self.wallet_type} wallet (main): {self.active_wallet_address[:8]}...")
     
     def get_user_address(self) -> str:
         """
@@ -114,17 +115,18 @@ class HyperliquidClient:
         Returns:
             The wallet address being used for trading
         """
-        return self.sub_wallet_address if self.use_sub_wallet else self.main_wallet_address
+        return self.active_wallet_address
     
-    def switch_wallet(self, use_sub_wallet: bool):
+    def switch_wallet(self, wallet_type: WalletType):
         """
-        Switch between main wallet and sub-wallet.
-        
+        Switch to a different wallet type.
+
         Args:
-            use_sub_wallet: True to use sub-wallet, False for main wallet
+            wallet_type: The wallet type to switch to
         """
-        if use_sub_wallet != self.use_sub_wallet:
-            self.use_sub_wallet = use_sub_wallet
+        if wallet_type != self.wallet_type:
+            self.wallet_type = wallet_type
+            self.active_wallet_address = self.config.get_wallet_address(wallet_type)
             self._initialize_clients()
     
     # ============================================================================
@@ -491,7 +493,7 @@ class HyperliquidClient:
             OrderResult with order details
         """
         try:
-            # Round trigger price to tick sizethe met
+            # Round trigger price to tick size
             rounded_trigger = round_to_tick(trigger_price, symbol)
             
             logger.info(
