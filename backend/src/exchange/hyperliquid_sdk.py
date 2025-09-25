@@ -657,12 +657,22 @@ class HyperliquidClient:
                         average_price=rounded_limit
                     )
                 else:
-                    logger.error(f"Failed to cancel all orders: {response}")
+                    return OrderResult(
+                        success=False,
+                        error_message=f"Unexpected response: {statuses}"
+                    )
             else:
-                logger.info("No open orders found to create cancellation requests.")
+                return OrderResult(
+                    success=False,
+                    error_message=f"Stop buy order failed: {result}"
+                )
 
         except Exception as e:
-            logger.error(f"An error occurred while cancelling all orders: {e}")
+            logger.error(f"Failed to place stop buy order: {e}")
+            return OrderResult(
+                success=False,
+                error_message=str(e)
+            )
     
     def place_limit_order(
         self,
@@ -793,27 +803,28 @@ class HyperliquidClient:
     def cancel_all_orders(self, symbol: str) -> int:
         """
         Cancel all open orders for a symbol.
-        
+
         Args:
             symbol: Trading symbol
-            
+
         Returns:
             Number of orders cancelled
         """
         try:
-            result = self.exchange.cancel_by_coin(symbol)
-            
-            if result.get("status") == "ok":
-                response = result.get("response", {})
-                data = response.get("data", {})
-                statuses = data.get("statuses", [])
-                cancelled_count = len([s for s in statuses if "canceled" in s])
-                logger.info(f"Cancelled {cancelled_count} orders for {symbol}")
-                return cancelled_count
-            else:
-                logger.warning(f"Failed to cancel orders: {result}")
+            # Get all open orders for this symbol
+            open_orders = self.get_open_orders(symbol)
+            if not open_orders:
                 return 0
-                
+
+            cancelled_count = 0
+            for order in open_orders:
+                order_id = order.get("oid")
+                if order_id and self.cancel_order(symbol, str(order_id)):
+                    cancelled_count += 1
+
+            logger.info(f"Cancelled {cancelled_count} orders for {symbol}")
+            return cancelled_count
+
         except Exception as e:
             logger.error(f"Error cancelling all orders: {e}")
             return 0

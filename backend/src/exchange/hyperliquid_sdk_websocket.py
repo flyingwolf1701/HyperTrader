@@ -238,7 +238,7 @@ class HyperliquidSDKWebSocketClient:
                     else:
                         time_since_log = (datetime.now() - self._last_price_log[symbol]).total_seconds()
                         if time_since_log >= 60:
-                            logger.debug(f"{symbol}: ${price:.2f}")
+                            logger.info(f"{symbol}: ${price:.2f}")
                             self._last_price_log[symbol] = datetime.now()
 
         except Exception as e:

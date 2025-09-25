@@ -96,30 +96,50 @@ def cmd_trade(symbol: str, amount: float, leverage: int = 10, short: bool = Fals
 def cmd_close(symbol: str, sub_wallet: bool = False):
     """Close position for a symbol"""
     try:
-        client = HyperliquidClient(use_testnet=True, use_sub_wallet=sub_wallet)
-        
+        # Import with proper path
+        sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        from src.exchange.wallet_config import WalletConfig
+
+        # Load wallet config
+        config = WalletConfig.from_env()
+
+        # Initialize client with new interface
+        client = HyperliquidClient(
+            config=config,
+            wallet_type="sub" if sub_wallet else "main",
+            use_testnet=True
+        )
+
         logger.info("=" * 60)
-        logger.info("CLOSING POSITION")
+        logger.info("CLOSING POSITION AND ORDERS")
         logger.info("=" * 60)
-        
+
+        # Cancel all open orders first
+        logger.info(f"Cancelling all open orders for {symbol}...")
+        cancelled_count = client.cancel_all_orders(symbol)
+        if cancelled_count > 0:
+            logger.info(f"✅ Cancelled {cancelled_count} orders")
+        else:
+            logger.info("No orders to cancel")
+
         # Check if position exists
         position = client.get_position(symbol)
         if not position:
             logger.info(f"No position to close for {symbol}")
             return
-        
+
         logger.info(f"Closing {position.side} position")
         logger.info(f"Size: {position.size:.6f} {symbol}")
-        
+
         # Close the position
         result = client.close_position(symbol)
-        
+
         if result.success:
-            logger.success("Position closed successfully")
+            logger.success("✅ Position closed successfully")
             logger.success(f"Closed at average price: ${result.average_price}")
         else:
-            logger.error(f"Failed to close position: {result.error_message}")
-            
+            logger.error(f"❌ Failed to close position: {result.error_message}")
+
     except Exception as e:
         logger.error(f"Failed to close position: {e}")
         import traceback
