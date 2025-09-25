@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Bash(uv run:*)",
-      "Read(c:\\Users\\trini\\Pictures\\Screenshots/**)"
+      "Read(c:\\Users\\trini\\Pictures\\Screenshots/**)",
+      "Bash(python:*)"
     ],
     "deny": [],
     "ask": []

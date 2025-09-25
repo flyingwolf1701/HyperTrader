@@ -12,7 +12,6 @@ from hyperliquid.exchange import Exchange
 from hyperliquid.info import Info
 from hyperliquid.utils.signing import Account
 
-from .asset_config import get_tick_size, get_max_leverage, round_to_tick, is_valid_leverage
 from .wallet_config import WalletConfig, WalletType
 
 @dataclass
@@ -264,8 +263,9 @@ class HyperliquidClient:
             True if successful, False otherwise
         """
         try:
-            # Validate leverage against our config
-            max_allowed = get_max_leverage(symbol)
+            # Get max leverage from market info
+            market_info = self.get_market_info(symbol)
+            max_allowed = int(market_info.get("maxLeverage", 20))  # Default to 20x if not specified
             if leverage > max_allowed:
                 logger.warning(f"Requested {leverage}x exceeds max {max_allowed}x for {symbol}, using max")
                 leverage = max_allowed
@@ -336,8 +336,10 @@ class HyperliquidClient:
         try:
             # Validate and set leverage if specified
             if leverage:
-                if not is_valid_leverage(symbol, leverage):
-                    max_lev = get_max_leverage(symbol)
+                # Get max leverage from market info
+                market_info = self.get_market_info(symbol)
+                max_lev = int(market_info.get("maxLeverage", 20))
+                if not (1 <= leverage <= max_lev):
                     return OrderResult(
                         success=False,
                         error_message=f"Invalid leverage {leverage} for {symbol}. Max allowed: {max_lev}"
@@ -493,14 +495,20 @@ class HyperliquidClient:
             OrderResult with order details
         """
         try:
-            # Round trigger price to tick size
-            rounded_trigger = round_to_tick(trigger_price, symbol)
+            # Get tick size from market info and round trigger price
+            market_info = self.get_market_info(symbol)
+            tick_size = Decimal(str(market_info.get("szDecimals", 4)))
+            tick_size = Decimal("10") ** -tick_size  # Convert decimals to tick size
+
+            # Round to tick size
+            multiplier = trigger_price / tick_size
+            rounded_trigger = multiplier.quantize(Decimal('1'), rounding='ROUND_HALF_UP') * tick_size
             
             logger.info(
                 f"Placing {'BUY' if is_buy else 'SELL'} stop order: "
                 f"{size} {symbol} triggers @ ${rounded_trigger:.2f}"
             )
-            logger.debug(f"Original trigger: ${trigger_price}, Rounded: ${rounded_trigger}, Tick size: ${get_tick_size(symbol)}")
+            logger.debug(f"Original trigger: ${trigger_price}, Rounded: ${rounded_trigger}, Tick size: ${tick_size}")
             
             # Create stop loss order type
             # Use limit orders for all stops with proper tick sizing
@@ -587,14 +595,20 @@ class HyperliquidClient:
             OrderResult with order details
         """
         try:
+            # Get tick size from market info and round prices
+            market_info = self.get_market_info(symbol)
+            tick_size = Decimal(str(market_info.get("szDecimals", 4)))
+            tick_size = Decimal("10") ** -tick_size  # Convert decimals to tick size
+
             # Round trigger price to tick size
-            from .asset_config import round_to_tick
-            rounded_trigger = round_to_tick(trigger_price, symbol)
-            
+            multiplier = trigger_price / tick_size
+            rounded_trigger = multiplier.quantize(Decimal('1'), rounding='ROUND_HALF_UP') * tick_size
+
             # Use trigger as limit if not specified
             if limit_price is None:
                 limit_price = trigger_price
-            rounded_limit = round_to_tick(limit_price, symbol)
+            multiplier = limit_price / tick_size
+            rounded_limit = multiplier.quantize(Decimal('1'), rounding='ROUND_HALF_UP') * tick_size
             
             logger.info(
                 f"Placing STOP LIMIT BUY order: "
@@ -677,9 +691,10 @@ class HyperliquidClient:
             # Get market info for proper decimal formatting
             market_info = self.get_market_info(symbol)
             sz_decimals = int(market_info.get("szDecimals", 4))
-            
-            # Get tick size from our config (since testnet doesn't provide it)
-            tick_size = float(get_tick_size(symbol))
+
+            # Get tick size from market info
+            tick_decimals = int(market_info.get("szDecimals", 4))
+            tick_size = 10 ** -tick_decimals
             
             # Round price to the nearest tick size
             rounded_price = round(float(price) / tick_size) * tick_size
