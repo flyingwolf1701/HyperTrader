@@ -622,7 +622,7 @@ class HyperliquidClient:
                 "trigger": {
                     "triggerPx": float(rounded_trigger),
                     "isMarket": True,
-                    "tpsl": "tp"  # Take profit type (for buy orders, triggers when price rises above)
+                    "tpsl": "sl"  # Take profit type (for buy orders, triggers when price rises above)
                 }
             }
             
