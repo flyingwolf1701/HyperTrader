@@ -24,8 +24,6 @@ class UnitChangeEvent:
     price: Decimal
     previous_direction: Direction
     current_direction: Direction
-    is_whipsaw: bool = False
-
 
 class UnitTracker:
     """
@@ -33,36 +31,32 @@ class UnitTracker:
     Has no knowledge of orders or positions.
     """
 
-    def __init__(self, unit_size: Decimal, initial_price: Decimal):
+    def __init__(self, unit_size_usd: Decimal, anchor_price: Decimal):
         """
         Initialize the unit tracker.
 
         Args:
-            unit_size: Fixed dollar amount that defines one unit (e.g., $100 for BTC)
-            initial_price: Starting price to establish initial unit
+            unit_size_usd: Fixed dollar amount that defines one unit (e.g., $100 for BTC)
+            anchor_price: The anchor price at unit 0 (initial position entry price)
         """
-        self.unit_size = unit_size
+        self.unit_size_usd = unit_size_usd
 
-        # Calculate initial unit (0 at anchor price)
-        self.anchor_price = initial_price
+        # Anchor is always at unit 0
+        self.anchor_price = anchor_price
         self.current_unit = 0
         self.previous_unit = 0
 
-        # Direction tracking
-        self.current_direction = Direction.NONE
-        self.previous_direction = Direction.NONE
-
-        # Whipsaw detection
-        self.whipsaw_pattern = []  # Track last 3 unit movements
-        self.is_paused = False
+        # Direction tracking - start as UP since we're long-biased
+        self.current_direction = Direction.UP
+        self.previous_direction = Direction.UP
 
         # Event callback
         self.on_unit_change: Optional[Callable[[UnitChangeEvent], None]] = None
 
-        # Price tracking
-        self.current_price = initial_price
+        # Price tracking - will be updated via WebSocket
+        self.current_price = anchor_price
 
-        logger.info(f"UnitTracker initialized - Anchor: ${initial_price:.2f}, Unit Size: ${unit_size}")
+        logger.info(f"UnitTracker initialized - Anchor: ${anchor_price:.2f} at unit 0, Unit Size: ${unit_size_usd}")
 
     def update_price(self, price: Decimal) -> Optional[UnitChangeEvent]:
         """
@@ -78,7 +72,9 @@ class UnitTracker:
 
         # Calculate the new unit based on price
         price_diff = price - self.anchor_price
-        new_unit = int(price_diff / self.unit_size)
+        new_unit = int(price_diff / self.unit_size_usd)
+
+        # No debug logging needed
 
         # Check if we've crossed a unit boundary
         if new_unit != self.current_unit:
@@ -97,26 +93,17 @@ class UnitTracker:
             else:
                 self.current_direction = Direction.NONE
 
-            # Check for whipsaw pattern (A -> B -> A)
-            is_whipsaw = self._check_whipsaw()
-
             # Create event
             event = UnitChangeEvent(
                 previous_unit=self.previous_unit,
                 current_unit=self.current_unit,
                 price=price,
                 previous_direction=self.previous_direction,
-                current_direction=self.current_direction,
-                is_whipsaw=is_whipsaw
+                current_direction=self.current_direction
             )
 
-            # Log the unit change
-            direction_symbol = "↑" if self.current_direction == Direction.UP else "↓"
-            whipsaw_text = " [WHIPSAW]" if is_whipsaw else ""
-            logger.info(
-                f"Unit Change: {self.previous_unit} → {self.current_unit} {direction_symbol} "
-                f"@ ${price:.2f}{whipsaw_text}"
-            )
+            # Simple unit change log - grid strategy will log the important details
+            pass
 
             # Trigger callback if registered
             if self.on_unit_change:
@@ -126,40 +113,12 @@ class UnitTracker:
 
         return None
 
-    def _check_whipsaw(self) -> bool:
-        """
-        Check if the current movement completes a whipsaw pattern (A -> B -> A).
-
-        Returns:
-            True if whipsaw detected, False otherwise
-        """
-        # Update pattern history
-        self.whipsaw_pattern.append(self.current_unit)
-        if len(self.whipsaw_pattern) > 3:
-            self.whipsaw_pattern.pop(0)
-
-        # Check for A -> B -> A pattern
-        if len(self.whipsaw_pattern) == 3:
-            if self.whipsaw_pattern[0] == self.whipsaw_pattern[2] and \
-               self.whipsaw_pattern[0] != self.whipsaw_pattern[1]:
-                logger.warning(
-                    f"Whipsaw detected: {self.whipsaw_pattern[0]} → "
-                    f"{self.whipsaw_pattern[1]} → {self.whipsaw_pattern[2]}"
-                )
-                self.is_paused = True
-                return True
-
-        # Clear pause state if we've moved beyond the whipsaw
-        if self.is_paused and len(self.whipsaw_pattern) == 3:
-            # We've moved to a new unit after the whipsaw
-            self.is_paused = False
-            logger.info("Whipsaw resolved - resuming normal operation")
-
-        return False
-
     def get_unit_price(self, unit: int) -> Decimal:
         """
         Calculate the price for a specific unit.
+
+        Note: While the position_map stores these prices, the unit_tracker
+        calculates them independently for unit boundary detection.
 
         Args:
             unit: Unit number (0 is anchor price)
@@ -167,7 +126,7 @@ class UnitTracker:
         Returns:
             Price at the unit boundary
         """
-        return self.anchor_price + (Decimal(unit) * self.unit_size)
+        return self.anchor_price + (Decimal(unit) * self.unit_size_usd)
 
     def get_state(self) -> dict:
         """
@@ -183,7 +142,5 @@ class UnitTracker:
             "previous_direction": self.previous_direction.value,
             "current_price": float(self.current_price),
             "anchor_price": float(self.anchor_price),
-            "unit_size": float(self.unit_size),
-            "is_paused": self.is_paused,
-            "whipsaw_pattern": self.whipsaw_pattern
+            "unit_size_usd": float(self.unit_size_usd)
         }

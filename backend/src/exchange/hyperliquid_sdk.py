@@ -53,23 +53,23 @@ class HyperliquidClient:
     Handles both main wallet and sub-wallet operations.
     """
     
-    def __init__(self, config: WalletConfig, wallet_type: WalletType = "main", use_testnet: bool = True):
+    def __init__(self, config: WalletConfig, wallet_type: WalletType = "main", mainnet: bool = False):
         """
         Initialize the Hyperliquid client with explicit configuration.
 
         Args:
             config: WalletConfig object containing credentials and addresses
             wallet_type: Which wallet to use for trading ("main", "sub", "long", "short", "hedge")
-            use_testnet: Whether to use testnet (True) or mainnet (False)
+            mainnet: Whether to use mainnet (True) or testnet (False) - matches SDK convention
         """
         self.config = config
         self.wallet_type = wallet_type
-        self.use_testnet = use_testnet
+        self.mainnet = mainnet
 
         # Set base URL based on network
         self.base_url = (
-            "https://api.hyperliquid-testnet.xyz" if use_testnet
-            else "https://api.hyperliquid.xyz"
+            "https://api.hyperliquid.xyz" if mainnet
+            else "https://api.hyperliquid-testnet.xyz"
         )
 
         # Get the active wallet address based on type
@@ -346,19 +346,20 @@ class HyperliquidClient:
                     )
                 self.set_leverage(symbol, leverage)
             
-            # Calculate position size
-            position_size = self.calculate_position_size(symbol, usd_amount)
+            # Calculate position size in coins from USD amount
+            # We need to convert USD to coin amount based on current price for the order
+            position_size_coin = self.calculate_position_size(symbol, usd_amount)
             
             logger.info(
                 f"Opening {'LONG' if is_long else 'SHORT'} position: "
-                f"{position_size} {symbol} (${usd_amount})"
+                f"{position_size_coin} {symbol} (${usd_amount})"
             )
             
             # Place market order
             result = self.exchange.market_open(
                 name=symbol,
                 is_buy=is_long,
-                sz=float(position_size),
+                sz=float(position_size_coin),
                 px=None,  # Let SDK calculate
                 slippage=slippage
             )
@@ -617,12 +618,12 @@ class HyperliquidClient:
             )
             
             # Create stop buy order type (triggers when price rises)
-            # Using "tp" (take profit) for buy orders that trigger when price goes UP
+            # Using "sl" (stop loss) for buy orders that trigger when price goes UP
             order_type = {
                 "trigger": {
                     "triggerPx": float(rounded_trigger),
                     "isMarket": True,
-                    "tpsl": "tp"  # Take profit type (for buy orders, triggers when price rises above)
+                    "tpsl": "sl"  # Stop loss type (for buy orders, triggers when price rises above)
                 }
             }
             

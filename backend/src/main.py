@@ -53,17 +53,19 @@ def parse_arguments():
     )
 
     parser.add_argument(
-        "--unit-size",
+        "--unit-size-usd",
         type=float,
         required=True,
+        dest="unit_size_usd",
         help="USD amount per unit (e.g., 1.0 for $1 moves on SOL, 100 for $100 moves on BTC)"
     )
 
     parser.add_argument(
-        "--position-size",
+        "--position-value-usd",
         type=float,
         required=True,
-        help="Position value in USD (wallet allocation)"
+        dest="position_value_usd",
+        help="Total position value in USD (e.g., 2000 for $2000 position)"
     )
 
     parser.add_argument(
@@ -86,28 +88,14 @@ def parse_arguments():
         "--testnet",
         action="store_true",
         default=True,
-        help="Use testnet (default: True)"
-    )
-
-    parser.add_argument(
-        "--mainnet",
-        action="store_true",
-        help="Use mainnet (overrides --testnet)"
-    )
-
-    parser.add_argument(
-        "--wallet",
-        type=str,
-        default="main",
-        choices=["main", "sub"],
-        help="Which wallet to use for trading"
+        help="Use testnet instead of mainnet (default: True for safety)"
     )
 
     args = parser.parse_args()
 
-    # Handle mainnet flag
-    if args.mainnet:
-        args.testnet = False
+    # Calculate position size in coins (this will be recalculated with actual price later)
+    # For now, just store a placeholder
+    args.position_size_coin = 0  # Will be calculated when we get the actual price
 
     return args
 
@@ -124,12 +112,12 @@ async def main():
     logger.info("HyperTrader - Long-Biased Grid Trading Bot")
     logger.info("=" * 60)
     logger.info(f"Symbol: {args.symbol}")
-    logger.info(f"Unit Size: ${args.unit_size}")
-    logger.info(f"Position Size: ${args.position_size}")
+    logger.info(f"Unit Size: ${args.unit_size_usd}")
+    logger.info(f"Position Value: ${args.position_value_usd}")
     logger.info(f"Leverage: {args.leverage}x")
-    logger.info(f"Total Position Value: ${args.position_size * args.leverage}")
+    logger.info(f"Margin Required: ${args.position_value_usd / args.leverage}")
     logger.info(f"Network: {'TESTNET' if args.testnet else 'MAINNET'}")
-    logger.info(f"Wallet: {args.wallet}")
+    logger.info(f"Strategy: {args.strategy}")
     logger.info("=" * 60)
 
     try:
@@ -138,16 +126,16 @@ async def main():
         logger.info("Wallet configuration loaded successfully")
 
         # Initialize exchange client
+        # Convert testnet flag to mainnet (SDK convention: mainnet=True, testnet=False)
         client = HyperliquidClient(
             config=config,
-            wallet_type=args.wallet,
-            use_testnet=args.testnet
+            wallet_type="main",  # For now, 'long' strategy always uses 'main' wallet
+            mainnet=not args.testnet
         )
-        logger.info(f"Connected to Hyperliquid {'testnet' if args.testnet else 'mainnet'}")
 
         # Initialize WebSocket client
         websocket = HyperliquidSDKWebSocketClient(
-            testnet=args.testnet,
+            mainnet=not args.testnet,
             user_address=client.get_user_address()
         )
 
@@ -156,14 +144,19 @@ async def main():
             logger.error("Failed to connect to WebSocket")
             return
 
+        # Start WebSocket listener BEFORE initializing strategy
+        # This ensures price updates and fills are captured from the start
+        websocket_task = asyncio.create_task(websocket.listen())
+        logger.info("WebSocket listener started")
+
         # Create strategy configuration
         strategy_config = StrategyConfig(
             symbol=args.symbol,
             leverage=args.leverage,
-            wallet_allocation=Decimal(str(args.position_size)),
-            unit_size=Decimal(str(args.unit_size)),
-            testnet=args.testnet,
-            wallet_type=args.wallet
+            position_value_usd=Decimal(str(args.position_value_usd)),
+            unit_size_usd=Decimal(str(args.unit_size_usd)),
+            mainnet=not args.testnet,
+            strategy=args.strategy
         )
 
         # Initialize strategy
@@ -176,11 +169,13 @@ async def main():
         # Initialize the strategy (establish position and grid)
         if not await strategy.initialize():
             logger.error("Failed to initialize strategy")
+            websocket_task.cancel()
+            try:
+                await websocket_task
+            except asyncio.CancelledError:
+                pass
             await websocket.disconnect()
             return
-
-        # Start WebSocket listener
-        websocket_task = asyncio.create_task(websocket.listen())
 
         # Run the strategy
         strategy_task = asyncio.create_task(strategy.run())
