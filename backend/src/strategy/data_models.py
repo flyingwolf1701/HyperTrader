@@ -25,7 +25,7 @@ class StrategyConfig:
     symbol: str
     leverage: int
     position_value_usd: Decimal  # USD amount allocated
-    unit_size: Decimal  # USD per unit movement
+    unit_size_usd: Decimal  # USD per unit movement
 
     # Exchange settings
     testnet: bool = True
@@ -37,14 +37,9 @@ class StrategyConfig:
         pass
 
     @property
-    def total_position_value(self) -> Decimal:
-        """Total leveraged position value"""
-        return self.position_value_usd * Decimal(self.leverage)
-
-    @property
     def position_fragment_usd(self) -> Decimal:
         """USD value of each fragment (1/4 of total)"""
-        return self.total_position_value / 4
+        return self.position_value_usd / 4
 
 
 @dataclass

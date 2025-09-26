@@ -63,16 +63,17 @@ class PositionMap:
     Dictionary where each key is a unit and value contains price and order history.
     """
 
-    def __init__(self, initial_unit: int = 0, unit_size: Decimal = Decimal("1"), anchor_price: Decimal = Decimal("0")):
+    def __init__(self,  unit_size_usd: Decimal, anchor_price: Decimal, initial_unit: int = 0):
         """
         Initialize the position map with a buffer of units.
 
         Args:
-            initial_unit: Starting unit (usually 0)
-            unit_size: Dollar amount per unit
+            initial_unit: Starting unit (usually 0) 
+            unit_size_usd: Dollar amount per unit
             anchor_price: Price at unit 0
         """
-        self.unit_size = unit_size
+        # TODO: I don't think initial_unit is necessary, but I am leaving that for another time.
+        self.unit_size_usd = unit_size_usd
         self.anchor_price = anchor_price
         self.map: Dict[int, UnitLevel] = {}
 
@@ -89,7 +90,7 @@ class PositionMap:
 
     def _calculate_unit_price(self, unit: int) -> Decimal:
         """Calculate the price for a specific unit"""
-        return self.anchor_price + (Decimal(unit) * self.unit_size)
+        return self.anchor_price + (Decimal(unit) * self.unit_size_usd)
 
     def _ensure_unit_exists(self, unit: int) -> None:
         """Ensure a unit exists in the map, expanding if necessary"""

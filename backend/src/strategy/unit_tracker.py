@@ -25,7 +25,7 @@ class UnitChangeEvent:
     previous_direction: Direction
     current_direction: Direction
     is_whipsaw: bool = False
-
+# TODO: seems we are using is_whipsaw and is_pause for the same thing. But there might be reason to it. But need to understand better
 
 class UnitTracker:
     """
@@ -33,24 +33,27 @@ class UnitTracker:
     Has no knowledge of orders or positions.
     """
 
-    def __init__(self, unit_size: Decimal, initial_price: Decimal):
+    def __init__(self, unit_size_usd: Decimal, initial_price: Decimal):
         """
         Initialize the unit tracker.
 
         Args:
-            unit_size: Fixed dollar amount that defines one unit (e.g., $100 for BTC)
+            unit_size_usd: Fixed dollar amount that defines one unit (e.g., $100 for BTC)
             initial_price: Starting price to establish initial unit
+            TODO: AI Wrote the initial price thing, And I don't get why it decided it was important but initial price is position_map[0].price
+            TODO: This code shows current_price as initial price. that is just wrong. current price is passed in from websocket
         """
-        self.unit_size = unit_size
+        self.unit_size_usd = unit_size_usd
 
         # Calculate initial unit (0 at anchor price)
+        # TODO: Our anchor is ALWAYS unit 0. so 
         self.anchor_price = initial_price
         self.current_unit = 0
         self.previous_unit = 0
 
         # Direction tracking
         self.current_direction = Direction.NONE
-        self.previous_direction = Direction.NONE
+        self.previous_direction = Direction.UP
 
         # Whipsaw detection
         self.whipsaw_pattern = []  # Track last 3 unit movements
@@ -62,7 +65,7 @@ class UnitTracker:
         # Price tracking
         self.current_price = initial_price
 
-        logger.info(f"UnitTracker initialized - Anchor: ${initial_price:.2f}, Unit Size: ${unit_size}")
+        logger.info(f"UnitTracker initialized - Anchor: ${initial_price:.2f}, Unit Size: ${unit_size_usd}")
 
     def update_price(self, price: Decimal) -> Optional[UnitChangeEvent]:
         """
@@ -78,7 +81,7 @@ class UnitTracker:
 
         # Calculate the new unit based on price
         price_diff = price - self.anchor_price
-        new_unit = int(price_diff / self.unit_size)
+        new_unit = int(price_diff / self.unit_size_usd)
 
         # Check if we've crossed a unit boundary
         if new_unit != self.current_unit:
@@ -158,6 +161,7 @@ class UnitTracker:
         return False
 
     def get_unit_price(self, unit: int) -> Decimal:
+        # TODO: This shows me the AI did not understand. There is no calculation. We just look it up on position_map
         """
         Calculate the price for a specific unit.
 
@@ -167,7 +171,7 @@ class UnitTracker:
         Returns:
             Price at the unit boundary
         """
-        return self.anchor_price + (Decimal(unit) * self.unit_size)
+        return self.anchor_price + (Decimal(unit) * self.unit_size_usd)
 
     def get_state(self) -> dict:
         """
@@ -183,7 +187,7 @@ class UnitTracker:
             "previous_direction": self.previous_direction.value,
             "current_price": float(self.current_price),
             "anchor_price": float(self.anchor_price),
-            "unit_size": float(self.unit_size),
+            "unit_size_usd": float(self.unit_size_usd),
             "is_paused": self.is_paused,
             "whipsaw_pattern": self.whipsaw_pattern
         }

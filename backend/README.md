@@ -9,7 +9,7 @@
 - `--unit-size`: USD per unit movement (e.g., 0.5 = $0.50 price moves)
 - `--position-size`: Position value in USD (e.g., 100 = $100 position)
 - `--leverage`: Leverage multiplier (e.g., 10, 20, 40)
-- `--testnet`: Use testnet (default: True)
+- `--testnet`: Use testnet (default: True during dev phase) no flag = False 
 
 **Full Examples:**
 

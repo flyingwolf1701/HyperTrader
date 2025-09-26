@@ -37,7 +37,7 @@ class GridTradingStrategy:
 
         # Strategy state
         self.state = StrategyState.INITIALIZING
-        self.metrics = StrategyMetrics(initial_position_value_usd=config.total_position_value)
+        self.metrics = StrategyMetrics(initial_position_value_usd=config.position_value_usd)
 
         # Core components (will be initialized after initial position)
         self.unit_tracker: Optional[UnitTracker] = None
@@ -52,8 +52,8 @@ class GridTradingStrategy:
         self.whipsaw_resolution_pending = False
 
         logger.info(f"Grid Trading Strategy initialized for {config.symbol}")
-        logger.info(f"Configuration: Leverage={config.leverage}x, Unit Size=${config.unit_size}, "
-                   f"Position=${config.total_position_value}")
+        logger.info(f"Configuration: Leverage={config.leverage}x, Unit Size=${config.unit_size_usd}, "
+                   f"Position=${config.position_value_usd}")
 
     async def initialize(self) -> bool:
         """
@@ -80,10 +80,10 @@ class GridTradingStrategy:
             logger.info(f"Current {self.config.symbol} price: ${current_price:.2f}")
 
             # Open initial position
-            logger.info(f"Opening initial position: ${self.config.total_position_value} @ {self.config.leverage}x")
+            logger.info(f"Opening initial position: ${self.config.position_value_usd} @ {self.config.leverage}x")
             result = self.client.open_position(
                 symbol=self.config.symbol,
-                usd_amount=self.config.total_position_value,
+                usd_amount=self.config.position_value_usd,
                 is_long=True,
                 leverage=self.config.leverage,
                 slippage=0.01
@@ -102,14 +102,14 @@ class GridTradingStrategy:
 
             # Initialize unit tracker with anchor price
             self.unit_tracker = UnitTracker(
-                unit_size=self.config.unit_size,
+                unit_size_usd=self.config.unit_size_usd,
                 initial_price=anchor_price
             )
 
             # Initialize position map
             self.position_map = PositionMap(
                 initial_unit=0,
-                unit_size=self.config.unit_size,
+                unit_size_usd=self.config.unit_size_usd,
                 anchor_price=anchor_price
             )
 

@@ -106,10 +106,10 @@ async def main():
     logger.info("HyperTrader - Long-Biased Grid Trading Bot")
     logger.info("=" * 60)
     logger.info(f"Symbol: {args.symbol}")
-    logger.info(f"Unit Size: ${args.unit_size}")
-    logger.info(f"Position Size: ${args.position_size}")
+    logger.info(f"Unit Size: ${args.unit_size_usd}")
+    logger.info(f"Position Size: {args.position_size_coin} {args.symbol}")
     logger.info(f"Leverage: {args.leverage}x")
-    logger.info(f"Total Position Value: ${args.position_size * args.leverage}")
+    logger.info(f"Total Position Value: ${args.position_value_usd}")
     logger.info(f"Network: {'TESTNET' if args.testnet else 'MAINNET'}")
     logger.info(f"Strategy: {args.strategy}")
     logger.info("=" * 60)
@@ -143,8 +143,8 @@ async def main():
         strategy_config = StrategyConfig(
             symbol=args.symbol,
             leverage=args.leverage,
-            position_value_usd=Decimal(str(args.position_size)),
-            unit_size=Decimal(str(args.unit_size)),
+            position_value_usd=Decimal(str(args.position_value_usd)),
+            unit_size_usd=Decimal(str(args.unit_size_usd)),
             testnet=args.testnet,
             wallet_type="main"  # For now, 'long' strategy always uses 'main' wallet
         )

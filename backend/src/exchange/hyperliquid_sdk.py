@@ -347,18 +347,19 @@ class HyperliquidClient:
                 self.set_leverage(symbol, leverage)
             
             # Calculate position size
-            position_size = self.calculate_position_size(symbol, usd_amount)
+            # TODO: not sure what there is to calulate. we should be getting this from hyperliquid data
+            position_size_coin = self.calculate_position_size(symbol, usd_amount)
             
             logger.info(
                 f"Opening {'LONG' if is_long else 'SHORT'} position: "
-                f"{position_size} {symbol} (${usd_amount})"
+                f"{position_size_coin} {symbol} (${usd_amount})"
             )
             
             # Place market order
             result = self.exchange.market_open(
                 name=symbol,
                 is_buy=is_long,
-                sz=float(position_size),
+                sz=float(position_size_coin),
                 px=None,  # Let SDK calculate
                 slippage=slippage
             )
