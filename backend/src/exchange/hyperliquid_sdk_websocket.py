@@ -1,0 +1,394 @@
+"""
+WebSocket client for HyperLiquid using the official SDK.
+The SDK's Info class has built-in WebSocket functionality via subscribe/unsubscribe.
+"""
+import asyncio
+from decimal import Decimal
+from datetime import datetime
+from typing import Dict, Callable, Any, Optional
+from loguru import logger
+from hyperliquid.info import Info
+
+
+class HyperliquidSDKWebSocketClient:
+    """A WebSocket client that uses Hyperliquid SDK's Info class for subscriptions."""
+
+    def __init__(self, testnet: bool = True, user_address: Optional[str] = None):
+        """
+        Initializes the SDK-based WebSocket client.
+
+        Args:
+            testnet: A boolean indicating whether to connect to the testnet.
+            user_address: Optional wallet address for user-specific subscriptions.
+        """
+        self.testnet = testnet
+        self.user_address = user_address
+        self.info: Optional[Info] = None
+        self.is_connected = False
+        self.startup_time = datetime.now()  # Track when bot started to filter old fills
+
+        # Callbacks for processing different types of events
+        self.price_callbacks: Dict[str, Callable[[Decimal], Any]] = {}
+        self.fill_callbacks: Dict[str, Callable] = {}
+
+        # Task management
+        self.listener_task: Optional[asyncio.Task] = None
+
+        # Track last price log time for periodic logging
+        self._last_price_log: Dict[str, datetime] = {}
+        self._last_heartbeat_log = datetime.now()
+
+    async def connect(self) -> bool:
+        """Establishes the WebSocket connection using the SDK."""
+        try:
+            logger.info("Connecting to Hyperliquid WebSocket via SDK...")
+
+            # Initialize Info with WebSocket support
+            # SDK expects True for mainnet, False for testnet (opposite of our convention)
+            self.info = Info(not self.testnet, skip_ws=False)
+            self.is_connected = True
+
+            logger.success("Successfully connected to Hyperliquid WebSocket")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to connect to WebSocket: {e}")
+            self.is_connected = False
+            return False
+
+    async def disconnect(self):
+        """Disconnects the WebSocket connection."""
+        logger.info("Disconnecting from Hyperliquid WebSocket...")
+
+        self.is_connected = False
+
+        if self.listener_task:
+            self.listener_task.cancel()
+            try:
+                await self.listener_task
+            except asyncio.CancelledError:
+                pass
+
+        if self.info:
+            # SDK handles WebSocket disconnection internally
+            pass
+
+        logger.info("Disconnected from Hyperliquid WebSocket")
+
+    async def subscribe_to_user_fills(self, user_address: str) -> bool:
+        """
+        Subscribe to user fills (order executions).
+
+        Args:
+            user_address: The wallet address to monitor for fills.
+        """
+        if not self.is_connected or not self.info:
+            logger.error("WebSocket not connected. Call connect() first.")
+            return False
+
+        try:
+            # Store the address for potential resubscription
+            self.user_address = user_address
+
+            # Subscribe to user fills using the SDK
+            subscription = {"type": "userFills", "user": user_address}
+
+            def handle_user_fills(data):
+                """Handle incoming user fill data"""
+                # SDK runs callbacks in a thread without event loop
+                # We need to schedule the coroutine in the main loop
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        asyncio.run_coroutine_threadsafe(self._handle_user_fills(data), loop)
+                    else:
+                        # If no loop is running, call synchronously
+                        asyncio.run(self._handle_user_fills(data))
+                except RuntimeError:
+                    # No event loop in thread, process synchronously
+                    self._handle_user_fills_sync(data)
+
+            self.info.subscribe(subscription, handle_user_fills)
+            logger.info(f"Subscribed to user fills for address: {user_address}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to subscribe to user fills: {e}")
+            return False
+
+    async def subscribe_to_trades(self, symbol: str, price_callback: callable = None, fill_callback: callable = None) -> bool:
+        """
+        Subscribes to the public trades channel for a given symbol.
+
+        Args:
+            symbol: The asset symbol (e.g., "ETH").
+            price_callback: A function to call with the latest trade price.
+            fill_callback: A function to handle order fills for this symbol.
+        """
+        if not self.is_connected or not self.info:
+            logger.error("WebSocket not connected. Call connect() first.")
+            return False
+
+        try:
+            # Store callbacks
+            if price_callback:
+                self.price_callbacks[symbol] = price_callback
+
+            if fill_callback:
+                self.fill_callbacks[symbol] = fill_callback
+
+            # Subscribe to trades using the SDK
+            subscription = {"type": "trades", "coin": symbol}
+
+            def handle_trades(data):
+                """Handle incoming trade data"""
+                # SDK runs callbacks in a thread without event loop
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        asyncio.run_coroutine_threadsafe(self._handle_trades(symbol, data), loop)
+                    else:
+                        asyncio.run(self._handle_trades(symbol, data))
+                except RuntimeError:
+                    # No event loop in thread, process synchronously
+                    self._handle_trades_sync(symbol, data)
+
+            self.info.subscribe(subscription, handle_trades)
+            logger.info(f"Subscribed to trades for {symbol}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to subscribe to {symbol} trades: {e}")
+            return False
+
+    async def listen(self):
+        """
+        Main listening loop. The SDK handles WebSocket messages internally via callbacks.
+        This method just keeps the connection alive.
+        """
+        if not self.is_connected or not self.info:
+            logger.error("WebSocket not connected.")
+            return
+
+        logger.info("Starting WebSocket listener with Hyperliquid SDK...")
+
+        # Create keep-alive task
+        self.listener_task = asyncio.create_task(self._keep_alive_loop())
+
+        try:
+            # Keep the listener running
+            await self.listener_task
+        except asyncio.CancelledError:
+            logger.info("WebSocket listener cancelled")
+        except Exception as e:
+            logger.error(f"Error in WebSocket listener: {e}")
+        finally:
+            logger.warning("WebSocket listener stopped")
+
+    async def _keep_alive_loop(self):
+        """Keep the connection alive and let SDK handle events"""
+        while self.is_connected:
+            try:
+                # The SDK handles WebSocket messages internally via callbacks
+                # We just need to keep the loop running
+                await asyncio.sleep(30)  # Periodic check
+
+                # Log connection status periodically
+                if (datetime.now() - self._last_heartbeat_log).total_seconds() >= 120:
+                    logger.debug("Connection healthy - SDK handling WebSocket events")
+                    self._last_heartbeat_log = datetime.now()
+
+            except asyncio.CancelledError:
+                logger.warning("Keep-alive loop cancelled")
+                break
+            except Exception as e:
+                logger.error(f"Error in keep-alive loop: {e}")
+                await asyncio.sleep(5)
+
+    async def _handle_trades(self, symbol: str, data):
+        """Handle incoming trade data"""
+        try:
+            if not data:
+                return
+
+            # Handle both list and single trade data
+            trades = data if isinstance(data, list) else [data]
+
+            # Process only the last trade to prevent rapid updates
+            if trades:
+                trade = trades[-1]
+
+                # Extract price from trade data
+                price_str = trade.get("px")
+                if price_str:
+                    price = Decimal(str(price_str))
+
+                    # Call price callback if registered
+                    if symbol in self.price_callbacks and self.price_callbacks[symbol]:
+                        callback = self.price_callbacks[symbol]
+                        # Handle both sync and async callbacks
+                        if asyncio.iscoroutinefunction(callback):
+                            await callback(price)
+                        else:
+                            callback(price)
+
+                    # Periodic logging (every 60 seconds)
+                    if symbol not in self._last_price_log:
+                        self._last_price_log[symbol] = datetime.now()
+                        logger.info(f"{symbol} price feed started: ${price:.2f}")
+                    else:
+                        time_since_log = (datetime.now() - self._last_price_log[symbol]).total_seconds()
+                        if time_since_log >= 60:
+                            logger.info(f"{symbol}: ${price:.2f}")
+                            self._last_price_log[symbol] = datetime.now()
+
+        except Exception as e:
+            logger.error(f"Error handling trades for {symbol}: {e}")
+
+    async def _handle_user_fills(self, data):
+        """Handle incoming user fill data"""
+        try:
+            if not data:
+                return
+
+            # The SDK might return fills in different formats
+            fills = []
+            if isinstance(data, dict):
+                # Check for fills array within dict
+                if "fills" in data:
+                    fills = data["fills"]
+                else:
+                    fills = [data]
+            elif isinstance(data, list):
+                fills = data
+
+            for fill in fills:
+                if not isinstance(fill, dict):
+                    continue
+
+                # Extract fill information
+                coin = fill.get("coin")
+                px = fill.get("px")
+                sz = fill.get("sz")
+                side = fill.get("side")
+                oid = fill.get("oid")
+                time_ms = fill.get("time")
+
+                # Filter out old fills from before bot startup
+                if time_ms:
+                    fill_time = datetime.fromtimestamp(time_ms / 1000)
+                    if fill_time < self.startup_time:
+                        logger.debug(f"Skipping old fill from {fill_time} (before startup {self.startup_time})")
+                        continue
+
+                if coin and px and sz:
+                    # Only process fills for symbols we're tracking
+                    if coin not in self.fill_callbacks:
+                        continue
+
+                    price = Decimal(str(px))
+                    size = abs(Decimal(str(sz)))
+                    is_buy = side == "B" or float(sz) > 0
+
+                    logger.warning(
+                        f"ORDER FILL: {coin} {'BUY' if is_buy else 'SELL'} "
+                        f"{size} @ ${price:.2f} (Order ID: {oid})"
+                    )
+
+                    # Call fill callback if registered
+                    if self.fill_callbacks[coin]:
+                        callback = self.fill_callbacks[coin]
+                        logger.info(f"Triggering fill callback for {coin}")
+                        logger.warning(f"📝 FILL CALLBACK: Passing order_id={oid} (type: {type(oid)})")
+
+                        # Call with expected parameters
+                        if asyncio.iscoroutinefunction(callback):
+                            await callback(str(oid), price, size)
+                        else:
+                            callback(str(oid), price, size)
+
+        except Exception as e:
+            logger.error(f"Error handling user fills: {e}")
+
+    def _handle_trades_sync(self, symbol: str, data):
+        """Synchronous version of _handle_trades for thread context"""
+        try:
+            if not data:
+                return
+
+            trades = data if isinstance(data, list) else [data]
+
+            if trades:
+                trade = trades[-1]
+                price_str = trade.get("px")
+                if price_str:
+                    price = Decimal(str(price_str))
+
+                    # Call price callback if registered
+                    if symbol in self.price_callbacks and self.price_callbacks[symbol]:
+                        self.price_callbacks[symbol](price)
+
+                    # Periodic logging
+                    if symbol not in self._last_price_log:
+                        self._last_price_log[symbol] = datetime.now()
+                        logger.info(f"{symbol} price feed started: ${price:.2f}")
+                    else:
+                        time_since_log = (datetime.now() - self._last_price_log[symbol]).total_seconds()
+                        if time_since_log >= 60:
+                            logger.debug(f"{symbol}: ${price:.2f}")
+                            self._last_price_log[symbol] = datetime.now()
+
+        except Exception as e:
+            logger.error(f"Error in sync trades handler for {symbol}: {e}")
+
+    def _handle_user_fills_sync(self, data):
+        """Synchronous version of _handle_user_fills for thread context"""
+        try:
+            if not data:
+                return
+
+            fills = []
+            if isinstance(data, dict):
+                if "fills" in data:
+                    fills = data["fills"]
+                else:
+                    fills = [data]
+            elif isinstance(data, list):
+                fills = data
+
+            for fill in fills:
+                if not isinstance(fill, dict):
+                    continue
+
+                coin = fill.get("coin")
+                px = fill.get("px")
+                sz = fill.get("sz")
+                side = fill.get("side")
+                oid = fill.get("oid")
+                time_ms = fill.get("time")
+
+                # Filter old fills
+                if time_ms:
+                    fill_time = datetime.fromtimestamp(time_ms / 1000)
+                    if fill_time < self.startup_time:
+                        continue
+
+                if coin and px and sz:
+                    if coin not in self.fill_callbacks:
+                        continue
+
+                    price = Decimal(str(px))
+                    size = abs(Decimal(str(sz)))
+                    is_buy = side == "B" or float(sz) > 0
+
+                    logger.warning(
+                        f"ORDER FILL: {coin} {'BUY' if is_buy else 'SELL'} "
+                        f"{size} @ ${price:.2f} (Order ID: {oid})"
+                    )
+
+                    if self.fill_callbacks[coin]:
+                        # Since we're in sync context, we can't await
+                        # The callback should be sync in this case
+                        self.fill_callbacks[coin](str(oid), price, size)
+
+        except Exception as e:
+            logger.error(f"Error in sync user fills handler: {e}")
