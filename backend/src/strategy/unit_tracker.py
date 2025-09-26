@@ -48,9 +48,9 @@ class UnitTracker:
         self.current_unit = 0
         self.previous_unit = 0
 
-        # Direction tracking
-        self.current_direction = Direction.NONE
-        self.previous_direction = Direction.NONE
+        # Direction tracking - start as UP since we're long-biased
+        self.current_direction = Direction.UP
+        self.previous_direction = Direction.UP
 
         # Whipsaw detection
         self.whipsaw_pattern = []  # Track last 3 unit movements
@@ -80,11 +80,7 @@ class UnitTracker:
         price_diff = price - self.anchor_price
         new_unit = int(price_diff / self.unit_size)
 
-        # Debug logging for unit calculation
-        logger.debug(f"🔍 Unit calculation: Price=${price:.4f}, Anchor=${self.anchor_price:.4f}")
-        logger.debug(f"🔍 Price diff=${price_diff:.4f}, Unit size=${self.unit_size}")
-        logger.debug(f"🔍 Raw unit calc: {price_diff}/{self.unit_size} = {price_diff/self.unit_size:.4f}")
-        logger.debug(f"🔍 New unit={new_unit}, Current unit={self.current_unit}")
+        # No debug logging needed
 
         # Check if we've crossed a unit boundary
         if new_unit != self.current_unit:
@@ -116,13 +112,8 @@ class UnitTracker:
                 is_whipsaw=is_whipsaw
             )
 
-            # Log the unit change
-            direction_symbol = "↑" if self.current_direction == Direction.UP else "↓"
-            whipsaw_text = " [WHIPSAW]" if is_whipsaw else ""
-            logger.info(
-                f"Unit Change: {self.previous_unit} → {self.current_unit} {direction_symbol} "
-                f"@ ${price:.2f}{whipsaw_text}"
-            )
+            # Simple unit change log - grid strategy will log the important details
+            pass
 
             # Trigger callback if registered
             if self.on_unit_change:
@@ -148,10 +139,6 @@ class UnitTracker:
         if len(self.whipsaw_pattern) == 3:
             if self.whipsaw_pattern[0] == self.whipsaw_pattern[2] and \
                self.whipsaw_pattern[0] != self.whipsaw_pattern[1]:
-                logger.warning(
-                    f"Whipsaw detected: {self.whipsaw_pattern[0]} → "
-                    f"{self.whipsaw_pattern[1]} → {self.whipsaw_pattern[2]}"
-                )
                 self.is_paused = True
                 return True
 
@@ -159,7 +146,6 @@ class UnitTracker:
         if self.is_paused and len(self.whipsaw_pattern) == 3:
             # We've moved to a new unit after the whipsaw
             self.is_paused = False
-            logger.info("Whipsaw resolved - resuming normal operation")
 
         return False
 

@@ -38,10 +38,12 @@ class GridTradingStrategy:
         # Strategy state
         self.state = StrategyState.INITIALIZING
         self.metrics = StrategyMetrics(initial_position_value_usd=config.total_position_value)
+        self.is_shutting_down = False
 
         # Core components (will be initialized after initial position)
         self.unit_tracker: Optional[UnitTracker] = None
         self.position_map: Optional[PositionMap] = None
+        self.main_loop: Optional[asyncio.AbstractEventLoop] = None
 
         # Active order tracking
         self.trailing_stop: List[int] = []  # Sorted list of active sell order units
@@ -64,6 +66,9 @@ class GridTradingStrategy:
         """
         try:
             logger.info(f"Initializing strategy for {self.config.symbol}...")
+
+            # Store the main event loop for later use
+            self.main_loop = asyncio.get_running_loop()
 
             # Set leverage
             if not self.client.set_leverage(self.config.symbol, self.config.leverage):
@@ -188,21 +193,9 @@ class GridTradingStrategy:
         Args:
             price: Current market price
         """
-        logger.debug(f"📍 Price update received: ${price:.2f}")
-
         if self.unit_tracker:
-            logger.debug(f"📍 Current unit before update: {self.unit_tracker.current_unit}")
-            logger.debug(f"📍 Calling unit_tracker.update_price with ${price:.2f}")
-
             # Update unit tracker which will trigger unit change events if needed
-            result = self.unit_tracker.update_price(price)
-
-            if result:
-                logger.warning(f"🚨 UNIT CHANGE DETECTED from price update!")
-            else:
-                logger.debug(f"📍 No unit change from price ${price:.2f}")
-        else:
-            logger.error("❌ Unit tracker not initialized!")
+            self.unit_tracker.update_price(price)
 
     def _on_unit_change(self, event: UnitChangeEvent) -> None:
         """
@@ -211,8 +204,16 @@ class GridTradingStrategy:
         Args:
             event: UnitChangeEvent containing unit transition details
         """
-        # Run the async handler in the event loop
-        asyncio.create_task(self._handle_unit_change(event))
+        # Don't process events during shutdown
+        if self.is_shutting_down:
+            return
+
+        # Schedule the async handler in the main event loop
+        if self.main_loop and self.main_loop.is_running():
+            future = asyncio.run_coroutine_threadsafe(self._handle_unit_change(event), self.main_loop)
+        else:
+            if not self.is_shutting_down:
+                logger.error("Main event loop not available or not running!")
 
     async def _handle_unit_change(self, event: UnitChangeEvent) -> None:
         """
@@ -222,16 +223,13 @@ class GridTradingStrategy:
         Args:
             event: UnitChangeEvent containing unit transition details
         """
-        logger.info(f"📊 UNIT CHANGE: {event.previous_unit} → {event.current_unit} | "
-                   f"Direction: {event.previous_direction.value} → {event.current_direction.value} | "
-                   f"Price: ${event.price:.2f}")
-        logger.info(f"📈 Grid State: Sells={self.trailing_stop} Buys={self.trailing_buy}")
+        # Simple, essential logging only
+        logger.info(f"Unit: {event.current_unit} | Sells: {self.trailing_stop} | Buys: {self.trailing_buy}")
 
         # Handle whipsaw detection
         if event.is_whipsaw:
             self.whipsaw_paused = True
             self.whipsaw_resolution_pending = True
-            logger.warning("Whipsaw detected - pausing replacement orders")
             return
 
         # Resolve whipsaw if we were paused
@@ -244,12 +242,26 @@ class GridTradingStrategy:
         # Standard operation: trending or reversal
         if event.current_direction == event.previous_direction:
             # Trending market - slide the grid
-            logger.info(f"🔄 TRENDING {event.current_direction.value.upper()}: Sliding grid")
             await self._handle_trending_market(event)
         else:
-            # Reversal - replace executed order
-            logger.info(f"🔀 REVERSAL: {event.previous_direction.value} → {event.current_direction.value}")
-            await self._handle_reversal(event)
+            # Check if this is a genuine reversal (order filled) or just direction change
+            # Reversal UP->DOWN means sell filled at current_unit
+            # Reversal DOWN->UP means buy filled at current_unit
+            is_genuine_reversal = False
+
+            if event.previous_direction == Direction.UP and event.current_direction == Direction.DOWN:
+                # Check if we had a sell order at current_unit that could have filled
+                is_genuine_reversal = event.current_unit in self.trailing_stop
+            elif event.previous_direction == Direction.DOWN and event.current_direction == Direction.UP:
+                # Check if we had a buy order at current_unit that could have filled
+                is_genuine_reversal = event.current_unit in self.trailing_buy
+
+            if is_genuine_reversal:
+                # Reversal - replace executed order
+                await self._handle_reversal(event)
+            else:
+                # Just a direction change, not a fill - treat as trending
+                await self._handle_trending_market(event)
 
     async def _handle_trending_market(self, event: UnitChangeEvent) -> None:
         """
@@ -261,11 +273,13 @@ class GridTradingStrategy:
         if event.current_direction == Direction.UP:
             # Trending up - add new sell order at current_unit - 1
             new_unit = event.current_unit - 1
-            await self._place_sell_order_at_unit(new_unit)
 
-            # Add to tracking list
-            self.trailing_stop.append(new_unit)
-            self.trailing_stop.sort()
+            # Only place if we don't already have an order at this unit
+            if new_unit not in self.trailing_stop:
+                await self._place_sell_order_at_unit(new_unit)
+                # Add to tracking list
+                self.trailing_stop.append(new_unit)
+                self.trailing_stop.sort()
 
             # Remove oldest if we have more than 4
             if len(self.trailing_stop) > 4:
@@ -276,11 +290,13 @@ class GridTradingStrategy:
         elif event.current_direction == Direction.DOWN:
             # Trending down - add new buy order at current_unit + 1
             new_unit = event.current_unit + 1
-            await self._place_buy_order_at_unit(new_unit)
 
-            # Add to tracking list
-            self.trailing_buy.append(new_unit)
-            self.trailing_buy.sort()
+            # Only place if we don't already have an order at this unit
+            if new_unit not in self.trailing_buy:
+                await self._place_buy_order_at_unit(new_unit)
+                # Add to tracking list
+                self.trailing_buy.append(new_unit)
+                self.trailing_buy.sort()
 
             # Remove oldest if we have more than 4
             if len(self.trailing_buy) > 4:
@@ -306,9 +322,10 @@ class GridTradingStrategy:
             # Place replacement buy at current_unit + 1
             if not self.whipsaw_paused:
                 new_unit = event.current_unit + 1
-                await self._place_buy_order_at_unit(new_unit)
-                self.trailing_buy.append(new_unit)
-                self.trailing_buy.sort()
+                if new_unit not in self.trailing_buy:
+                    await self._place_buy_order_at_unit(new_unit)
+                    self.trailing_buy.append(new_unit)
+                    self.trailing_buy.sort()
 
         elif event.previous_direction == Direction.DOWN and event.current_direction == Direction.UP:
             # Reversal up - a buy was filled at current_unit
@@ -321,9 +338,10 @@ class GridTradingStrategy:
             # Place replacement sell at current_unit - 1
             if not self.whipsaw_paused:
                 new_unit = event.current_unit - 1
-                await self._place_sell_order_at_unit(new_unit)
-                self.trailing_stop.append(new_unit)
-                self.trailing_stop.sort()
+                if new_unit not in self.trailing_stop:
+                    await self._place_sell_order_at_unit(new_unit)
+                    self.trailing_stop.append(new_unit)
+                    self.trailing_stop.sort()
 
     async def _resolve_whipsaw(self, event: UnitChangeEvent) -> None:
         """
@@ -512,10 +530,7 @@ class GridTradingStrategy:
         try:
             while self.state == StrategyState.RUNNING:
                 await asyncio.sleep(10)  # Main loop heartbeat
-
-                # Periodic status check
-                if int(datetime.now().timestamp()) % 60 == 0:
-                    self._log_status()
+                # No periodic logging
 
         except KeyboardInterrupt:
             logger.warning("Strategy interrupted by user")
@@ -570,6 +585,7 @@ class GridTradingStrategy:
     async def shutdown(self) -> None:
         """Gracefully shutdown the strategy."""
         logger.warning(f"Shutting down strategy for {self.config.symbol}...")
+        self.is_shutting_down = True
         self.state = StrategyState.STOPPING
 
         try:

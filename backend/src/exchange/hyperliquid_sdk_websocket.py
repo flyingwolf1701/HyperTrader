@@ -141,30 +141,19 @@ class HyperliquidSDKWebSocketClient:
 
             def handle_trades(data):
                 """Handle incoming trade data"""
-                logger.warning(f"🔴 SDK CALLBACK INVOKED for {symbol} with data type: {type(data)}")
-                logger.warning(f"🔴 Data preview: {str(data)[:200] if data else 'None'}")
-
                 # SDK runs callbacks in a thread without event loop
                 try:
                     loop = asyncio.get_event_loop()
-                    logger.debug(f"🔴 Got event loop, is_running: {loop.is_running()}")
                     if loop.is_running():
-                        logger.debug(f"🔴 Scheduling coroutine in running loop")
                         asyncio.run_coroutine_threadsafe(self._handle_trades(symbol, data), loop)
                     else:
-                        logger.debug(f"🔴 Running coroutine with asyncio.run")
                         asyncio.run(self._handle_trades(symbol, data))
-                except RuntimeError as e:
-                    logger.warning(f"🔴 RuntimeError: {e}, falling back to sync handler")
+                except RuntimeError:
                     # No event loop in thread, process synchronously
                     self._handle_trades_sync(symbol, data)
 
             self.info.subscribe(subscription, handle_trades)
             logger.info(f"Subscribed to trades for {symbol}")
-            logger.warning(f"🟢 SUBSCRIPTION COMPLETE - Waiting for SDK to call our callback...")
-
-            # Let's also verify the info object exists
-            logger.debug(f"🟢 Info object: {self.info}, has ws: {hasattr(self.info, 'ws') if self.info else 'N/A'}")
             return True
 
         except Exception as e:
@@ -203,11 +192,6 @@ class HyperliquidSDKWebSocketClient:
                 # We just need to keep the loop running
                 await asyncio.sleep(30)  # Periodic check
 
-                # Log connection status periodically
-                if (datetime.now() - self._last_heartbeat_log).total_seconds() >= 120:
-                    logger.debug("Connection healthy - SDK handling WebSocket events")
-                    self._last_heartbeat_log = datetime.now()
-
             except asyncio.CancelledError:
                 logger.warning("Keep-alive loop cancelled")
                 break
@@ -219,7 +203,6 @@ class HyperliquidSDKWebSocketClient:
         """Handle incoming trade data"""
         try:
             if not data:
-                logger.debug(f"🔌 Empty trade data received for {symbol}")
                 return
 
             # Extract trades from SDK response format {'channel': 'trades', 'data': [...]}
@@ -227,7 +210,7 @@ class HyperliquidSDKWebSocketClient:
                 trades = data['data']
             else:
                 trades = data if isinstance(data, list) else [data]
-            logger.debug(f"🔌 Received {len(trades)} trades for {symbol}")
+            # Process trades silently
 
             # Process only the last trade to prevent rapid updates
             if trades:
@@ -237,12 +220,12 @@ class HyperliquidSDKWebSocketClient:
                 price_str = trade.get("px")
                 if price_str:
                     price = Decimal(str(price_str))
-                    logger.debug(f"🔌 Trade price for {symbol}: ${price:.4f}")
+                    # Process price silently
 
                     # Call price callback if registered
                     if symbol in self.price_callbacks and self.price_callbacks[symbol]:
                         callback = self.price_callbacks[symbol]
-                        logger.debug(f"🔌 Calling price callback for {symbol}")
+                        # Call callback silently
                         # Handle both sync and async callbacks
                         if asyncio.iscoroutinefunction(callback):
                             await callback(price)
@@ -251,15 +234,10 @@ class HyperliquidSDKWebSocketClient:
                     else:
                         logger.warning(f"⚠️ No price callback registered for {symbol}")
 
-                    # Periodic logging (every 60 seconds)
+                    # No periodic logging - only log on first connection
                     if symbol not in self._last_price_log:
                         self._last_price_log[symbol] = datetime.now()
-                        logger.info(f"{symbol} price feed started: ${price:.2f}")
-                    else:
-                        time_since_log = (datetime.now() - self._last_price_log[symbol]).total_seconds()
-                        if time_since_log >= 60:
-                            logger.info(f"{symbol}: ${price:.2f}")
-                            self._last_price_log[symbol] = datetime.now()
+                        logger.info(f"{symbol} price feed connected")
 
         except Exception as e:
             logger.error(f"Error handling trades for {symbol}: {e}")
@@ -332,7 +310,7 @@ class HyperliquidSDKWebSocketClient:
     def _handle_trades_sync(self, symbol: str, data):
         """Synchronous version of _handle_trades for thread context"""
         try:
-            if not data:
+            if not data or not self.is_connected:
                 return
 
             # Extract trades from SDK response format
@@ -347,19 +325,16 @@ class HyperliquidSDKWebSocketClient:
                 if price_str:
                     price = Decimal(str(price_str))
 
-                    # Call price callback if registered
-                    if symbol in self.price_callbacks and self.price_callbacks[symbol]:
-                        self.price_callbacks[symbol](price)
+                    # Call price callback if registered (only if still connected)
+                    if self.is_connected and symbol in self.price_callbacks and self.price_callbacks[symbol]:
+                        try:
+                            self.price_callbacks[symbol](price)
+                        except Exception as e:
+                            if "no running event loop" not in str(e).lower():
+                                logger.error(f"Error calling price callback: {e}")
 
-                    # Periodic logging
-                    if symbol not in self._last_price_log:
-                        self._last_price_log[symbol] = datetime.now()
-                        logger.info(f"{symbol} price feed started: ${price:.2f}")
-                    else:
-                        time_since_log = (datetime.now() - self._last_price_log[symbol]).total_seconds()
-                        if time_since_log >= 60:
-                            logger.debug(f"{symbol}: ${price:.2f}")
-                            self._last_price_log[symbol] = datetime.now()
+                    # No periodic logging in sync handler either
+                    pass
 
         except Exception as e:
             logger.error(f"Error in sync trades handler for {symbol}: {e}")
