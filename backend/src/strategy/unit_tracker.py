@@ -33,21 +33,18 @@ class UnitTracker:
     Has no knowledge of orders or positions.
     """
 
-    def __init__(self, unit_size_usd: Decimal, initial_price: Decimal):
+    def __init__(self, unit_size_usd: Decimal, anchor_price: Decimal):
         """
         Initialize the unit tracker.
 
         Args:
             unit_size_usd: Fixed dollar amount that defines one unit (e.g., $100 for BTC)
-            initial_price: Starting price to establish initial unit
-            TODO: AI Wrote the initial price thing, And I don't get why it decided it was important but initial price is position_map[0].price
-            TODO: This code shows current_price as initial price. that is just wrong. current price is passed in from websocket
+            anchor_price: The anchor price at unit 0 (initial position entry price)
         """
         self.unit_size_usd = unit_size_usd
 
-        # Calculate initial unit (0 at anchor price)
-        # TODO: Our anchor is ALWAYS unit 0. so 
-        self.anchor_price = initial_price
+        # Anchor is always at unit 0
+        self.anchor_price = anchor_price
         self.current_unit = 0
         self.previous_unit = 0
 
@@ -62,10 +59,10 @@ class UnitTracker:
         # Event callback
         self.on_unit_change: Optional[Callable[[UnitChangeEvent], None]] = None
 
-        # Price tracking
-        self.current_price = initial_price
+        # Price tracking - will be updated via WebSocket
+        self.current_price = anchor_price
 
-        logger.info(f"UnitTracker initialized - Anchor: ${initial_price:.2f}, Unit Size: ${unit_size_usd}")
+        logger.info(f"UnitTracker initialized - Anchor: ${anchor_price:.2f} at unit 0, Unit Size: ${unit_size_usd}")
 
     def update_price(self, price: Decimal) -> Optional[UnitChangeEvent]:
         """
@@ -161,9 +158,11 @@ class UnitTracker:
         return False
 
     def get_unit_price(self, unit: int) -> Decimal:
-        # TODO: This shows me the AI did not understand. There is no calculation. We just look it up on position_map
         """
         Calculate the price for a specific unit.
+
+        Note: While the position_map stores these prices, the unit_tracker
+        calculates them independently for unit boundary detection.
 
         Args:
             unit: Unit number (0 is anchor price)

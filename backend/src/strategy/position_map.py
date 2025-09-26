@@ -63,16 +63,14 @@ class PositionMap:
     Dictionary where each key is a unit and value contains price and order history.
     """
 
-    def __init__(self,  unit_size_usd: Decimal, anchor_price: Decimal, initial_unit: int = 0):
+    def __init__(self, unit_size_usd: Decimal, anchor_price: Decimal):
         """
         Initialize the position map with a buffer of units.
 
         Args:
-            initial_unit: Starting unit (usually 0) 
             unit_size_usd: Dollar amount per unit
-            anchor_price: Price at unit 0
+            anchor_price: Price at unit 0 (anchor is always at unit 0)
         """
-        # TODO: I don't think initial_unit is necessary, but I am leaving that for another time.
         self.unit_size_usd = unit_size_usd
         self.anchor_price = anchor_price
         self.map: Dict[int, UnitLevel] = {}
@@ -80,13 +78,13 @@ class PositionMap:
         # Order ID Map for fast lookups
         self.order_id_map: Dict[str, int] = {}
 
-        # Initialize with a buffer of units
+        # Initialize with a buffer of units centered at unit 0
         buffer_range = 20  # Initialize -20 to +20 units
-        for unit in range(initial_unit - buffer_range, initial_unit + buffer_range + 1):
+        for unit in range(-buffer_range, buffer_range + 1):
             price = self._calculate_unit_price(unit)
             self.map[unit] = UnitLevel(unit=unit, price=price)
 
-        logger.info(f"PositionMap initialized with units [{initial_unit - buffer_range}, {initial_unit + buffer_range}]")
+        logger.info(f"PositionMap initialized with units [-{buffer_range}, {buffer_range}]")
 
     def _calculate_unit_price(self, unit: int) -> Decimal:
         """Calculate the price for a specific unit"""

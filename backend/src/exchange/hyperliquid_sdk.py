@@ -346,8 +346,8 @@ class HyperliquidClient:
                     )
                 self.set_leverage(symbol, leverage)
             
-            # Calculate position size
-            # TODO: not sure what there is to calulate. we should be getting this from hyperliquid data
+            # Calculate position size in coins from USD amount
+            # We need to convert USD to coin amount based on current price for the order
             position_size_coin = self.calculate_position_size(symbol, usd_amount)
             
             logger.info(

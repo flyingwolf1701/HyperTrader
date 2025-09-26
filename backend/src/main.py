@@ -53,17 +53,19 @@ def parse_arguments():
     )
 
     parser.add_argument(
-        "--unit-size",
+        "--unit-size-usd",
         type=float,
         required=True,
+        dest="unit_size_usd",
         help="USD amount per unit (e.g., 1.0 for $1 moves on SOL, 100 for $100 moves on BTC)"
     )
 
     parser.add_argument(
-        "--position-size",
+        "--position-value-usd",
         type=float,
         required=True,
-        help="Position value in USD (wallet allocation)"
+        dest="position_value_usd",
+        help="Total position value in USD (wallet allocation * leverage)"
     )
 
     parser.add_argument(
@@ -90,6 +92,10 @@ def parse_arguments():
     )
 
     args = parser.parse_args()
+
+    # Calculate position size in coins (this will be recalculated with actual price later)
+    # For now, just store a placeholder
+    args.position_size_coin = 0  # Will be calculated when we get the actual price
 
     return args
 

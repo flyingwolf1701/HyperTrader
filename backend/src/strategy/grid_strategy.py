@@ -103,12 +103,11 @@ class GridTradingStrategy:
             # Initialize unit tracker with anchor price
             self.unit_tracker = UnitTracker(
                 unit_size_usd=self.config.unit_size_usd,
-                initial_price=anchor_price
+                anchor_price=anchor_price
             )
 
             # Initialize position map
             self.position_map = PositionMap(
-                initial_unit=0,
                 unit_size_usd=self.config.unit_size_usd,
                 anchor_price=anchor_price
             )
