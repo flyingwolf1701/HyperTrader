@@ -617,12 +617,12 @@ class HyperliquidClient:
             )
             
             # Create stop buy order type (triggers when price rises)
-            # Using "tp" (take profit) for buy orders that trigger when price goes UP
+            # Using "sl" (stop loss) for buy orders that trigger when price goes UP
             order_type = {
                 "trigger": {
                     "triggerPx": float(rounded_trigger),
                     "isMarket": True,
-                    "tpsl": "tp"  # Take profit type (for buy orders, triggers when price rises above)
+                    "tpsl": "sl"  # Stop loss type (for buy orders, triggers when price rises above)
                 }
             }
             
