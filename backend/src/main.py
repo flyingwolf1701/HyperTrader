@@ -156,6 +156,11 @@ async def main():
             logger.error("Failed to connect to WebSocket")
             return
 
+        # Start WebSocket listener BEFORE initializing strategy
+        # This ensures price updates and fills are captured from the start
+        websocket_task = asyncio.create_task(websocket.listen())
+        logger.info("WebSocket listener started")
+
         # Create strategy configuration
         strategy_config = StrategyConfig(
             symbol=args.symbol,
@@ -176,11 +181,13 @@ async def main():
         # Initialize the strategy (establish position and grid)
         if not await strategy.initialize():
             logger.error("Failed to initialize strategy")
+            websocket_task.cancel()
+            try:
+                await websocket_task
+            except asyncio.CancelledError:
+                pass
             await websocket.disconnect()
             return
-
-        # Start WebSocket listener
-        websocket_task = asyncio.create_task(websocket.listen())
 
         # Run the strategy
         strategy_task = asyncio.create_task(strategy.run())

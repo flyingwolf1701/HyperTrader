@@ -141,19 +141,30 @@ class HyperliquidSDKWebSocketClient:
 
             def handle_trades(data):
                 """Handle incoming trade data"""
+                logger.warning(f"🔴 SDK CALLBACK INVOKED for {symbol} with data type: {type(data)}")
+                logger.warning(f"🔴 Data preview: {str(data)[:200] if data else 'None'}")
+
                 # SDK runs callbacks in a thread without event loop
                 try:
                     loop = asyncio.get_event_loop()
+                    logger.debug(f"🔴 Got event loop, is_running: {loop.is_running()}")
                     if loop.is_running():
+                        logger.debug(f"🔴 Scheduling coroutine in running loop")
                         asyncio.run_coroutine_threadsafe(self._handle_trades(symbol, data), loop)
                     else:
+                        logger.debug(f"🔴 Running coroutine with asyncio.run")
                         asyncio.run(self._handle_trades(symbol, data))
-                except RuntimeError:
+                except RuntimeError as e:
+                    logger.warning(f"🔴 RuntimeError: {e}, falling back to sync handler")
                     # No event loop in thread, process synchronously
                     self._handle_trades_sync(symbol, data)
 
             self.info.subscribe(subscription, handle_trades)
             logger.info(f"Subscribed to trades for {symbol}")
+            logger.warning(f"🟢 SUBSCRIPTION COMPLETE - Waiting for SDK to call our callback...")
+
+            # Let's also verify the info object exists
+            logger.debug(f"🟢 Info object: {self.info}, has ws: {hasattr(self.info, 'ws') if self.info else 'N/A'}")
             return True
 
         except Exception as e:
@@ -208,10 +219,15 @@ class HyperliquidSDKWebSocketClient:
         """Handle incoming trade data"""
         try:
             if not data:
+                logger.debug(f"🔌 Empty trade data received for {symbol}")
                 return
 
-            # Handle both list and single trade data
-            trades = data if isinstance(data, list) else [data]
+            # Extract trades from SDK response format {'channel': 'trades', 'data': [...]}
+            if isinstance(data, dict) and 'data' in data:
+                trades = data['data']
+            else:
+                trades = data if isinstance(data, list) else [data]
+            logger.debug(f"🔌 Received {len(trades)} trades for {symbol}")
 
             # Process only the last trade to prevent rapid updates
             if trades:
@@ -221,15 +237,19 @@ class HyperliquidSDKWebSocketClient:
                 price_str = trade.get("px")
                 if price_str:
                     price = Decimal(str(price_str))
+                    logger.debug(f"🔌 Trade price for {symbol}: ${price:.4f}")
 
                     # Call price callback if registered
                     if symbol in self.price_callbacks and self.price_callbacks[symbol]:
                         callback = self.price_callbacks[symbol]
+                        logger.debug(f"🔌 Calling price callback for {symbol}")
                         # Handle both sync and async callbacks
                         if asyncio.iscoroutinefunction(callback):
                             await callback(price)
                         else:
                             callback(price)
+                    else:
+                        logger.warning(f"⚠️ No price callback registered for {symbol}")
 
                     # Periodic logging (every 60 seconds)
                     if symbol not in self._last_price_log:
@@ -315,7 +335,11 @@ class HyperliquidSDKWebSocketClient:
             if not data:
                 return
 
-            trades = data if isinstance(data, list) else [data]
+            # Extract trades from SDK response format
+            if isinstance(data, dict) and 'data' in data:
+                trades = data['data']
+            else:
+                trades = data if isinstance(data, list) else [data]
 
             if trades:
                 trade = trades[-1]

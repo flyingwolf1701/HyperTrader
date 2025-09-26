@@ -80,6 +80,12 @@ class UnitTracker:
         price_diff = price - self.anchor_price
         new_unit = int(price_diff / self.unit_size)
 
+        # Debug logging for unit calculation
+        logger.debug(f"🔍 Unit calculation: Price=${price:.4f}, Anchor=${self.anchor_price:.4f}")
+        logger.debug(f"🔍 Price diff=${price_diff:.4f}, Unit size=${self.unit_size}")
+        logger.debug(f"🔍 Raw unit calc: {price_diff}/{self.unit_size} = {price_diff/self.unit_size:.4f}")
+        logger.debug(f"🔍 New unit={new_unit}, Current unit={self.current_unit}")
+
         # Check if we've crossed a unit boundary
         if new_unit != self.current_unit:
             # Store previous state

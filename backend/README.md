@@ -1,6 +1,9 @@
 # HyperTrader
 
 ## Starting the Trading Bot
+``` bash
+.venv\Scripts\activate
+```
 
 **Parameters:**
 

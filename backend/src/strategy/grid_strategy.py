@@ -133,7 +133,8 @@ class GridTradingStrategy:
 
     async def _place_initial_grid(self) -> None:
         """Place the initial 4 sell orders below current price."""
-        logger.info("Placing initial grid orders...")
+        logger.info("🎯 Placing initial grid orders...")
+        logger.info(f"📊 Current position: {self.metrics.current_position_size:.4f} {self.config.symbol} @ ${self.metrics.avg_entry_price:.2f}")
 
         # Place 4 sell orders at units -1, -2, -3, -4
         for i in range(1, 5):
@@ -143,7 +144,7 @@ class GridTradingStrategy:
             # Calculate sell fragment (1/4 of position)
             fragment_size = self.metrics.current_position_size / 4
 
-            logger.info(f"Placing sell order at unit {unit} (${price:.2f})")
+            logger.info(f"📉 Placing sell order #{i} at unit {unit} (${price:.2f}), size: {fragment_size:.4f} {self.config.symbol}")
 
             result = self.client.place_stop_order(
                 symbol=self.config.symbol,
@@ -157,13 +158,13 @@ class GridTradingStrategy:
                 # Track the order
                 self.trailing_stop.append(unit)
                 self.position_map.add_order(unit, result.order_id, "sell", fragment_size)
-                logger.success(f"Sell order placed at unit {unit}: {result.order_id}")
+                logger.success(f"✅ Sell order placed at unit {unit}: {result.order_id}")
             else:
-                logger.error(f"Failed to place sell order at unit {unit}: {result.error_message}")
+                logger.error(f"❌ Failed to place sell order at unit {unit}: {result.error_message}")
 
         # Sort the list (should already be sorted, but ensure it)
         self.trailing_stop.sort()
-        logger.info(f"Initial grid established: {len(self.trailing_stop)} sell orders active")
+        logger.success(f"🎉 Initial grid established: {len(self.trailing_stop)} sell orders active at units {self.trailing_stop}")
 
     async def _setup_websocket_subscriptions(self) -> None:
         """Subscribe to websocket feeds for price updates and fills."""
@@ -187,9 +188,21 @@ class GridTradingStrategy:
         Args:
             price: Current market price
         """
+        logger.debug(f"📍 Price update received: ${price:.2f}")
+
         if self.unit_tracker:
+            logger.debug(f"📍 Current unit before update: {self.unit_tracker.current_unit}")
+            logger.debug(f"📍 Calling unit_tracker.update_price with ${price:.2f}")
+
             # Update unit tracker which will trigger unit change events if needed
-            self.unit_tracker.update_price(price)
+            result = self.unit_tracker.update_price(price)
+
+            if result:
+                logger.warning(f"🚨 UNIT CHANGE DETECTED from price update!")
+            else:
+                logger.debug(f"📍 No unit change from price ${price:.2f}")
+        else:
+            logger.error("❌ Unit tracker not initialized!")
 
     def _on_unit_change(self, event: UnitChangeEvent) -> None:
         """
@@ -209,7 +222,10 @@ class GridTradingStrategy:
         Args:
             event: UnitChangeEvent containing unit transition details
         """
-        logger.info(f"Handling unit change: {event.previous_unit} → {event.current_unit}")
+        logger.info(f"📊 UNIT CHANGE: {event.previous_unit} → {event.current_unit} | "
+                   f"Direction: {event.previous_direction.value} → {event.current_direction.value} | "
+                   f"Price: ${event.price:.2f}")
+        logger.info(f"📈 Grid State: Sells={self.trailing_stop} Buys={self.trailing_buy}")
 
         # Handle whipsaw detection
         if event.is_whipsaw:
@@ -228,9 +244,11 @@ class GridTradingStrategy:
         # Standard operation: trending or reversal
         if event.current_direction == event.previous_direction:
             # Trending market - slide the grid
+            logger.info(f"🔄 TRENDING {event.current_direction.value.upper()}: Sliding grid")
             await self._handle_trending_market(event)
         else:
             # Reversal - replace executed order
+            logger.info(f"🔀 REVERSAL: {event.previous_direction.value} → {event.current_direction.value}")
             await self._handle_reversal(event)
 
     async def _handle_trending_market(self, event: UnitChangeEvent) -> None:
@@ -252,6 +270,7 @@ class GridTradingStrategy:
             # Remove oldest if we have more than 4
             if len(self.trailing_stop) > 4:
                 oldest_unit = self.trailing_stop.pop(0)
+                logger.info(f"🗑️ Removing oldest sell order at unit {oldest_unit} (grid sliding up)")
                 await self._cancel_orders_at_unit(oldest_unit)
 
         elif event.current_direction == Direction.DOWN:
@@ -266,6 +285,7 @@ class GridTradingStrategy:
             # Remove oldest if we have more than 4
             if len(self.trailing_buy) > 4:
                 oldest_unit = self.trailing_buy.pop()  # Pop last (highest unit)
+                logger.info(f"🗑️ Removing oldest buy order at unit {oldest_unit} (grid sliding down)")
                 await self._cancel_orders_at_unit(oldest_unit)
 
     async def _handle_reversal(self, event: UnitChangeEvent) -> None:
@@ -351,7 +371,7 @@ class GridTradingStrategy:
         divisor = min(num_active_sells, 4)  # Cap at 4
         fragment_size = self.metrics.current_position_size / divisor
 
-        logger.info(f"Placing SELL order at unit {unit} (${price:.2f}), size: {fragment_size}")
+        logger.info(f"📉 Placing SELL order at unit {unit} (${price:.2f}), size: {fragment_size:.4f} {self.config.symbol}")
 
         result = self.client.place_stop_order(
             symbol=self.config.symbol,
@@ -363,7 +383,8 @@ class GridTradingStrategy:
 
         if result.success:
             self.position_map.add_order(unit, result.order_id, "sell", fragment_size)
-            logger.success(f"Sell order placed at unit {unit}: {result.order_id}")
+            logger.success(f"✅ SELL order placed at unit {unit}: {result.order_id}")
+            logger.info(f"📊 Updated grid: Sells={self.trailing_stop} Buys={self.trailing_buy}")
             return result.order_id
         else:
             logger.error(f"Failed to place sell order: {result.error_message}")
@@ -385,7 +406,7 @@ class GridTradingStrategy:
         fragment_usd = self.metrics.new_buy_fragment
         fragment_size = self.client.calculate_position_size(self.config.symbol, fragment_usd)
 
-        logger.info(f"Placing BUY order at unit {unit} (${price:.2f}), value: ${fragment_usd:.2f}")
+        logger.info(f"📈 Placing BUY order at unit {unit} (${price:.2f}), size: {fragment_size:.4f} {self.config.symbol}, value: ${fragment_usd:.2f}")
 
         result = self.client.place_stop_buy(
             symbol=self.config.symbol,
@@ -397,7 +418,8 @@ class GridTradingStrategy:
 
         if result.success:
             self.position_map.add_order(unit, result.order_id, "buy", fragment_size)
-            logger.success(f"Buy order placed at unit {unit}: {result.order_id}")
+            logger.success(f"✅ BUY order placed at unit {unit}: {result.order_id}")
+            logger.info(f"📊 Updated grid: Sells={self.trailing_stop} Buys={self.trailing_buy}")
             return result.order_id
         else:
             logger.error(f"Failed to place buy order: {result.error_message}")
@@ -430,7 +452,7 @@ class GridTradingStrategy:
             price: Fill price
             size: Fill size
         """
-        logger.warning(f"ORDER FILLED: {order_id} - {size} @ ${price:.2f}")
+        logger.warning(f"🔔 ORDER FILLED: {order_id} - {size:.4f} {self.config.symbol} @ ${price:.2f}")
 
         # Update position map
         self.position_map.update_order_status(order_id, "filled", price)
@@ -504,10 +526,46 @@ class GridTradingStrategy:
 
     def _log_status(self) -> None:
         """Log current strategy status."""
-        logger.info(f"Status: State={self.state.value} "
-                   f"Unit={self.unit_tracker.current_unit if self.unit_tracker else 'N/A'} "
-                   f"Active Sells={len(self.trailing_stop)} "
-                   f"Active Buys={len(self.trailing_buy)}")
+        current_price = self.unit_tracker.current_price if self.unit_tracker else 0
+        logger.info(f"💡 STATUS: State={self.state.value} | "
+                   f"Unit={self.unit_tracker.current_unit if self.unit_tracker else 'N/A'} | "
+                   f"Price=${current_price:.2f} | "
+                   f"Grid: {len(self.trailing_stop)} sells {self.trailing_stop}, "
+                   f"{len(self.trailing_buy)} buys {self.trailing_buy}")
+
+    def get_diagnostic_status(self) -> dict:
+        """
+        Get detailed diagnostic status for debugging.
+
+        Returns:
+            Dictionary with current state and diagnostics
+        """
+        status = {
+            "strategy_state": self.state.value if self.state else "NOT_INITIALIZED",
+            "symbol": self.config.symbol,
+            "unit_size": float(self.config.unit_size),
+        }
+
+        if self.unit_tracker:
+            status.update({
+                "current_unit": self.unit_tracker.current_unit,
+                "current_price": float(self.unit_tracker.current_price),
+                "anchor_price": float(self.unit_tracker.anchor_price),
+                "current_direction": self.unit_tracker.current_direction.value,
+                "is_paused": self.unit_tracker.is_paused,
+            })
+        else:
+            status["unit_tracker"] = "NOT_INITIALIZED"
+
+        status.update({
+            "active_sells": self.trailing_stop,
+            "active_buys": self.trailing_buy,
+            "total_orders": len(self.trailing_stop) + len(self.trailing_buy),
+            "position_size": float(self.metrics.current_position_size) if self.metrics else 0,
+            "realized_pnl": float(self.metrics.realized_pnl) if self.metrics else 0,
+        })
+
+        return status
 
     async def shutdown(self) -> None:
         """Gracefully shutdown the strategy."""
