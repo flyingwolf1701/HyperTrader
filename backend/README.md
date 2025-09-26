@@ -54,3 +54,8 @@ To immediately stop the bot and close everything:
    ```bash
    uv run python scripts/hl_commands.py close [SYMBOL]
    ```
+
+## Prompt
+first read docs\strategy_doc_v11.md to understand the context of the project. And read backend\pyproject.toml to understand the dependancies.
+Read backend\src\exchange to understand how we connect to to Hyperliquid
+Read backend\src\main.py and the files under backend\src\strategy to see how we are handling our strategy

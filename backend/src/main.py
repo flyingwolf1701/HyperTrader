@@ -86,28 +86,10 @@ def parse_arguments():
         "--testnet",
         action="store_true",
         default=True,
-        help="Use testnet (default: True)"
-    )
-
-    parser.add_argument(
-        "--mainnet",
-        action="store_true",
-        help="Use mainnet (overrides --testnet)"
-    )
-
-    parser.add_argument(
-        "--wallet",
-        type=str,
-        default="main",
-        choices=["main", "sub"],
-        help="Which wallet to use for trading"
+        help="Use testnet instead of mainnet (default: True for safety)"
     )
 
     args = parser.parse_args()
-
-    # Handle mainnet flag
-    if args.mainnet:
-        args.testnet = False
 
     return args
 
@@ -129,7 +111,7 @@ async def main():
     logger.info(f"Leverage: {args.leverage}x")
     logger.info(f"Total Position Value: ${args.position_size * args.leverage}")
     logger.info(f"Network: {'TESTNET' if args.testnet else 'MAINNET'}")
-    logger.info(f"Wallet: {args.wallet}")
+    logger.info(f"Strategy: {args.strategy}")
     logger.info("=" * 60)
 
     try:
@@ -138,16 +120,17 @@ async def main():
         logger.info("Wallet configuration loaded successfully")
 
         # Initialize exchange client
+        # Convert testnet flag to mainnet (SDK convention: mainnet=True, testnet=False)
         client = HyperliquidClient(
             config=config,
-            wallet_type=args.wallet,
-            use_testnet=args.testnet
+            wallet_type="main",  # For now, 'long' strategy always uses 'main' wallet
+            mainnet=not args.testnet
         )
-        logger.info(f"Connected to Hyperliquid {'testnet' if args.testnet else 'mainnet'}")
 
         # Initialize WebSocket client
+        # Convert testnet flag to mainnet (SDK convention: mainnet=True, testnet=False)
         websocket = HyperliquidSDKWebSocketClient(
-            testnet=args.testnet,
+            mainnet=not args.testnet,
             user_address=client.get_user_address()
         )
 
@@ -160,10 +143,10 @@ async def main():
         strategy_config = StrategyConfig(
             symbol=args.symbol,
             leverage=args.leverage,
-            wallet_allocation=Decimal(str(args.position_size)),
+            position_value_usd=Decimal(str(args.position_size)),
             unit_size=Decimal(str(args.unit_size)),
             testnet=args.testnet,
-            wallet_type=args.wallet
+            wallet_type="main"  # For now, 'long' strategy always uses 'main' wallet
         )
 
         # Initialize strategy

@@ -13,15 +13,15 @@ from hyperliquid.info import Info
 class HyperliquidSDKWebSocketClient:
     """A WebSocket client that uses Hyperliquid SDK's Info class for subscriptions."""
 
-    def __init__(self, testnet: bool = True, user_address: Optional[str] = None):
+    def __init__(self, mainnet: bool = False, user_address: Optional[str] = None):
         """
         Initializes the SDK-based WebSocket client.
 
         Args:
-            testnet: A boolean indicating whether to connect to the testnet.
+            mainnet: Whether to use mainnet (True) or testnet (False) - matches SDK convention
             user_address: Optional wallet address for user-specific subscriptions.
         """
-        self.testnet = testnet
+        self.mainnet = mainnet
         self.user_address = user_address
         self.info: Optional[Info] = None
         self.is_connected = False
@@ -44,8 +44,8 @@ class HyperliquidSDKWebSocketClient:
             logger.info("Connecting to Hyperliquid WebSocket via SDK...")
 
             # Initialize Info with WebSocket support
-            # SDK expects True for mainnet, False for testnet (opposite of our convention)
-            self.info = Info(not self.testnet, skip_ws=False)
+            # SDK expects True for mainnet, False for testnet
+            self.info = Info(self.mainnet, skip_ws=False)
             self.is_connected = True
 
             logger.success("Successfully connected to Hyperliquid WebSocket")

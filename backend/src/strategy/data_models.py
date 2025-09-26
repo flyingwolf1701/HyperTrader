@@ -24,7 +24,7 @@ class StrategyConfig:
     # Asset configuration
     symbol: str
     leverage: int
-    wallet_allocation: Decimal  # USD amount allocated
+    position_value_usd: Decimal  # USD amount allocated
     unit_size: Decimal  # USD per unit movement
 
     # Exchange settings
@@ -39,7 +39,7 @@ class StrategyConfig:
     @property
     def total_position_value(self) -> Decimal:
         """Total leveraged position value"""
-        return self.wallet_allocation * Decimal(self.leverage)
+        return self.position_value_usd * Decimal(self.leverage)
 
     @property
     def position_fragment_usd(self) -> Decimal:
