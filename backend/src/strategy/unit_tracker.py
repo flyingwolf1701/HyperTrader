@@ -25,7 +25,7 @@ class UnitChangeEvent:
     previous_direction: Direction
     current_direction: Direction
     is_whipsaw: bool = False
-
+# TODO: seems we are using is_whipsaw and is_pause for the same thing. But there might be reason to it. But need to understand better
 
 class UnitTracker:
     """
@@ -33,18 +33,18 @@ class UnitTracker:
     Has no knowledge of orders or positions.
     """
 
-    def __init__(self, unit_size: Decimal, initial_price: Decimal):
+    def __init__(self, unit_size_usd: Decimal, anchor_price: Decimal):
         """
         Initialize the unit tracker.
 
         Args:
-            unit_size: Fixed dollar amount that defines one unit (e.g., $100 for BTC)
-            initial_price: Starting price to establish initial unit
+            unit_size_usd: Fixed dollar amount that defines one unit (e.g., $100 for BTC)
+            anchor_price: The anchor price at unit 0 (initial position entry price)
         """
-        self.unit_size = unit_size
+        self.unit_size_usd = unit_size_usd
 
-        # Calculate initial unit (0 at anchor price)
-        self.anchor_price = initial_price
+        # Anchor is always at unit 0
+        self.anchor_price = anchor_price
         self.current_unit = 0
         self.previous_unit = 0
 
@@ -59,10 +59,10 @@ class UnitTracker:
         # Event callback
         self.on_unit_change: Optional[Callable[[UnitChangeEvent], None]] = None
 
-        # Price tracking
-        self.current_price = initial_price
+        # Price tracking - will be updated via WebSocket
+        self.current_price = anchor_price
 
-        logger.info(f"UnitTracker initialized - Anchor: ${initial_price:.2f}, Unit Size: ${unit_size}")
+        logger.info(f"UnitTracker initialized - Anchor: ${anchor_price:.2f} at unit 0, Unit Size: ${unit_size_usd}")
 
     def update_price(self, price: Decimal) -> Optional[UnitChangeEvent]:
         """
@@ -78,7 +78,7 @@ class UnitTracker:
 
         # Calculate the new unit based on price
         price_diff = price - self.anchor_price
-        new_unit = int(price_diff / self.unit_size)
+        new_unit = int(price_diff / self.unit_size_usd)
 
         # No debug logging needed
 
@@ -153,13 +153,16 @@ class UnitTracker:
         """
         Calculate the price for a specific unit.
 
+        Note: While the position_map stores these prices, the unit_tracker
+        calculates them independently for unit boundary detection.
+
         Args:
             unit: Unit number (0 is anchor price)
 
         Returns:
             Price at the unit boundary
         """
-        return self.anchor_price + (Decimal(unit) * self.unit_size)
+        return self.anchor_price + (Decimal(unit) * self.unit_size_usd)
 
     def get_state(self) -> dict:
         """
@@ -175,7 +178,7 @@ class UnitTracker:
             "previous_direction": self.previous_direction.value,
             "current_price": float(self.current_price),
             "anchor_price": float(self.anchor_price),
-            "unit_size": float(self.unit_size),
+            "unit_size_usd": float(self.unit_size_usd),
             "is_paused": self.is_paused,
             "whipsaw_pattern": self.whipsaw_pattern
         }

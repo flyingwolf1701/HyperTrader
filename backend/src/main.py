@@ -53,16 +53,18 @@ def parse_arguments():
     )
 
     parser.add_argument(
-        "--unit-size",
+        "--unit-size-usd",
         type=float,
         required=True,
+        dest="unit_size_usd",
         help="USD amount per unit (e.g., 1.0 for $1 moves on SOL, 100 for $100 moves on BTC)"
     )
 
     parser.add_argument(
-        "--position-size",
+        "--position-value-usd",
         type=float,
         required=True,
+        dest="position_value_usd",
         help="Total position value in USD (e.g., 2000 for $2000 position)"
     )
 
@@ -83,21 +85,19 @@ def parse_arguments():
     )
 
     parser.add_argument(
-        "--mainnet",
+        "--testnet",
         action="store_true",
-        default=False,
-        help="Use mainnet (default: False, which means testnet)"
+        default=True,
+        help="Use testnet instead of mainnet (default: True for safety)"
     )
 
-    parser.add_argument(
-        "--wallet",
-        type=str,
-        default="main",
-        choices=["main", "sub"],
-        help="Which wallet to use for trading"
-    )
+    args = parser.parse_args()
 
-    return parser.parse_args()
+    # Calculate position size in coins (this will be recalculated with actual price later)
+    # For now, just store a placeholder
+    args.position_size_coin = 0  # Will be calculated when we get the actual price
+
+    return args
 
 
 async def main():
@@ -112,12 +112,12 @@ async def main():
     logger.info("HyperTrader - Long-Biased Grid Trading Bot")
     logger.info("=" * 60)
     logger.info(f"Symbol: {args.symbol}")
-    logger.info(f"Unit Size: ${args.unit_size}")
-    logger.info(f"Position Value: ${args.position_size}")
+    logger.info(f"Unit Size: ${args.unit_size_usd}")
+    logger.info(f"Position Size: {args.position_size_coin} {args.symbol}")
     logger.info(f"Leverage: {args.leverage}x")
-    logger.info(f"Margin Required: ${args.position_size / args.leverage}")
-    logger.info(f"Network: {'MAINNET' if args.mainnet else 'TESTNET'}")
-    logger.info(f"Wallet: {args.wallet}")
+    logger.info(f"Total Position Value: ${args.position_value_usd}")
+    logger.info(f"Network: {'TESTNET' if args.testnet else 'MAINNET'}")
+    logger.info(f"Strategy: {args.strategy}")
     logger.info("=" * 60)
 
     try:
@@ -126,16 +126,18 @@ async def main():
         logger.info("Wallet configuration loaded successfully")
 
         # Initialize exchange client
+        # Convert testnet flag to mainnet (SDK convention: mainnet=True, testnet=False)
         client = HyperliquidClient(
             config=config,
-            wallet_type=args.wallet,
-            use_testnet=not args.mainnet
+            wallet_type="main",  # For now, 'long' strategy always uses 'main' wallet
+            use_mainnet = False
         )
-        logger.info(f"Connected to Hyperliquid {'mainnet' if args.mainnet else 'testnet'}")
 
         # Initialize WebSocket client
+        # Convert testnet flag to mainnet (SDK convention: mainnet=True, testnet=False)
         websocket = HyperliquidSDKWebSocketClient(
-            testnet=not args.mainnet,
+            # TODO - I may have done this wrong in merge
+            mainnet=False,
             user_address=client.get_user_address()
         )
 
@@ -153,10 +155,10 @@ async def main():
         strategy_config = StrategyConfig(
             symbol=args.symbol,
             leverage=args.leverage,
-            position_value_usd=Decimal(str(args.position_size)),
-            unit_size=Decimal(str(args.unit_size)),
-            mainnet=args.mainnet,
-            strategy=args.strategy
+            position_value_usd=Decimal(str(args.position_value_usd)),
+            unit_size_usd=Decimal(str(args.unit_size_usd)),
+            mainnet= False, # args.mainnet
+            wallet_type="main"  # For now, 'long' strategy always uses 'main' wallet
         )
 
         # Initialize strategy

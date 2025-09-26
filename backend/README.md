@@ -12,7 +12,7 @@
 - `--unit-size`: USD per unit movement (e.g., 0.5 = $0.50 price moves)
 - `--position-size`: Position value in USD (e.g., 100 = $100 position)
 - `--leverage`: Leverage multiplier (e.g., 10, 20, 40)
-- `--testnet`: Use testnet (default: True)
+- `--testnet`: Use testnet (default: True during dev phase) no flag = False 
 
 **Full Examples:**
 
@@ -60,3 +60,8 @@ To immediately stop the bot and close everything:
    ```bash
    uv run python scripts/hl_commands.py close [SYMBOL]
    ```
+
+## Prompt
+first read docs\strategy_doc_v11.md to understand the context of the project. And read backend\pyproject.toml to understand the dependancies.
+Read backend\src\exchange to understand how we connect to to Hyperliquid
+Read backend\src\main.py and the files under backend\src\strategy to see how we are handling our strategy

@@ -54,7 +54,7 @@ class GridTradingStrategy:
         self.whipsaw_resolution_pending = False
 
         logger.info(f"Grid Trading Strategy initialized for {config.symbol}")
-        logger.info(f"Configuration: Leverage={config.leverage}x, Unit Size=${config.unit_size}, "
+        logger.info(f"Configuration: Leverage={config.leverage}x, Unit Size=${config.unit_size_usd}, "
                    f"Position=${config.position_value_usd}, Margin=${config.margin_required}")
 
     async def initialize(self) -> bool:
@@ -107,14 +107,13 @@ class GridTradingStrategy:
 
             # Initialize unit tracker with anchor price
             self.unit_tracker = UnitTracker(
-                unit_size=self.config.unit_size,
-                initial_price=anchor_price
+                unit_size_usd=self.config.unit_size_usd,
+                anchor_price=anchor_price
             )
 
             # Initialize position map
             self.position_map = PositionMap(
-                initial_unit=0,
-                unit_size=self.config.unit_size,
+                unit_size_usd=self.config.unit_size_usd,
                 anchor_price=anchor_price
             )
 

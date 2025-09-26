@@ -25,7 +25,7 @@ class StrategyConfig:
     symbol: str
     leverage: int
     position_value_usd: Decimal  # Total position value in USD (what user specifies)
-    unit_size: Decimal  # USD per unit movement
+    unit_size_usd: Decimal  # USD per unit movement
 
     # Exchange settings
     mainnet: bool = False  # Default to testnet
