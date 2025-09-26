@@ -19,14 +19,17 @@
 ```bash
 cd backend
 
-# Small position on SOL with 10x leverage
-uv run python src/main.py --symbol SOL --strategy long --unit-size 0.5 --position-size 100 --leverage 10 --testnet
+# Small position on SOL with 10x leverage (testnet by default)
+uv run python src/main.py --symbol SOL --strategy long --unit-size 0.5 --position-size 100 --leverage 10
 
-# Medium position on SOL with 20x leverage
-uv run python src/main.py --symbol SOL --strategy long --unit-size 0.5 --position-size 2000 --leverage 20 --testnet
+# Medium position on SOL with 20x leverage (testnet)
+uv run python src/main.py --symbol SOL --strategy long --unit-size 0.5 --position-size 2000 --leverage 20
 
-# Large position on BTC with 40x leverage
-uv run python src/main.py --symbol BTC --strategy long --unit-size 25 --position-size 20000 --leverage 40 --testnet
+# Large position on BTC with 40x leverage (testnet)
+uv run python src/main.py --symbol BTC --strategy long --unit-size 25 --position-size 2000 --leverage 40
+
+# To use mainnet, add --mainnet flag
+uv run python src/main.py --symbol BTC --strategy long --unit-size 25 --position-size 2000 --leverage 40 --mainnet
 
 # Medium position on ETH with 25x leverage
 uv run python src/main.py --symbol ETH --strategy long --unit-size 1 --position-size 2500 --leverage 25 --testnet

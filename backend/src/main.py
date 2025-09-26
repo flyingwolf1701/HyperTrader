@@ -63,7 +63,7 @@ def parse_arguments():
         "--position-size",
         type=float,
         required=True,
-        help="Position value in USD (wallet allocation)"
+        help="Total position value in USD (e.g., 2000 for $2000 position)"
     )
 
     parser.add_argument(
@@ -83,16 +83,10 @@ def parse_arguments():
     )
 
     parser.add_argument(
-        "--testnet",
-        action="store_true",
-        default=True,
-        help="Use testnet (default: True)"
-    )
-
-    parser.add_argument(
         "--mainnet",
         action="store_true",
-        help="Use mainnet (overrides --testnet)"
+        default=False,
+        help="Use mainnet (default: False, which means testnet)"
     )
 
     parser.add_argument(
@@ -103,13 +97,7 @@ def parse_arguments():
         help="Which wallet to use for trading"
     )
 
-    args = parser.parse_args()
-
-    # Handle mainnet flag
-    if args.mainnet:
-        args.testnet = False
-
-    return args
+    return parser.parse_args()
 
 
 async def main():
@@ -125,10 +113,10 @@ async def main():
     logger.info("=" * 60)
     logger.info(f"Symbol: {args.symbol}")
     logger.info(f"Unit Size: ${args.unit_size}")
-    logger.info(f"Position Size: ${args.position_size}")
+    logger.info(f"Position Value: ${args.position_size}")
     logger.info(f"Leverage: {args.leverage}x")
-    logger.info(f"Total Position Value: ${args.position_size * args.leverage}")
-    logger.info(f"Network: {'TESTNET' if args.testnet else 'MAINNET'}")
+    logger.info(f"Margin Required: ${args.position_size / args.leverage}")
+    logger.info(f"Network: {'MAINNET' if args.mainnet else 'TESTNET'}")
     logger.info(f"Wallet: {args.wallet}")
     logger.info("=" * 60)
 
@@ -141,13 +129,13 @@ async def main():
         client = HyperliquidClient(
             config=config,
             wallet_type=args.wallet,
-            use_testnet=args.testnet
+            use_testnet=not args.mainnet
         )
-        logger.info(f"Connected to Hyperliquid {'testnet' if args.testnet else 'mainnet'}")
+        logger.info(f"Connected to Hyperliquid {'mainnet' if args.mainnet else 'testnet'}")
 
         # Initialize WebSocket client
         websocket = HyperliquidSDKWebSocketClient(
-            testnet=args.testnet,
+            testnet=not args.mainnet,
             user_address=client.get_user_address()
         )
 
@@ -165,10 +153,10 @@ async def main():
         strategy_config = StrategyConfig(
             symbol=args.symbol,
             leverage=args.leverage,
-            wallet_allocation=Decimal(str(args.position_size)),
+            position_value_usd=Decimal(str(args.position_size)),
             unit_size=Decimal(str(args.unit_size)),
-            testnet=args.testnet,
-            wallet_type=args.wallet
+            mainnet=args.mainnet,
+            strategy=args.strategy
         )
 
         # Initialize strategy
