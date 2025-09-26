@@ -29,7 +29,7 @@ uv run python src/main.py --symbol SOL --strategy long --unit-size 0.5 --positio
 uv run python src/main.py --symbol BTC --strategy long --unit-size 25 --position-size 20000 --leverage 40 --testnet
 
 # Medium position on ETH with 25x leverage
-uv run python src/main.py --symbol ETH --strategy long --unit-size 1 --position-size 12500 --leverage 25 --testnet
+uv run python src/main.py --symbol ETH --strategy long --unit-size 1 --position-size 2500 --leverage 25 --testnet
 ```
 
 ## Utility Commands
