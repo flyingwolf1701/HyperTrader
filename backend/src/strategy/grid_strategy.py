@@ -216,7 +216,7 @@ class GridTradingStrategy:
     async def _handle_unit_change(self, event: UnitChangeEvent) -> None:
         """
         Async handler for unit change events.
-        Implements the core grid sliding and reversal logic.
+        Simplified logic: just check if price went up or down and act accordingly.
 
         Args:
             event: UnitChangeEvent containing unit transition details
@@ -224,151 +224,113 @@ class GridTradingStrategy:
         # Simple, essential logging only
         logger.info(f"Unit: {event.current_unit} | Sells: {self.trailing_stop} | Buys: {self.trailing_buy}")
 
-        # Handle whipsaw detection
-        if event.is_whipsaw:
-            self.whipsaw_paused = True
-            self.whipsaw_resolution_pending = True
-            return
+        # Store previous unit for gap handling
+        previous = event.previous_unit
+        current = event.current_unit
 
-        # Resolve whipsaw if we were paused
-        if self.whipsaw_resolution_pending:
-            await self._resolve_whipsaw(event)
-            self.whipsaw_resolution_pending = False
-            self.whipsaw_paused = False
-            return
+        # Handle gaps by processing one unit at a time
+        if current > previous:
+            # Price went UP - process each unit
+            for unit in range(previous + 1, current + 1):
+                await self._process_unit_up(unit)
+        elif current < previous:
+            # Price went DOWN - process each unit
+            for unit in range(previous - 1, current - 1, -1):
+                await self._process_unit_down(unit)
 
-        # Standard operation: trending or reversal
-        if event.current_direction == event.previous_direction:
-            # Trending market - slide the grid
-            await self._handle_trending_market(event)
-        else:
-            # Check if this is a genuine reversal (order filled) or just direction change
-            # Reversal UP->DOWN means sell filled at current_unit
-            # Reversal DOWN->UP means buy filled at current_unit
-            is_genuine_reversal = False
-
-            if event.previous_direction == Direction.UP and event.current_direction == Direction.DOWN:
-                # Check if we had a sell order at current_unit that could have filled
-                is_genuine_reversal = event.current_unit in self.trailing_stop
-            elif event.previous_direction == Direction.DOWN and event.current_direction == Direction.UP:
-                # Check if we had a buy order at current_unit that could have filled
-                is_genuine_reversal = event.current_unit in self.trailing_buy
-
-            if is_genuine_reversal:
-                # Reversal - replace executed order
-                await self._handle_reversal(event)
-            else:
-                # Just a direction change, not a fill - treat as trending
-                await self._handle_trending_market(event)
-
-    async def _handle_trending_market(self, event: UnitChangeEvent) -> None:
+    async def _process_unit_up(self, unit: int) -> None:
         """
-        Handle trending market by sliding the grid.
+        Process a single unit when price moves UP.
+        If we have a buy at this unit, assume it was filled.
+        Place new stop loss at unit-1, then cancel oldest stop.
 
         Args:
-            event: UnitChangeEvent containing direction info
+            unit: The current unit we've moved to
         """
-        if event.current_direction == Direction.UP:
-            # Trending up - add new sell order at current_unit - 1
-            new_unit = event.current_unit - 1
+        # If we had a buy order at this unit, assume it was filled
+        if unit in self.trailing_buy:
+            self.trailing_buy.remove(unit)
+            logger.info(f"UP: Buy triggered at unit {unit}")
 
-            # Only place if we don't already have an order at this unit
-            if new_unit not in self.trailing_stop:
-                await self._place_sell_order_at_unit(new_unit)
-                # Add to tracking list
-                self.trailing_stop.append(new_unit)
-                self.trailing_stop.sort()
+        # CRITICAL: Place new stop loss at unit - 1 FIRST
+        new_stop_unit = unit - 1
 
-            # Remove oldest if we have more than 4
-            if len(self.trailing_stop) > 4:
-                oldest_unit = self.trailing_stop.pop(0)
-                logger.debug(f"Removing oldest sell order at unit {oldest_unit} (grid sliding up)")
-                await self._cancel_orders_at_unit(oldest_unit)
+        if new_stop_unit not in self.trailing_stop:
+            await self._place_sell_order_at_unit(new_stop_unit)
+            self.trailing_stop.append(new_stop_unit)
+            self.trailing_stop.sort()
+            logger.info(f"UP: Placed new stop at unit {new_stop_unit}")
 
-        elif event.current_direction == Direction.DOWN:
-            # Trending down - add new buy order at current_unit + 1
-            new_unit = event.current_unit + 1
+        # Then cancel the furthest stop (index 0) if we have more than 4
+        if len(self.trailing_stop) > 4:
+            oldest_unit = self.trailing_stop.pop(0)
+            logger.info(f"UP: Cancelling furthest stop at unit {oldest_unit}")
+            await self._cancel_orders_at_unit(oldest_unit)
 
-            # Only place if we don't already have an order at this unit
-            if new_unit not in self.trailing_buy:
-                await self._place_buy_order_at_unit(new_unit)
-                # Add to tracking list
-                self.trailing_buy.append(new_unit)
-                self.trailing_buy.sort()
-
-            # Remove oldest if we have more than 4
-            if len(self.trailing_buy) > 4:
-                oldest_unit = self.trailing_buy.pop()  # Pop last (highest unit)
-                logger.debug(f"Removing oldest buy order at unit {oldest_unit} (grid sliding down)")
-                await self._cancel_orders_at_unit(oldest_unit)
-
-    async def _handle_reversal(self, event: UnitChangeEvent) -> None:
+    async def _process_unit_down(self, unit: int) -> None:
         """
-        Handle market reversal by replacing executed order.
+        Process a single unit when price moves DOWN.
+        Assume stop was triggered, place trailing buy immediately.
 
         Args:
-            event: UnitChangeEvent containing reversal info
+            unit: The current unit we've moved to
         """
-        if event.previous_direction == Direction.UP and event.current_direction == Direction.DOWN:
-            # Reversal down - a sell was filled at current_unit
-            logger.info(f"Reversal DOWN: Sell filled at unit {event.current_unit}")
+        # Assume stop at this unit was triggered (no confirmation needed)
+        if unit in self.trailing_stop:
+            self.trailing_stop.remove(unit)
+            logger.info(f"DOWN: Stop triggered at unit {unit}")
 
-            # Remove filled sell from tracking
-            if event.current_unit in self.trailing_stop:
-                self.trailing_stop.remove(event.current_unit)
+        # Place trailing buy at unit + 1 immediately
+        new_buy_unit = unit + 1
 
-            # Place replacement buy at current_unit + 1
-            if not self.whipsaw_paused:
-                new_unit = event.current_unit + 1
-                if new_unit not in self.trailing_buy:
-                    await self._place_buy_order_at_unit(new_unit)
-                    self.trailing_buy.append(new_unit)
-                    self.trailing_buy.sort()
+        if new_buy_unit not in self.trailing_buy:
+            await self._place_buy_order_at_unit(new_buy_unit)
+            self.trailing_buy.append(new_buy_unit)
+            self.trailing_buy.sort()
+            logger.info(f"DOWN: Placed new buy at unit {new_buy_unit}")
 
-        elif event.previous_direction == Direction.DOWN and event.current_direction == Direction.UP:
-            # Reversal up - a buy was filled at current_unit
-            logger.info(f"Reversal UP: Buy filled at unit {event.current_unit}")
-
-            # Remove filled buy from tracking
-            if event.current_unit in self.trailing_buy:
-                self.trailing_buy.remove(event.current_unit)
-
-            # Place replacement sell at current_unit - 1
-            if not self.whipsaw_paused:
-                new_unit = event.current_unit - 1
-                if new_unit not in self.trailing_stop:
-                    await self._place_sell_order_at_unit(new_unit)
-                    self.trailing_stop.append(new_unit)
-                    self.trailing_stop.sort()
+        # If trailing_buy length > 4, cancel the furthest buy (index 0)
+        if len(self.trailing_buy) > 4:
+            oldest_unit = self.trailing_buy.pop(0)
+            logger.info(f"DOWN: Cancelling furthest buy at unit {oldest_unit}")
+            await self._cancel_orders_at_unit(oldest_unit)
 
     async def _resolve_whipsaw(self, event: UnitChangeEvent) -> None:
         """
-        Resolve whipsaw by restoring the grid based on new direction.
+        Resolve whipsaw based on the post-whipsaw direction.
 
         Args:
             event: UnitChangeEvent after whipsaw
         """
-        logger.info(f"Resolving whipsaw with direction: {event.current_direction}")
+        current = event.current_unit
+        previous = event.previous_unit
 
-        if event.current_direction == Direction.UP:
-            # Trend confirmation - restore grid with 2 new sells
-            await self._place_sell_order_at_unit(event.current_unit - 1)
-            await self._place_sell_order_at_unit(event.current_unit - 2)
-
-            self.trailing_stop.extend([event.current_unit - 1, event.current_unit - 2])
+        if current > previous:
+            # Trend confirmation (going UP after whipsaw)
+            logger.info(f"Whipsaw resolved: Trend UP confirmed")
+            # Restore grid by placing two new sell orders
+            for i in [1, 2]:
+                new_unit = current - i
+                if new_unit not in self.trailing_stop:
+                    await self._place_sell_order_at_unit(new_unit)
+                    self.trailing_stop.append(new_unit)
             self.trailing_stop.sort()
 
-            # Cancel oldest if needed
+            # Cancel oldest orders to maintain 4-order grid
             while len(self.trailing_stop) > 4:
                 oldest = self.trailing_stop.pop(0)
                 await self._cancel_orders_at_unit(oldest)
 
-        elif event.current_direction == Direction.DOWN:
-            # Reversal confirmation - place sell at bottom of grid
-            new_unit = event.current_unit - 4
-            await self._place_sell_order_at_unit(new_unit)
-            self.trailing_stop.append(new_unit)
-            self.trailing_stop.sort()
+        elif current < previous:
+            # Reversal confirmation (going DOWN after whipsaw)
+            logger.info(f"Whipsaw resolved: Reversal DOWN confirmed")
+            # Place a new sell at the bottom of the ideal grid
+            new_unit = current - 4
+            if new_unit not in self.trailing_stop:
+                await self._place_sell_order_at_unit(new_unit)
+                self.trailing_stop.append(new_unit)
+                self.trailing_stop.sort()
+
 
     async def _place_sell_order_at_unit(self, unit: int) -> Optional[str]:
         """
@@ -555,7 +517,7 @@ class GridTradingStrategy:
                 "current_price": float(self.unit_tracker.current_price),
                 "anchor_price": float(self.unit_tracker.anchor_price),
                 "current_direction": self.unit_tracker.current_direction.value,
-                "is_paused": self.unit_tracker.is_paused,
+                "whipsaw_paused": self.whipsaw_paused,
             })
         else:
             status["unit_tracker"] = "NOT_INITIALIZED"
