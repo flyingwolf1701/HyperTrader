@@ -8,11 +8,11 @@
 **Parameters:**
 
 - `--symbol`: Trading symbol (e.g., SOL, BTC, ETH)
-- `--strategy`: Trading strategy (e.g., long, short)
-- `--unit-size`: USD per unit movement (e.g., 0.5 = $0.50 price moves)
-- `--position-size`: Position value in USD (e.g., 100 = $100 position)
+- `--strategy`: Trading strategy (currently only 'long' is implemented)
+- `--unit-size-usd`: USD per unit movement (e.g., 0.5 = $0.50 price moves)
+- `--position-value-usd`: Total position value in USD (e.g., 100 = $100 position)
 - `--leverage`: Leverage multiplier (e.g., 10, 20, 40)
-- `--testnet`: Use testnet (default: True during dev phase) no flag = False 
+- `--testnet`: Use testnet (default: True for safety) 
 
 **Full Examples:**
 
@@ -20,16 +20,13 @@
 cd backend
 
 # Small position on SOL with 10x leverage (testnet by default)
-uv run python src/main.py --symbol SOL --strategy long --unit-size 0.5 --position-size 100 --leverage 10
+uv run python src/main.py --symbol SOL --strategy long --unit-size-usd 0.5 --position-value-usd 100 --leverage 10 --testnet
 
 # Medium position on SOL with 20x leverage (testnet)
-uv run python src/main.py --symbol SOL --strategy long --unit-size 0.5 --position-size 2000 --leverage 20
+uv run python src/main.py --symbol SOL --strategy long --unit-size-usd 0.5 --position-value-usd 2000 --leverage 20 --testnet
 
 # Large position on BTC with 40x leverage (testnet)
-uv run python src/main.py --symbol BTC --strategy long --unit-size 25 --position-size 2000 --leverage 40
-
-# To use mainnet, add --mainnet flag
-uv run python src/main.py --symbol BTC --strategy long --unit-size 25 --position-size 2000 --leverage 40 --mainnet
+uv run python src/main.py --symbol BTC --strategy long --unit-size-usd 25 --position-value-usd 2000 --leverage 40 --testnet
 
 # Medium position on ETH with 25x leverage
 uv run python src/main.py --symbol ETH --strategy long --unit-size 1 --position-size 2500 --leverage 25 --testnet

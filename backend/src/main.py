@@ -113,9 +113,9 @@ async def main():
     logger.info("=" * 60)
     logger.info(f"Symbol: {args.symbol}")
     logger.info(f"Unit Size: ${args.unit_size_usd}")
-    logger.info(f"Position Size: {args.position_size_coin} {args.symbol}")
+    logger.info(f"Position Value: ${args.position_value_usd}")
     logger.info(f"Leverage: {args.leverage}x")
-    logger.info(f"Total Position Value: ${args.position_value_usd}")
+    logger.info(f"Margin Required: ${args.position_value_usd / args.leverage}")
     logger.info(f"Network: {'TESTNET' if args.testnet else 'MAINNET'}")
     logger.info(f"Strategy: {args.strategy}")
     logger.info("=" * 60)
@@ -130,14 +130,12 @@ async def main():
         client = HyperliquidClient(
             config=config,
             wallet_type="main",  # For now, 'long' strategy always uses 'main' wallet
-            use_mainnet = False
+            mainnet=not args.testnet
         )
 
         # Initialize WebSocket client
-        # Convert testnet flag to mainnet (SDK convention: mainnet=True, testnet=False)
         websocket = HyperliquidSDKWebSocketClient(
-            # TODO - I may have done this wrong in merge
-            mainnet=False,
+            mainnet=not args.testnet,
             user_address=client.get_user_address()
         )
 
@@ -157,8 +155,8 @@ async def main():
             leverage=args.leverage,
             position_value_usd=Decimal(str(args.position_value_usd)),
             unit_size_usd=Decimal(str(args.unit_size_usd)),
-            mainnet= False, # args.mainnet
-            wallet_type="main"  # For now, 'long' strategy always uses 'main' wallet
+            mainnet=not args.testnet,
+            strategy=args.strategy
         )
 
         # Initialize strategy

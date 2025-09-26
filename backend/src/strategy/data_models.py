@@ -27,9 +27,10 @@ class StrategyConfig:
     position_value_usd: Decimal  # Total position value in USD (what user specifies)
     unit_size_usd: Decimal  # USD per unit movement
 
-    # Exchange settings
+    # Strategy settings
     mainnet: bool = False  # Default to testnet
     strategy: str = "long"  # Strategy type (long/short)
+    # Note: wallet selection is handled at the exchange level, not strategy config
 
     def __post_init__(self):
         """Calculate derived values after initialization"""
