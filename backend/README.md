@@ -82,3 +82,35 @@ current_unit = -4, trailing_stop = [], trailing_buy =[1, 0, -1, -2]. no stops to
 If we gap down then we just process 1 unit at a time until we are caught up.
 
 The whip saw section will have to be updated with this in mind as well. Please reread docs\strategy_doc_v11.md. You will see that what I just descripbes is fairly clear. and you will be able to see where you went wrong. Then you can start fixing things!
+
+```
+
+#### How to Run the Script Now
+With this fix, you can run the script from the `backend` directory as you were trying to:
+```bash
+# Make sure you are in the 'backend' directory
+python scripts/generate_price_grid.py
+```
+
+### 2. Fixing the `pytest` Error
+
+The `pytest` error is happening for the exact same reason: `pytest` can't find the `src` directory when it tries to import your test file. This is made worse because the standard convention is to have the `tests` directory at the same level as `src`, not inside it.
+
+Here is the most robust and conventional way to fix this for good:
+
+**Step 1: Restructure Your Test Directory**
+* Move your test directory from `backend/src/test` to `backend/tests`.
+
+**Step 2: Run `pytest` from the Root**
+* Navigate to your `backend` directory in the terminal.
+* Run the `pytest` command by itself. It will automatically discover and run all your test files.
+
+```bash
+# Make sure you are in the 'backend' directory
+pytest
+```
+
+If you want to run only one file, you can now do so easily:
+```bash
+# From the 'backend' directory
+pytest tests/test_overall.py
