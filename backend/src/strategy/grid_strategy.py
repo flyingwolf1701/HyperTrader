@@ -45,9 +45,11 @@ class GridTradingStrategy:
         self.position_map: Optional[PositionMap] = None
         self.main_loop: Optional[asyncio.AbstractEventLoop] = None
 
-        # Active order tracking
-        self.trailing_stop: List[int] = []  # Sorted list of active sell order units
-        self.trailing_buy: List[int] = []   # Sorted list of active buy order units
+        # Active order tracking. These lists operate as queues:
+        # - FILLED orders are LIFO (last one in is closest to price, so first one out).
+        # - CANCELLED orders are FIFO (first one in is furthest from price, so it's removed).
+        self.trailing_stop: List[int] = []  # Queue of active sell order units
+        self.trailing_buy: List[int] = []   # Queue of active buy order units
 
         # Whipsaw detection
         self.whipsaw_paused = False
@@ -140,14 +142,14 @@ class GridTradingStrategy:
         logger.info("Placing initial grid orders...")
 
         # Place 4 sell orders at units -1, -2, -3, -4
-        for i in range(1, 5):
-            unit = -i
+        initial_units = [-1, -2, -3, -4]
+        for unit in initial_units:
             price = self.unit_tracker.get_unit_price(unit)
 
             # Calculate sell fragment (1/4 of position)
             fragment_size = self.metrics.current_position_size / 4
 
-            logger.debug(f"Placing sell order #{i} at unit {unit} (${price:.2f}), size: {fragment_size:.4f} {self.config.symbol}")
+            logger.debug(f"Placing sell order at unit {unit} (${price:.2f}), size: {fragment_size:.4f} {self.config.symbol}")
 
             result = self.client.place_stop_order(
                 symbol=self.config.symbol,
@@ -164,9 +166,11 @@ class GridTradingStrategy:
                 logger.debug(f"Sell order placed at unit {unit}: {result.order_id}")
             else:
                 logger.error(f"Failed to place sell order at unit {unit}: {result.error_message}")
-
-        # Sort the list (should already be sorted, but ensure it)
-        self.trailing_stop.sort()
+        
+        # The list is currently [-1, -2, -3, -4]. We reverse it to [-4, -3, -2, -1]
+        # so the oldest/furthest order (-4) is at the front of the queue (index 0)
+        # for easy cancellation using pop(0).
+        self.trailing_stop.reverse()
         logger.info(f"Initial grid established: {len(self.trailing_stop)} sell orders active at units {self.trailing_stop}")
 
     async def _setup_websocket_subscriptions(self) -> None:
@@ -216,121 +220,94 @@ class GridTradingStrategy:
     async def _handle_unit_change(self, event: UnitChangeEvent) -> None:
         """
         Async handler for unit change events.
-        Simplified logic: just check if price went up or down and act accordingly.
+        Processes unit changes one by one to handle gaps and ensure correct order placement.
 
         Args:
             event: UnitChangeEvent containing unit transition details
         """
-        # Simple, essential logging only
-        logger.info(f"Unit: {event.current_unit} | Sells: {self.trailing_stop} | Buys: {self.trailing_buy}")
+        logger.info(
+            f"Unit Change: {event.previous_unit} -> {event.current_unit} | "
+            f"Trailing Stops: {self.trailing_stop} | Trailing Buys: {self.trailing_buy}"
+        )
 
-        # Store previous unit for gap handling
-        previous = event.previous_unit
         current = event.current_unit
+        previous = event.previous_unit
 
-        # Handle gaps by processing one unit at a time
+        # --- Process Unit Changes Sequentially ---
         if current > previous:
-            # Price went UP - process each unit
+            # Price went UP
             for unit in range(previous + 1, current + 1):
                 await self._process_unit_up(unit)
         elif current < previous:
-            # Price went DOWN - process each unit
+            # Price went DOWN
             for unit in range(previous - 1, current - 1, -1):
                 await self._process_unit_down(unit)
 
-    async def _process_unit_up(self, unit: int) -> None:
+    async def _process_unit_up(self, current_unit: int) -> None:
         """
-        Process a single unit when price moves UP.
-        If we have a buy at this unit, assume it was filled.
-        Place new stop loss at unit-1, then cancel oldest stop.
+        Process a single unit move UP. This is a TRENDING UP move.
+        The logic is "place-then-cancel".
 
         Args:
-            unit: The current unit we've moved to
+            current_unit: The new unit level the price has moved to.
         """
-        # If we had a buy order at this unit, assume it was filled
-        if unit in self.trailing_buy:
-            self.trailing_buy.remove(unit)
-            logger.info(f"UP: Buy triggered at unit {unit}")
+        logger.info(f"Processing UP to unit {current_unit}")
 
-        # CRITICAL: Place new stop loss at unit - 1 FIRST
-        new_stop_unit = unit - 1
+        # An upward move triggers the closest buy order. This is the last one
+        # added to the list (LIFO behavior for fills).
+        if self.trailing_buy and self.trailing_buy[-1] == current_unit:
+            unit_filled = self.trailing_buy.pop()
+            self.position_map.update_assumed_fill(unit_filled)
+            logger.success(f"Assumed BUY fill at unit {current_unit}. Remaining buys: {self.trailing_buy}")
 
-        if new_stop_unit not in self.trailing_stop:
-            await self._place_sell_order_at_unit(new_stop_unit)
-            self.trailing_stop.append(new_stop_unit)
-            self.trailing_stop.sort()
-            logger.info(f"UP: Placed new stop at unit {new_stop_unit}")
+        # 1. Place the new stop-loss sell order first.
+        # This new sell order trails the price. It's placed at the unit below the current one.
+        new_sell_unit = current_unit - 1
+        if new_sell_unit not in self.trailing_stop:
+            await self._place_sell_order_at_unit(new_sell_unit)
+            self.trailing_stop.append(new_sell_unit)
+            logger.info(f"Placed new SELL at unit {new_sell_unit}. Active sells: {self.trailing_stop}")
 
-        # Then cancel the furthest stop (index 0) if we have more than 4
+        # 2. Check if the grid has too many orders and cancel the oldest one.
         if len(self.trailing_stop) > 4:
-            oldest_unit = self.trailing_stop.pop(0)
-            logger.info(f"UP: Cancelling furthest stop at unit {oldest_unit}")
-            await self._cancel_orders_at_unit(oldest_unit)
+            # The oldest order is at the beginning of the list (FIFO for cancellation).
+            oldest_unit_to_cancel = self.trailing_stop.pop(0)
+            logger.warning(f"Grid > 4 sells. Cancelling oldest SELL at unit {oldest_unit_to_cancel}")
+            await self._cancel_orders_at_unit(oldest_unit_to_cancel)
 
-    async def _process_unit_down(self, unit: int) -> None:
+    async def _process_unit_down(self, current_unit: int) -> None:
         """
-        Process a single unit when price moves DOWN.
-        Assume stop was triggered, place trailing buy immediately.
+        Process a single unit move DOWN.
+        This function handles the logic for when a stop-loss may have been hit,
+        or when the price is simply trending down below the active grid.
+        It always ensures a new trailing buy order is placed.
 
         Args:
-            unit: The current unit we've moved to
+            current_unit: The new unit level the price has moved to.
         """
-        # Assume stop at this unit was triggered (no confirmation needed)
-        if unit in self.trailing_stop:
-            self.trailing_stop.remove(unit)
-            logger.info(f"DOWN: Stop triggered at unit {unit}")
+        logger.info(f"Processing DOWN to unit {current_unit}")
 
-        # Place trailing buy at unit + 1 immediately
-        new_buy_unit = unit + 1
+        # A downward move triggers the closest stop-loss. This is the last one
+        # added to the list (LIFO behavior for fills).
+        if self.trailing_stop and self.trailing_stop[-1] == current_unit:
+            unit_filled = self.trailing_stop.pop()
+            self.position_map.update_assumed_fill(unit_filled)
+            logger.success(f"Assumed SELL fill at unit {current_unit}. Remaining sells: {self.trailing_stop}")
 
+        # 1. Immediately place a new stop-entry buy order.
+        # This new buy order is placed at the unit above the current one.
+        new_buy_unit = current_unit + 1
         if new_buy_unit not in self.trailing_buy:
             await self._place_buy_order_at_unit(new_buy_unit)
             self.trailing_buy.append(new_buy_unit)
-            self.trailing_buy.sort()
-            logger.info(f"DOWN: Placed new buy at unit {new_buy_unit}")
+            logger.info(f"Placed new BUY at unit {new_buy_unit}. Active buys: {self.trailing_buy}")
 
-        # If trailing_buy length > 4, cancel the furthest buy (index 0)
+        # 2. Check if the grid has too many buy orders and cancel the oldest one.
         if len(self.trailing_buy) > 4:
-            oldest_unit = self.trailing_buy.pop(0)
-            logger.info(f"DOWN: Cancelling furthest buy at unit {oldest_unit}")
-            await self._cancel_orders_at_unit(oldest_unit)
-
-    async def _resolve_whipsaw(self, event: UnitChangeEvent) -> None:
-        """
-        Resolve whipsaw based on the post-whipsaw direction.
-
-        Args:
-            event: UnitChangeEvent after whipsaw
-        """
-        current = event.current_unit
-        previous = event.previous_unit
-
-        if current > previous:
-            # Trend confirmation (going UP after whipsaw)
-            logger.info(f"Whipsaw resolved: Trend UP confirmed")
-            # Restore grid by placing two new sell orders
-            for i in [1, 2]:
-                new_unit = current - i
-                if new_unit not in self.trailing_stop:
-                    await self._place_sell_order_at_unit(new_unit)
-                    self.trailing_stop.append(new_unit)
-            self.trailing_stop.sort()
-
-            # Cancel oldest orders to maintain 4-order grid
-            while len(self.trailing_stop) > 4:
-                oldest = self.trailing_stop.pop(0)
-                await self._cancel_orders_at_unit(oldest)
-
-        elif current < previous:
-            # Reversal confirmation (going DOWN after whipsaw)
-            logger.info(f"Whipsaw resolved: Reversal DOWN confirmed")
-            # Place a new sell at the bottom of the ideal grid
-            new_unit = current - 4
-            if new_unit not in self.trailing_stop:
-                await self._place_sell_order_at_unit(new_unit)
-                self.trailing_stop.append(new_unit)
-                self.trailing_stop.sort()
-
+            # The oldest buy order is at the beginning of the list (FIFO for cancellation).
+            oldest_unit_to_cancel = self.trailing_buy.pop(0)
+            logger.warning(f"Grid > 4 buys. Cancelling oldest BUY at unit {oldest_unit_to_cancel}")
+            await self._cancel_orders_at_unit(oldest_unit_to_cancel)
 
     async def _place_sell_order_at_unit(self, unit: int) -> Optional[str]:
         """
@@ -409,6 +386,10 @@ class GridTradingStrategy:
             unit: Unit level to cancel orders at
         """
         active_orders = self.position_map.get_active_orders_at_unit(unit)
+
+        if not active_orders:
+            logger.warning(f"Attempted to cancel orders at unit {unit}, but PositionMap found no active orders.")
+            return
 
         for order in active_orders:
             logger.info(f"Cancelling {order.order_type} order {order.order_id} at unit {unit}")
@@ -508,8 +489,13 @@ class GridTradingStrategy:
         status = {
             "strategy_state": self.state.value if self.state else "NOT_INITIALIZED",
             "symbol": self.config.symbol,
-            "unit_size": float(self.config.unit_size),
         }
+        
+        if self.config and hasattr(self.config, 'unit_size'):
+            status["unit_size"] = float(self.config.unit_size)
+        else:
+            status["unit_size"] = None
+
 
         if self.unit_tracker:
             status.update({
@@ -560,3 +546,4 @@ class GridTradingStrategy:
 
         self.state = StrategyState.STOPPED
         logger.info("Strategy shutdown complete")
+

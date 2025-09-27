@@ -15,7 +15,7 @@ class OrderRecord:
     """Record of a single order at a unit level"""
     order_id: str
     order_type: str  # "buy" or "sell"
-    status: str  # "active", "filled", "cancelled"
+    status: str  # "active", "filled", "cancelled", "assumed_filled"
     size: Decimal
     price: Decimal
     timestamp: datetime
@@ -45,7 +45,13 @@ class UnitLevel:
         """Update the status of an order"""
         for order in self.orders:
             if order.order_id == order_id:
-                order.status = status
+                # If we get an official 'filled' status for an order we already assumed was filled,
+                # we just update the final fill price and timestamp. Otherwise, we set the new status.
+                if order.status == "assumed_filled" and status == "filled":
+                    pass  # The order is already considered filled by the strategy logic.
+                else:
+                    order.status = status
+                
                 if status == "filled" and fill_price:
                     order.fill_price = fill_price
                     order.fill_timestamp = datetime.now()
@@ -53,8 +59,20 @@ class UnitLevel:
         return False
 
     def get_active_orders(self) -> List[OrderRecord]:
-        """Get all active orders at this level"""
+        """Get all orders with status 'active' at this level"""
         return [o for o in self.orders if o.status == "active"]
+
+    def update_last_active_order_status(self, status: str) -> Optional[str]:
+        """
+        Finds the most recent 'active' order, updates its status, and returns its ID.
+        This is used to mark an order as 'assumed_filled'.
+        """
+        # Iterate backwards to find the last appended 'active' order
+        for order in reversed(self.orders):
+            if order.status == "active":
+                order.status = status
+                return order.order_id
+        return None
 
 
 class PositionMap:
@@ -75,7 +93,7 @@ class PositionMap:
         self.anchor_price = anchor_price
         self.map: Dict[int, UnitLevel] = {}
 
-        # Order ID Map for fast lookups
+        # Order ID Map for fast lookups of active/cancellable orders
         self.order_id_map: Dict[str, int] = {}
 
         # Initialize with a buffer of units centered at unit 0
@@ -129,23 +147,50 @@ class PositionMap:
         Returns:
             True if order was found and updated, False otherwise
         """
-        # Fast lookup using order ID map
-        if order_id not in self.order_id_map:
-            logger.warning(f"Order {order_id} not found in OrderIDMap")
-            return False
+        unit = self.order_id_map.get(order_id)
+        success = False
 
-        unit = self.order_id_map[order_id]
-        success = self.map[unit].update_order_status(order_id, status, fill_price)
+        if unit is not None:
+            # Found in the fast-lookup map
+            success = self.map[unit].update_order_status(order_id, status, fill_price)
+        else:
+            # Fallback: search all units if not in the map.
+            # This is necessary for official fills of orders that were 'assumed_filled'.
+            for u, level in self.map.items():
+                if level.update_order_status(order_id, status, fill_price):
+                    unit = u
+                    success = True
+                    break
 
         if success:
             logger.debug(f"Updated order {order_id} at unit {unit} to status: {status}")
+            # If an order is officially confirmed as inactive, remove it from the fast-lookup map.
             if status in ["filled", "cancelled"]:
-                # Remove from order ID map as it's no longer active
-                del self.order_id_map[order_id]
+                if order_id in self.order_id_map:
+                    del self.order_id_map[order_id]
         else:
-            logger.warning(f"Order {order_id} not found at unit {unit}")
+            logger.warning(f"Order {order_id} not found in PositionMap to update status to {status}")
 
         return success
+
+    def update_assumed_fill(self, unit: int) -> None:
+        """
+        Find the latest active order at a unit and mark it as 'assumed_filled'.
+        """
+        if unit not in self.map:
+            logger.warning(f"Attempted to assume fill for non-existent unit {unit}")
+            return
+
+        updated_order_id = self.map[unit].update_last_active_order_status("assumed_filled")
+        
+        if updated_order_id:
+            logger.debug(f"Marked order {updated_order_id} at unit {unit} as 'assumed_filled'")
+            # Remove from the fast-lookup map. The bot's logic will no longer manage this order.
+            # It is now considered 'in-flight' and waiting for an official 'filled' confirmation.
+            if updated_order_id in self.order_id_map:
+                del self.order_id_map[updated_order_id]
+        else:
+            logger.warning(f"Could not find an active order to mark as 'assumed_filled' at unit {unit}")
 
     def get_unit_history(self, unit: int) -> Optional[UnitLevel]:
         """Get all order history for a specific unit"""
@@ -169,14 +214,12 @@ class PositionMap:
     def get_order_by_id(self, order_id: str) -> Optional[tuple[int, OrderRecord]]:
         """
         Find an order by its ID.
-
-        Returns:
-            Tuple of (unit, OrderRecord) if found, None otherwise
+        This now only searches through orders the bot considers active.
         """
-        if order_id not in self.order_id_map:
+        unit = self.order_id_map.get(order_id)
+        if unit is None:
             return None
 
-        unit = self.order_id_map[order_id]
         for order in self.map[unit].orders:
             if order.order_id == order_id:
                 return (unit, order)
@@ -185,18 +228,24 @@ class PositionMap:
     def get_stats(self) -> dict:
         """Get statistics about the position map"""
         total_orders = sum(len(level.orders) for level in self.map.values())
-        active_orders = len(self.order_id_map)
-        filled_orders = sum(
-            sum(1 for o in level.orders if o.status == "filled")
-            for level in self.map.values()
-        )
+        active_orders_in_map = len(self.order_id_map)
+        
+        filled_count = 0
+        assumed_filled_count = 0
+        for level in self.map.values():
+            for o in level.orders:
+                if o.status == "filled":
+                    filled_count += 1
+                elif o.status == "assumed_filled":
+                    assumed_filled_count += 1
 
         return {
-            "total_units": len(self.map),
-            "total_orders": total_orders,
-            "active_orders": active_orders,
-            "filled_orders": filled_orders,
-            "unit_range": (min(self.map.keys()), max(self.map.keys()))
+            "total_units_tracked": len(self.map),
+            "total_orders_placed": total_orders,
+            "active_orders_managed": active_orders_in_map,
+            "confirmed_fills": filled_count,
+            "assumed_fills": assumed_filled_count,
+            "unit_range": (min(self.map.keys()), max(self.map.keys())) if self.map else (0, 0)
         }
 
     def get_last_filled_order(self) -> Optional[tuple[int, OrderRecord]]:
