@@ -202,6 +202,10 @@ class PositionMap:
             return self.map[unit].get_active_orders()
         return []
 
+    def has_active_order_at_unit(self, unit: int) -> bool:
+        """Check if there are any active orders at a specific unit"""
+        return len(self.get_active_orders_at_unit(unit)) > 0
+
     def get_all_active_orders(self) -> Dict[int, List[OrderRecord]]:
         """Get all active orders across all units"""
         active_orders = {}
