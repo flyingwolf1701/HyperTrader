@@ -278,6 +278,8 @@ class HyperliquidClient:
                 name=symbol,
                 is_cross=True  # Use cross margin
             )
+            
+            logger.debug(f"RAW LEVERAGE RESPONSE: {result}")
 
             if result.get("status") == "ok":
                 logger.info(f"✅ Successfully set leverage to {leverage}x for {symbol}")
@@ -336,8 +338,8 @@ class HyperliquidClient:
         try:
             # Validate and set leverage if specified
             if leverage:
-                # Get max leverage from market info
                 market_info = self.get_market_info(symbol)
+                # TODO: Why is max leverage hardcoded to 20?
                 max_lev = int(market_info.get("maxLeverage", 20))
                 if not (1 <= leverage <= max_lev):
                     return OrderResult(
@@ -348,6 +350,7 @@ class HyperliquidClient:
             
             # Calculate position size in coins from USD amount
             # We need to convert USD to coin amount based on current price for the order
+
             position_size_coin = self.calculate_position_size(symbol, usd_amount)
             
             logger.info(
@@ -364,6 +367,8 @@ class HyperliquidClient:
                 slippage=slippage
             )
             
+            logger.debug(f"RAW OPEN POSITION RESPONSE: {result}")
+
             # Parse result
             if result.get("status") == "ok":
                 response = result.get("response", {})
@@ -421,15 +426,15 @@ class HyperliquidClient:
                 f"{position.size} {symbol}"
             )
             
-            # Close by opening opposite position
-            # Note: market_close seems unreliable, using market_open instead
             result = self.exchange.market_open(
                 name=symbol,
-                is_buy=not position.is_long,  # Opposite side to close
+                is_buy=not position.is_long, # Opposite side to close
                 sz=float(position.size),
                 px=None,
                 slippage=slippage
             )
+            
+            logger.debug(f"RAW CLOSE POSITION RESPONSE: {result}")
             
             # Parse result
             if result.get("status") == "ok":
@@ -497,6 +502,7 @@ class HyperliquidClient:
         """
         try:
             # Get tick size from market info and round trigger price
+            # TODO: I don't like that these values are hard coded. we should be able to get the tick_size and szDecimals from the coin meta.
             market_info = self.get_market_info(symbol)
             tick_size = Decimal(str(market_info.get("szDecimals", 4)))
             tick_size = Decimal("10") ** -tick_size  # Convert decimals to tick size
@@ -513,11 +519,12 @@ class HyperliquidClient:
             
             # Create stop loss order type
             # Use limit orders for all stops with proper tick sizing
+            
             order_type = {
                 "trigger": {
                     "triggerPx": float(rounded_trigger),
                     "isMarket": True, 
-                    "tpsl": "sl"  # Stop loss type
+                    "tpsl": "sl"
                 }
             }
 
@@ -540,6 +547,8 @@ class HyperliquidClient:
                 reduce_only
             )
             
+            logger.debug(f"RAW STOP ORDER RESPONSE: {result}")
+
             # Parse result
             if result.get("status") == "ok":
                 response = result.get("response", {})
@@ -551,27 +560,22 @@ class HyperliquidClient:
                     return OrderResult(
                         success=True,
                         order_id=str(resting.get("oid")),
-                        filled_size=Decimal("0"),  # Not filled yet
-                        average_price=rounded_trigger
+                        filled_size=Decimal("0"),
+                        average_price=Decimal(str(rounded_trigger))
                     )
+                elif statuses and "error" in statuses[0]:
+                    error_msg = statuses[0]["error"]
+                    return OrderResult(success=False, error_message=error_msg)
                 else:
-                    return OrderResult(
-                        success=False,
-                        error_message=f"Unexpected response: {statuses}"
-                    )
+                    return OrderResult(success=False, error_message=f"Unexpected response: {statuses}")
+
             else:
                 error_msg = result.get("response", "Unknown error")
-                return OrderResult(
-                    success=False,
-                    error_message=f"Stop order failed: {error_msg}"
-                )
+                return OrderResult(success=False, error_message=f"Stop order failed: {error_msg}")
                 
         except Exception as e:
-            logger.error(f"Failed to place stop order: {e}")
-            return OrderResult(
-                success=False,
-                error_message=str(e)
-            )
+            logger.error(f"Failed to place stop order: {e}", exc_info=True)
+            return OrderResult(success=False, error_message=str(e))
     
     def place_stop_buy(
         self,
@@ -583,7 +587,6 @@ class HyperliquidClient:
     ) -> OrderResult:
         """
         Place a stop limit buy order that triggers when price rises to specified level.
-        This is used for placing buy orders above current market price that wait for price to rise.
         
         Args:
             symbol: Trading symbol
@@ -616,19 +619,18 @@ class HyperliquidClient:
                 f"{size} {symbol} triggers @ ${rounded_trigger:.2f}, "
                 f"limit @ ${rounded_limit:.2f}"
             )
-            
             # Create stop buy order type (triggers when price rises)
-            # Using "sl" (stop loss) for buy orders that trigger when price goes UP
+            # Using "sl" (stop loss) for buy orders that trigger when price goes UP        
             order_type = {
                 "trigger": {
                     "triggerPx": float(rounded_trigger),
                     "isMarket": True,
-                    "tpsl": "sl"  # Stop loss type (for buy orders, triggers when price rises above)
+                    "tpsl": "sl"  # Stop loss type (for buy orders, triggers when price rises above)                    "tpsl": "sl"
                 }
             }
-            
+
             # Get market info for proper decimal formatting
-            market_info = self.get_market_info(symbol)
+            market_info = self.get_market_info(symbol)            
             sz_decimals = int(market_info.get("szDecimals", 4))
             
             # Round size to appropriate decimals
@@ -642,7 +644,9 @@ class HyperliquidClient:
                 order_type, 
                 reduce_only
             )
+            )
             
+            logger.debug(f"RAW STOP BUY RESPONSE: {result}")
             # Parse result
             if result.get("status") == "ok":
                 response = result.get("response", {})
@@ -654,26 +658,21 @@ class HyperliquidClient:
                     return OrderResult(
                         success=True,
                         order_id=str(resting.get("oid")),
-                        filled_size=Decimal("0"),  # Not filled yet
-                        average_price=rounded_limit
+                        filled_size=Decimal("0"),
+                        average_price=Decimal(str(rounded_limit))
                     )
+                elif statuses and "error" in statuses[0]:
+                    error_msg = statuses[0]["error"]
+                    return OrderResult(success=False, error_message=error_msg)
                 else:
-                    return OrderResult(
-                        success=False,
-                        error_message=f"Unexpected response: {statuses}"
-                    )
+                    return OrderResult(success=False, error_message=f"Unexpected response: {statuses}")
             else:
-                return OrderResult(
-                    success=False,
-                    error_message=f"Stop buy order failed: {result}"
-                )
+                error_msg = result.get("response", "Unknown error")
+                return OrderResult(success=False, error_message=f"Stop buy order failed: {error_msg}")
 
         except Exception as e:
-            logger.error(f"Failed to place stop buy order: {e}")
-            return OrderResult(
-                success=False,
-                error_message=str(e)
-            )
+            logger.error(f"Failed to place stop buy order: {e}", exc_info=True)
+            return OrderResult(success=False, error_message=str(e))
     
     def place_limit_order(
         self,
@@ -728,7 +727,7 @@ class HyperliquidClient:
                 "t": {"limit": {"tif": "Gtc"}},  # Good till cancelled
                 "c": None  # No client order ID for now
             }
-            
+
             if post_only:
                 order["t"]["limit"]["tif"] = "Alo"  # Add liquidity only
             
@@ -736,6 +735,7 @@ class HyperliquidClient:
             result = self.exchange.order(symbol, is_buy, rounded_size, rounded_price, 
                                         {"limit": {"tif": "Gtc"}}, reduce_only=reduce_only)
             
+            logger.debug(f"RAW LIMIT ORDER RESPONSE: {result}")
             # Parse result
             if result.get("status") == "ok":
                 response = result.get("response", {})
@@ -747,7 +747,7 @@ class HyperliquidClient:
                     return OrderResult(
                         success=True,
                         order_id=str(resting.get("oid")),
-                        filled_size=Decimal("0"),  # Not filled yet
+                        filled_size=Decimal("0"),
                         average_price=Decimal(str(price))
                     )
                 elif statuses and "filled" in statuses[0]:
@@ -759,22 +759,13 @@ class HyperliquidClient:
                         average_price=Decimal(str(filled.get("avgPx", 0)))
                     )
                 elif statuses and "error" in statuses[0]:
-                    return OrderResult(
-                        success=False,
-                        error_message=statuses[0]["error"]
-                    )
+                    return OrderResult(success=False, error_message=statuses[0]["error"])
             
-            return OrderResult(
-                success=False,
-                error_message=f"Unexpected response: {result}"
-            )
+            return OrderResult(success=False, error_message=f"Unexpected response: {result}")
             
         except Exception as e:
-            logger.error(f"Failed to place limit order: {e}")
-            return OrderResult(
-                success=False,
-                error_message=str(e)
-            )
+            logger.error(f"Failed to place limit order: {e}", exc_info=True)
+            return OrderResult(success=False, error_message=str(e))
     
     def cancel_order(self, symbol: str, order_id: str) -> bool:
         """
@@ -789,6 +780,8 @@ class HyperliquidClient:
         """
         try:
             result = self.exchange.cancel(symbol, int(order_id))
+            
+            logger.debug(f"RAW CANCEL ORDER RESPONSE for {order_id}: {result}")
             
             if result.get("status") == "ok":
                 logger.info(f"Cancelled order {order_id} for {symbol}")
