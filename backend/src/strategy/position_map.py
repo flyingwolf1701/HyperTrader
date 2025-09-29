@@ -113,7 +113,7 @@ class PositionMap:
         if unit not in self.map:
             price = self._calculate_unit_price(unit)
             self.map[unit] = UnitLevel(unit=unit, price=price)
-            logger.debug(f"Expanded PositionMap to include unit {unit}")
+            logger.info(f"Expanded PositionMap to include unit {unit}")
 
     def add_order(self, unit: int, order_id: str, order_type: str, size: Decimal) -> None:
         """
@@ -133,7 +133,7 @@ class PositionMap:
         # Add to order ID map for fast lookup
         self.order_id_map[order_id] = unit
 
-        logger.debug(f"Added {order_type} order {order_id} at unit {unit}")
+        logger.info(f"Added {order_type} order {order_id} at unit {unit}")
 
     def update_order_status(self, order_id: str, status: str, fill_price: Optional[Decimal] = None) -> bool:
         """
@@ -163,7 +163,7 @@ class PositionMap:
                     break
 
         if success:
-            logger.debug(f"Updated order {order_id} at unit {unit} to status: {status}")
+            logger.info(f"Updated order {order_id} at unit {unit} to status: {status}")
             # If an order is officially confirmed as inactive, remove it from the fast-lookup map.
             if status in ["filled", "cancelled"]:
                 if order_id in self.order_id_map:
@@ -184,7 +184,7 @@ class PositionMap:
         updated_order_id = self.map[unit].update_last_active_order_status("assumed_filled")
         
         if updated_order_id:
-            logger.debug(f"Marked order {updated_order_id} at unit {unit} as 'assumed_filled'")
+            logger.info(f"Marked order {updated_order_id} at unit {unit} as 'assumed_filled'")
             # Remove from the fast-lookup map. The bot's logic will no longer manage this order.
             # It is now considered 'in-flight' and waiting for an official 'filled' confirmation.
             if updated_order_id in self.order_id_map:

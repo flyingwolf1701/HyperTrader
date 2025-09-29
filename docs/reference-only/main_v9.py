@@ -497,7 +497,7 @@ class HyperTrader:
     
     def _handle_price_update(self, price: Decimal):
         """Handle price updates from WebSocket"""
-        logger.debug(f"Price update received: ${price}")
+        logger.info(f"Price update received: ${price}")
         self.current_price = price
         
         # Check for unit boundary crossing
@@ -507,7 +507,7 @@ class HyperTrader:
             logger.info(f"🎯 UNIT EVENT DETECTED - Creating task to handle unit change")
             asyncio.create_task(self._handle_unit_change(unit_event))
         else:
-            logger.debug(f"No unit change at price ${price}")
+            logger.info(f"No unit change at price ${price}")
     
     async def _handle_unit_change(self, event: UnitChangeEvent):
         """Handle unit boundary crossing - Trail ONLY in the correct direction"""
@@ -974,7 +974,7 @@ class HyperTrader:
                     self._log_order_summary(active_orders)
                     self._last_detail_log = 0
                 else:
-                    logger.debug(f"Status - Phase: {window_state['phase']}, Active orders: {len(active_orders)}, Current unit: {window_state['current_unit']}")
+                    logger.info(f"Status - Phase: {window_state['phase']}, Active orders: {len(active_orders)}, Current unit: {window_state['current_unit']}")
 
                 # Periodically clean up invalid orders (every 20 seconds)
                 if self._last_validation >= 2:  # Every 20 seconds (10s * 2)

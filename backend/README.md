@@ -63,9 +63,6 @@ first read docs\strategy_doc_v11.md to understand the context of the project. An
 Read backend\src\exchange to understand how we connect to to Hyperliquid
 Read backend\src\main.py and the files under backend\src\strategy to see how we are handling our strategy
 
-I believe that we are making things way more complicated then they need to be. 
-My intention is quite simple 
-
 We place our initial order
 current_unit = 0, trailing_stop = [-4, -3, -2, -1], trailing_buy =[] notice that order furthest from current_unit is index 0
 Price goes up: current_unit = 1, trailing_stop = [-4, -3, -2, -1, 0], trailing_buy =[]. First we place the new stop loss at unit 0 this is critical, then we cancel the unit at index 0 in the trailing_stop list asynchronously. so that trailing_stop = [-3, -2, -1, 0]

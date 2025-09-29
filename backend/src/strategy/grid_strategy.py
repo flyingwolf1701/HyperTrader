@@ -149,7 +149,7 @@ class GridTradingStrategy:
             # Calculate sell fragment (1/4 of position)
             fragment_size = self.metrics.current_position_size / 4
 
-            logger.debug(f"Placing sell order at unit {unit} (${price:.2f}), size: {fragment_size:.4f} {self.config.symbol}")
+            logger.info(f"Placing sell order at unit {unit} (${price:.2f}), size: {fragment_size:.4f} {self.config.symbol}")
 
             result = self.client.place_stop_order(
                 symbol=self.config.symbol,
@@ -163,7 +163,7 @@ class GridTradingStrategy:
                 # Track the order
                 self.trailing_stop.append(unit)
                 self.position_map.add_order(unit, result.order_id, "sell", fragment_size)
-                logger.debug(f"Sell order placed at unit {unit}: {result.order_id}")
+                logger.info(f"Sell order placed at unit {unit}: {result.order_id}")
             else:
                 logger.error(f"Failed to place sell order at unit {unit}: {result.error_message}")
         
@@ -326,7 +326,7 @@ class GridTradingStrategy:
         divisor = min(num_active_sells, 4)  # Cap at 4
         fragment_size = self.metrics.current_position_size / divisor
 
-        logger.debug(f"Placing SELL order at unit {unit} (${price:.2f}), size: {fragment_size:.4f} {self.config.symbol}")
+        logger.info(f"Placing SELL order at unit {unit} (${price:.2f}), size: {fragment_size:.4f} {self.config.symbol}")
 
         result = self.client.place_stop_order(
             symbol=self.config.symbol,
@@ -338,7 +338,7 @@ class GridTradingStrategy:
 
         if result.success:
             self.position_map.add_order(unit, result.order_id, "sell", fragment_size)
-            logger.debug(f"SELL order placed at unit {unit}: {result.order_id}")
+            logger.info(f"SELL order placed at unit {unit}: {result.order_id}")
             return result.order_id
         else:
             logger.error(f"Failed to place sell order: {result.error_message}")
@@ -360,7 +360,7 @@ class GridTradingStrategy:
         fragment_usd = self.metrics.new_buy_fragment
         fragment_size = self.client.calculate_position_size(self.config.symbol, fragment_usd)
 
-        logger.debug(f"Placing BUY order at unit {unit} (${price:.2f}), size: {fragment_size:.4f} {self.config.symbol}, value: ${fragment_usd:.2f}")
+        logger.info(f"Placing BUY order at unit {unit} (${price:.2f}), size: {fragment_size:.4f} {self.config.symbol}, value: ${fragment_usd:.2f}")
 
         result = self.client.place_stop_buy(
             symbol=self.config.symbol,
@@ -372,7 +372,7 @@ class GridTradingStrategy:
 
         if result.success:
             self.position_map.add_order(unit, result.order_id, "buy", fragment_size)
-            logger.debug(f"BUY order placed at unit {unit}: {result.order_id}")
+            logger.info(f"BUY order placed at unit {unit}: {result.order_id}")
             return result.order_id
         else:
             logger.error(f"Failed to place buy order: {result.error_message}")

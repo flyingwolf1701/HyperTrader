@@ -202,7 +202,7 @@ class HyperliquidSDKWebSocketClient:
     async def _handle_trades(self, symbol: str, data):
         """Handle incoming trade data"""
         try:
-            logger.debug(f"RAW TRADE DATA ({symbol}): {data}")
+            logger.info(f"RAW TRADE DATA ({symbol}): {data}")
             if not data:
                 return
 
@@ -246,7 +246,7 @@ class HyperliquidSDKWebSocketClient:
     async def _handle_user_fills(self, data):
         """Handle incoming user fill data"""
         try:
-            logger.debug(f"RAW USER DATA: {data}")
+            logger.info(f"RAW USER DATA: {data}")
             if not data:
                 return
 
@@ -277,7 +277,7 @@ class HyperliquidSDKWebSocketClient:
                 if time_ms:
                     fill_time = datetime.fromtimestamp(time_ms / 1000)
                     if fill_time < self.startup_time:
-                        logger.debug(f"Skipping old fill from {fill_time} (before startup {self.startup_time})")
+                        logger.info(f"Skipping old fill from {fill_time} (before startup {self.startup_time})")
                         continue
 
                 if coin and px and sz:
@@ -312,7 +312,7 @@ class HyperliquidSDKWebSocketClient:
     def _handle_trades_sync(self, symbol: str, data):
         """Synchronous version of _handle_trades for thread context"""
         try:
-            logger.debug(f"RAW SYNC TRADE DATA ({symbol}): {data}")
+            logger.info(f"RAW SYNC TRADE DATA ({symbol}): {data}")
             if not data or not self.is_connected:
                 return
 
@@ -345,7 +345,7 @@ class HyperliquidSDKWebSocketClient:
     def _handle_user_fills_sync(self, data):
         """Synchronous version of _handle_user_fills for thread context"""
         try:
-            logger.debug(f"RAW SYNC USER DATA: {data}")
+            logger.info(f"RAW SYNC USER DATA: {data}")
             if not data:
                 return
 

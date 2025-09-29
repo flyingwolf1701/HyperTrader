@@ -279,7 +279,7 @@ class HyperliquidClient:
                 is_cross=True  # Use cross margin
             )
             
-            logger.debug(f"RAW LEVERAGE RESPONSE: {result}")
+            logger.info(f"RAW LEVERAGE RESPONSE: {result}")
 
             if result.get("status") == "ok":
                 logger.info(f"✅ Successfully set leverage to {leverage}x for {symbol}")
@@ -367,7 +367,7 @@ class HyperliquidClient:
                 slippage=slippage
             )
             
-            logger.debug(f"RAW OPEN POSITION RESPONSE: {result}")
+            logger.info(f"RAW OPEN POSITION RESPONSE: {result}")
 
             # Parse result
             if result.get("status") == "ok":
@@ -434,7 +434,7 @@ class HyperliquidClient:
                 slippage=slippage
             )
             
-            logger.debug(f"RAW CLOSE POSITION RESPONSE: {result}")
+            logger.info(f"RAW CLOSE POSITION RESPONSE: {result}")
             
             # Parse result
             if result.get("status") == "ok":
@@ -515,7 +515,7 @@ class HyperliquidClient:
                 f"Placing {'BUY' if is_buy else 'SELL'} stop order: "
                 f"{size} {symbol} triggers @ ${rounded_trigger:.2f}"
             )
-            logger.debug(f"Original trigger: ${trigger_price}, Rounded: ${rounded_trigger}, Tick size: ${tick_size}")
+            logger.info(f"Original trigger: ${trigger_price}, Rounded: ${rounded_trigger}, Tick size: ${tick_size}")
             
             # Create stop loss order type
             # Use limit orders for all stops with proper tick sizing
@@ -547,7 +547,7 @@ class HyperliquidClient:
                 reduce_only
             )
             
-            logger.debug(f"RAW STOP ORDER RESPONSE: {result}")
+            logger.info(f"RAW STOP ORDER RESPONSE: {result}")
 
             # Parse result
             if result.get("status") == "ok":
@@ -644,9 +644,8 @@ class HyperliquidClient:
                 order_type, 
                 reduce_only
             )
-            )
             
-            logger.debug(f"RAW STOP BUY RESPONSE: {result}")
+            logger.info(f"RAW STOP BUY RESPONSE: {result}")
             # Parse result
             if result.get("status") == "ok":
                 response = result.get("response", {})
@@ -735,7 +734,7 @@ class HyperliquidClient:
             result = self.exchange.order(symbol, is_buy, rounded_size, rounded_price, 
                                         {"limit": {"tif": "Gtc"}}, reduce_only=reduce_only)
             
-            logger.debug(f"RAW LIMIT ORDER RESPONSE: {result}")
+            logger.info(f"RAW LIMIT ORDER RESPONSE: {result}")
             # Parse result
             if result.get("status") == "ok":
                 response = result.get("response", {})
@@ -781,7 +780,7 @@ class HyperliquidClient:
         try:
             result = self.exchange.cancel(symbol, int(order_id))
             
-            logger.debug(f"RAW CANCEL ORDER RESPONSE for {order_id}: {result}")
+            logger.info(f"RAW CANCEL ORDER RESPONSE for {order_id}: {result}")
             
             if result.get("status") == "ok":
                 logger.info(f"Cancelled order {order_id} for {symbol}")
