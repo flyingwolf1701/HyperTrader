@@ -175,14 +175,20 @@ class GridTradingStrategy:
 
     async def _setup_websocket_subscriptions(self) -> None:
         """Subscribe to websocket feeds for price updates and fills."""
-        # Subscribe to price updates
+        # Create fill callback that properly handles async calls
+        async def fill_handler(order_id: str, price: Decimal, size: Decimal):
+            """Handle fill confirmations from WebSocket"""
+            logger.info(f"Fill handler triggered for order {order_id}")
+            await self.process_fill_confirmation(order_id, price, size)
+
+        # Subscribe to price updates AND register fill callback
         await self.websocket.subscribe_to_trades(
             symbol=self.config.symbol,
             price_callback=self._on_price_update,
-            fill_callback=self._on_order_fill
+            fill_callback=fill_handler
         )
 
-        # Subscribe to user fills
+        # Subscribe to user fills (this triggers the fill_callback registered above)
         wallet_address = self.client.get_user_address()
         await self.websocket.subscribe_to_user_fills(wallet_address)
 
@@ -253,20 +259,21 @@ class GridTradingStrategy:
         """
         logger.info(f"Processing UP to unit {current_unit}")
 
-        # An upward move triggers the closest buy order. This is the last one
-        # added to the list (LIFO behavior for fills).
-        if self.trailing_buy and self.trailing_buy[-1] == current_unit:
-            unit_filled = self.trailing_buy.pop()
-            self.position_map.update_assumed_fill(unit_filled)
-            logger.success(f"Assumed BUY fill at unit {current_unit}. Remaining buys: {self.trailing_buy}")
+        # NOTE: We no longer assume fills here. Fills are handled by process_fill_confirmation.
+        # We only adjust the grid based on price movement to maintain trailing behavior.
 
         # 1. Place the new stop-loss sell order first.
         # This new sell order trails the price. It's placed at the unit below the current one.
         new_sell_unit = current_unit - 1
-        if new_sell_unit not in self.trailing_stop:
-            await self._place_sell_order_at_unit(new_sell_unit)
-            self.trailing_stop.append(new_sell_unit)
-            logger.info(f"Placed new SELL at unit {new_sell_unit}. Active sells: {self.trailing_stop}")
+
+        # Check if we already have an order at this unit (prevent duplicates)
+        if new_sell_unit not in self.trailing_stop and not self.position_map.has_active_order_at_unit(new_sell_unit):
+            result = await self._place_sell_order_at_unit(new_sell_unit)
+            if result:  # Only add to list if order was successfully placed
+                self.trailing_stop.append(new_sell_unit)
+                logger.info(f"Placed new SELL at unit {new_sell_unit}. Active sells: {self.trailing_stop}")
+        else:
+            logger.debug(f"Skipping SELL at unit {new_sell_unit} - order already exists")
 
         # 2. Check if the grid has too many orders and cancel the oldest one.
         if len(self.trailing_stop) > 4:
@@ -287,20 +294,21 @@ class GridTradingStrategy:
         """
         logger.info(f"Processing DOWN to unit {current_unit}")
 
-        # A downward move triggers the closest stop-loss. This is the last one
-        # added to the list (LIFO behavior for fills).
-        if self.trailing_stop and self.trailing_stop[-1] == current_unit:
-            unit_filled = self.trailing_stop.pop()
-            self.position_map.update_assumed_fill(unit_filled)
-            logger.success(f"Assumed SELL fill at unit {current_unit}. Remaining sells: {self.trailing_stop}")
+        # NOTE: We no longer assume fills here. Fills are handled by process_fill_confirmation.
+        # We only adjust the grid based on price movement to maintain trailing behavior.
 
         # 1. Immediately place a new stop-entry buy order.
         # This new buy order is placed at the unit above the current one.
         new_buy_unit = current_unit + 1
-        if new_buy_unit not in self.trailing_buy:
-            await self._place_buy_order_at_unit(new_buy_unit)
-            self.trailing_buy.append(new_buy_unit)
-            logger.info(f"Placed new BUY at unit {new_buy_unit}. Active buys: {self.trailing_buy}")
+
+        # Check if we already have an order at this unit (prevent duplicates)
+        if new_buy_unit not in self.trailing_buy and not self.position_map.has_active_order_at_unit(new_buy_unit):
+            result = await self._place_buy_order_at_unit(new_buy_unit)
+            if result:  # Only add to list if order was successfully placed
+                self.trailing_buy.append(new_buy_unit)
+                logger.info(f"Placed new BUY at unit {new_buy_unit}. Active buys: {self.trailing_buy}")
+        else:
+            logger.debug(f"Skipping BUY at unit {new_buy_unit} - order already exists")
 
         # 2. Check if the grid has too many buy orders and cancel the oldest one.
         if len(self.trailing_buy) > 4:
@@ -400,9 +408,74 @@ class GridTradingStrategy:
             else:
                 logger.warning(f"Failed to cancel order {order.order_id}")
 
+    async def process_fill_confirmation(self, order_id: str, price: Decimal, size: Decimal) -> None:
+        """
+        Process confirmed order fills from WebSocket.
+        This replaces the assumed fill logic with actual confirmations.
+
+        Args:
+            order_id: The filled order ID
+            price: Fill price
+            size: Fill size
+        """
+        logger.info(f"Processing fill confirmation for order {order_id}")
+
+        # Find the order in position map
+        order_info = self.position_map.get_order_by_id(order_id)
+        if not order_info:
+            logger.warning(f"Fill confirmation for unknown order {order_id}")
+            return
+
+        unit, order_record = order_info
+
+        # Update order status to filled
+        self.position_map.update_order_status(order_id, "filled", price)
+
+        # Handle based on order type
+        if order_record.order_type == "sell":
+            # Remove from trailing_stop if present
+            if unit in self.trailing_stop:
+                self.trailing_stop.remove(unit)
+                logger.info(f"Removed unit {unit} from trailing_stop after fill confirmation")
+
+            # Place replacement buy order at current unit
+            new_buy_unit = self.unit_tracker.current_unit
+            if new_buy_unit not in self.trailing_buy and not self.position_map.has_active_order_at_unit(new_buy_unit):
+                await self._place_buy_order_at_unit(new_buy_unit)
+                self.trailing_buy.append(new_buy_unit)
+                logger.info(f"Placed replacement BUY at unit {new_buy_unit}")
+
+            # Cancel oldest buy if > 4
+            if len(self.trailing_buy) > 4:
+                oldest_unit = self.trailing_buy.pop(0)
+                await self._cancel_orders_at_unit(oldest_unit)
+                logger.info(f"Cancelled oldest BUY at unit {oldest_unit}")
+
+        elif order_record.order_type == "buy":
+            # Remove from trailing_buy if present
+            if unit in self.trailing_buy:
+                self.trailing_buy.remove(unit)
+                logger.info(f"Removed unit {unit} from trailing_buy after fill confirmation")
+
+            # Place replacement sell order at current unit
+            new_sell_unit = self.unit_tracker.current_unit
+            if new_sell_unit not in self.trailing_stop and not self.position_map.has_active_order_at_unit(new_sell_unit):
+                await self._place_sell_order_at_unit(new_sell_unit)
+                self.trailing_stop.append(new_sell_unit)
+                logger.info(f"Placed replacement SELL at unit {new_sell_unit}")
+
+            # Cancel oldest sell if > 4
+            if len(self.trailing_stop) > 4:
+                oldest_unit = self.trailing_stop.pop(0)
+                await self._cancel_orders_at_unit(oldest_unit)
+                logger.info(f"Cancelled oldest SELL at unit {oldest_unit}")
+
+        # Call the existing fill handler for metrics
+        self._on_order_fill(order_id, price, size)
+
     def _on_order_fill(self, order_id: str, price: Decimal, size: Decimal) -> None:
         """
-        Handle order fill notifications.
+        Handle order fill notifications for metrics.
 
         Args:
             order_id: Filled order ID

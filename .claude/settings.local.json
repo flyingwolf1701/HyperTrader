@@ -12,7 +12,10 @@
       "Read(//c/Users/trini/Pictures/Screenshots/**)",
       "Bash(pytest:*)",
       "Read(//c/Users/trini/Downloads/**)",
-      "Bash(/bashes)"
+      "Bash(/bashes)",
+      "Bash(Get-Content backend/logs/hypertrader_20*.log -Tail 200)",
+      "Bash(Select-String \"Placed|Grid established|trailing_stop|trailing_buy|Skipping|order already exists\")",
+      "Bash(taskkill:*)"
     ],
     "deny": [],
     "ask": [],
