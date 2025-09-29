@@ -3,6 +3,7 @@ Unit Tracker: Pure price interpreter that translates price feed to unit movement
 Emits UnitChangeEvent whenever the price crosses a unit boundary.
 """
 
+import math
 from decimal import Decimal
 from dataclasses import dataclass
 from typing import Optional, Callable
@@ -72,9 +73,10 @@ class UnitTracker:
 
         # Calculate the new unit based on price
         price_diff = price - self.anchor_price
-        new_unit = int(price_diff / self.unit_size_usd)
+        new_unit = math.floor(price_diff / self.unit_size_usd)
 
-        # No debug logging needed
+        # Debug logging for unit calculation
+        logger.debug(f"Price update: ${price:.2f} | Diff from anchor: ${price_diff:.2f} | Unit: {new_unit}")
 
         # Check if we've crossed a unit boundary
         if new_unit != self.current_unit:
@@ -102,8 +104,8 @@ class UnitTracker:
                 current_direction=self.current_direction
             )
 
-            # Simple unit change log - grid strategy will log the important details
-            pass
+            # Log unit change
+            logger.info(f"🔄 UNIT CHANGE: {self.previous_unit} → {self.current_unit} (price: ${price:.2f})")
 
             # Trigger callback if registered
             if self.on_unit_change:
