@@ -697,19 +697,23 @@ class HyperliquidClient:
             OrderResult with order details
         """
         try:
+            # Ensure price and size are Decimals
+            price = Decimal(str(price))
+            size = Decimal(str(size))
+
             # Get market info for proper decimal formatting
             market_info = self.get_market_info(symbol)
             sz_decimals = int(market_info.get("szDecimals", 4))
 
             # Get tick size from market info
             tick_decimals = int(market_info.get("szDecimals", 4))
-            tick_size = 10 ** -tick_decimals
-            
-            # Round price to the nearest tick size
-            rounded_price = round(float(price) / tick_size) * tick_size
-            
-            # Round size to appropriate decimals
-            rounded_size = round(float(size), sz_decimals)
+            tick_size = Decimal(10) ** Decimal(-tick_decimals)
+
+            # Round price to the nearest tick size using Decimal arithmetic
+            rounded_price = (price / tick_size).quantize(Decimal('1'), rounding='ROUND_HALF_UP') * tick_size
+
+            # Round size to appropriate decimals using Decimal
+            rounded_size = size.quantize(Decimal(10) ** Decimal(-sz_decimals), rounding='ROUND_HALF_UP')
             
             logger.info(
                 f"Placing {'BUY' if is_buy else 'SELL'} limit order: "
@@ -729,9 +733,9 @@ class HyperliquidClient:
 
             if post_only:
                 order["t"]["limit"]["tif"] = "Alo"  # Add liquidity only
-            
-            # Place the order with rounded price
-            result = self.exchange.order(symbol, is_buy, rounded_size, rounded_price, 
+
+            # Place the order with rounded price (convert to float for SDK)
+            result = self.exchange.order(symbol, is_buy, float(rounded_size), float(rounded_price),
                                         {"limit": {"tif": "Gtc"}}, reduce_only=reduce_only)
             
             # logger.info(f"RAW LIMIT ORDER RESPONSE: {result}")
