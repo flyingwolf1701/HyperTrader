@@ -15,7 +15,12 @@
       "Bash(/bashes)",
       "Bash(Get-Content backend/logs/hypertrader_20*.log -Tail 200)",
       "Bash(Select-String \"Placed|Grid established|trailing_stop|trailing_buy|Skipping|order already exists\")",
-      "Bash(taskkill:*)"
+      "Bash(taskkill:*)",
+      "Bash(Select-String:*)",
+      "Bash(Select-Object -Last 10)",
+      "Bash(tasklist)",
+      "Bash(findstr:*)",
+      "Bash(Get-Content backend/logs/hypertrader_20*.log -Tail 50)"
     ],
     "deny": [],
     "ask": [],

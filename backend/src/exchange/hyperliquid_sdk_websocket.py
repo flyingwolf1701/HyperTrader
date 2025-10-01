@@ -30,6 +30,7 @@ class HyperliquidSDKWebSocketClient:
         # Callbacks for processing different types of events
         self.price_callbacks: Dict[str, Callable[[Decimal], Any]] = {}
         self.fill_callbacks: Dict[str, Callable] = {}
+        self.order_update_callbacks: Dict[str, Callable] = {}
 
         # Task management
         self.listener_task: Optional[asyncio.Task] = None
@@ -73,6 +74,45 @@ class HyperliquidSDKWebSocketClient:
             pass
 
         logger.info("Disconnected from Hyperliquid WebSocket")
+
+    async def subscribe_to_order_updates(self, user_address: str, order_callback: callable = None) -> bool:
+        """
+        Subscribe to order updates (placements, cancellations, status changes).
+
+        Args:
+            user_address: The wallet address to monitor for order updates.
+            order_callback: Optional callback for order update events.
+        """
+        if not self.is_connected or not self.info:
+            logger.error("WebSocket not connected. Call connect() first.")
+            return False
+
+        try:
+            # Store the callback
+            if order_callback:
+                self.order_update_callbacks[user_address] = order_callback
+
+            # Subscribe to order updates using the SDK
+            subscription = {"type": "orderUpdates", "user": user_address}
+
+            def handle_order_updates(data):
+                """Handle incoming order update data"""
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        asyncio.run_coroutine_threadsafe(self._handle_order_updates(data), loop)
+                    else:
+                        asyncio.run(self._handle_order_updates(data))
+                except RuntimeError:
+                    self._handle_order_updates_sync(data)
+
+            self.info.subscribe(subscription, handle_order_updates)
+            logger.info(f"Subscribed to order updates for address: {user_address}")
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to subscribe to order updates: {e}")
+            return False
 
     async def subscribe_to_user_fills(self, user_address: str) -> bool:
         """
@@ -395,3 +435,96 @@ class HyperliquidSDKWebSocketClient:
 
         except Exception as e:
             logger.error(f"Error in sync user fills handler: {e}")
+
+    async def _handle_order_updates(self, data):
+        """Handle incoming order update data"""
+        try:
+            if not data:
+                return
+
+            # Handle array of order updates
+            orders = []
+            if isinstance(data, dict) and "data" in data:
+                orders = data["data"]
+            elif isinstance(data, list):
+                orders = data
+            else:
+                orders = [data]
+
+            for order_data in orders:
+                if not isinstance(order_data, dict):
+                    continue
+
+                # Extract order information from WsOrder format
+                # WsOrder: {order: WsBasicOrder, status: string, statusTimestamp: number}
+                order = order_data.get("order", {})
+                status = order_data.get("status", "unknown")
+                status_timestamp = order_data.get("statusTimestamp", 0)
+
+                # Extract basic order info
+                coin = order.get("coin")
+                side = order.get("side")
+                limit_px = order.get("limitPx")
+                sz = order.get("sz")
+                oid = order.get("oid")
+                orig_sz = order.get("origSz")
+
+                if coin and limit_px and sz:
+                    # Log comprehensive order update
+                    logger.warning(
+                        f"[ORDER UPDATE] {status.upper()} | {coin} {side} "
+                        f"{sz}/{orig_sz} @ ${limit_px} | OID: {oid}"
+                    )
+
+                    # Call callback if registered
+                    for user_address, callback in self.order_update_callbacks.items():
+                        if callback:
+                            if asyncio.iscoroutinefunction(callback):
+                                await callback(order_data)
+                            else:
+                                callback(order_data)
+
+        except Exception as e:
+            logger.error(f"Error handling order updates: {e}")
+
+    def _handle_order_updates_sync(self, data):
+        """Synchronous version of _handle_order_updates for thread context"""
+        try:
+            if not data:
+                return
+
+            orders = []
+            if isinstance(data, dict) and "data" in data:
+                orders = data["data"]
+            elif isinstance(data, list):
+                orders = data
+            else:
+                orders = [data]
+
+            for order_data in orders:
+                if not isinstance(order_data, dict):
+                    continue
+
+                order = order_data.get("order", {})
+                status = order_data.get("status", "unknown")
+
+                coin = order.get("coin")
+                side = order.get("side")
+                limit_px = order.get("limitPx")
+                sz = order.get("sz")
+                oid = order.get("oid")
+                orig_sz = order.get("origSz")
+
+                if coin and limit_px and sz:
+                    logger.warning(
+                        f"[ORDER UPDATE] {status.upper()} | {coin} {side} "
+                        f"{sz}/{orig_sz} @ ${limit_px} | OID: {oid}"
+                    )
+
+                    # Call callback if registered (sync only)
+                    for user_address, callback in self.order_update_callbacks.items():
+                        if callback and not asyncio.iscoroutinefunction(callback):
+                            callback(order_data)
+
+        except Exception as e:
+            logger.error(f"Error in sync order updates handler: {e}")

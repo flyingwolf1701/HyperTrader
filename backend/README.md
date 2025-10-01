@@ -20,7 +20,7 @@
 cd backend
 
 # Small position on SOL with 10x leverage (testnet by default)
-uv run python src/main.py --symbol SOL --strategy long --unit-size-usd 0.5 --position-value-usd 100 --leverage 10 --testnet
+uv run python src/main.py --symbol SOL --strategy long --unit-size-usd 0.25 --position-value-usd 100 --leverage 10 --testnet
 
 # Medium position on SOL with 20x leverage (testnet)
 uv run python src/main.py --symbol SOL --strategy long --unit-size-usd 0.5 --position-value-usd 2000 --leverage 20 --testnet

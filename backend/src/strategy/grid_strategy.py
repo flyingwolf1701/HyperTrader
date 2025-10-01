@@ -51,6 +51,10 @@ class GridTradingStrategy:
         self.trailing_stop: List[int] = []  # Queue of active sell order units
         self.trailing_buy: List[int] = []   # Queue of active buy order units
 
+        # Position fragment tracking (0-4 scale)
+        # 4 = fully invested, 3 = 1/4 sold (need 1 buy), 0 = fully sold (need 4 buys)
+        self.fragments_invested: int = 0
+
         # Whipsaw detection
         self.whipsaw_paused = False
         self.whipsaw_resolution_pending = False
@@ -105,7 +109,10 @@ class GridTradingStrategy:
             self.metrics.avg_entry_price = result.average_price
             anchor_price = result.average_price
 
-            logger.success(f"Initial position established: {result.filled_size} {self.config.symbol} @ ${anchor_price:.2f}")
+            # Set fragments_invested to 4 (fully invested)
+            self.fragments_invested = 4
+
+            logger.success(f"Initial position established: {result.filled_size} {self.config.symbol} @ ${anchor_price:.2f} | Fragments: 4/4")
 
             # Initialize unit tracker with anchor price
             self.unit_tracker = UnitTracker(
@@ -123,7 +130,9 @@ class GridTradingStrategy:
             self.unit_tracker.on_unit_change = self._on_unit_change
 
             # Place initial grid (4 sell orders below current unit)
-            await self._place_initial_grid()
+            if not await self._place_initial_grid():
+                logger.error("Failed to establish initial grid - aborting initialization")
+                return False
 
             # Subscribe to websocket feeds
             await self._setup_websocket_subscriptions()
@@ -137,8 +146,13 @@ class GridTradingStrategy:
             self.state = StrategyState.STOPPED
             return False
 
-    async def _place_initial_grid(self) -> None:
-        """Place the initial 4 sell orders below current price."""
+    async def _place_initial_grid(self) -> bool:
+        """
+        Place the initial 4 sell orders below current price.
+
+        Returns:
+            True if all orders placed successfully, False otherwise
+        """
         logger.info("Placing initial grid orders...")
 
         # Place 4 sell orders at units -1, -2, -3, -4
@@ -151,12 +165,12 @@ class GridTradingStrategy:
 
             logger.info(f"Placing sell order at unit {unit} (${price:.2f}), size: {fragment_size:.4f} {self.config.symbol}")
 
-            result = self.client.place_stop_order(
+            result = self.client.place_limit_order(
                 symbol=self.config.symbol,
-                is_buy=False,  # Sell order
+                is_buy=False,
+                price=price,
                 size=fragment_size,
-                trigger_price=price,
-                reduce_only=True
+                reduce_only=False
             )
 
             if result.success:
@@ -166,12 +180,14 @@ class GridTradingStrategy:
                 logger.info(f"Sell order placed at unit {unit}: {result.order_id}")
             else:
                 logger.error(f"Failed to place sell order at unit {unit}: {result.error_message}")
+                return False  # Abort on first failure
         
         # The list is currently [-1, -2, -3, -4]. We reverse it to [-4, -3, -2, -1]
         # so the oldest/furthest order (-4) is at the front of the queue (index 0)
         # for easy cancellation using pop(0).
         self.trailing_stop.reverse()
-        logger.info(f"Initial grid established: {len(self.trailing_stop)} sell orders active at units {self.trailing_stop}")
+        logger.success(f"Initial grid established: {len(self.trailing_stop)} sell orders active at units {self.trailing_stop}")
+        return True
 
     async def _setup_websocket_subscriptions(self) -> None:
         """Subscribe to websocket feeds for price updates and fills."""
@@ -192,7 +208,10 @@ class GridTradingStrategy:
         wallet_address = self.client.get_user_address()
         await self.websocket.subscribe_to_user_fills(wallet_address)
 
-        logger.info(f"Subscribed to {self.config.symbol} price feed and order fills")
+        # Subscribe to order updates for real-time order tracking
+        await self.websocket.subscribe_to_order_updates(wallet_address)
+
+        logger.info(f"Subscribed to {self.config.symbol} price feed, order fills, and order updates")
 
     def _on_price_update(self, price: Decimal) -> None:
         """
@@ -233,7 +252,9 @@ class GridTradingStrategy:
         """
         logger.info(
             f"Unit Change: {event.previous_unit} -> {event.current_unit} | "
-            f"Trailing Stops: {self.trailing_stop} | Trailing Buys: {self.trailing_buy}"
+            f"Fragments: {self.fragments_invested}/4 | "
+            f"Sells: {len(self.trailing_stop)} {self.trailing_stop} | "
+            f"Buys: {len(self.trailing_buy)} {self.trailing_buy}"
         )
 
         current = event.current_unit
@@ -249,73 +270,118 @@ class GridTradingStrategy:
             for unit in range(previous - 1, current - 1, -1):
                 await self._process_unit_down(unit)
 
+    def _has_order_at_unit_on_exchange(self, unit: int) -> bool:
+        """
+        Check if Hyperliquid actually has an active order at this unit.
+        This is the source of truth, not our internal tracking.
+        """
+        try:
+            open_orders = self.client.get_open_orders(self.config.symbol)
+            target_price = self.unit_tracker.get_unit_price(unit)
+
+            # Calculate proper tolerance based on actual price gap between units
+            # For ETH at $2000 with $0.5 unit: unit_price_gap = $0.5 / ($2000/1) = ~$0.00025
+            # We use half the unit gap as tolerance to avoid matching adjacent units
+            unit_0_price = self.unit_tracker.get_unit_price(0)
+            unit_1_price = self.unit_tracker.get_unit_price(1)
+            unit_price_gap = abs(unit_1_price - unit_0_price)
+            tolerance = unit_price_gap / Decimal("2")  # Half a unit gap
+
+            logger.debug(f"🔍 Checking unit {unit}: target=${target_price:.4f}, tolerance=±${tolerance:.4f}")
+            logger.debug(f"📊 Open orders on exchange: {len(open_orders)}")
+
+            # Check if any order matches this unit's price (within tolerance)
+            for order in open_orders:
+                order_price = Decimal(str(order.get("limitPx", 0)))
+                price_diff = abs(order_price - target_price)
+                side = order.get("side", "?")
+                oid = order.get("oid", "?")
+
+                logger.debug(f"   Order {oid}: ${order_price:.4f} ({side}) | diff=${price_diff:.4f}")
+
+                if price_diff < tolerance:
+                    logger.warning(f"✅ Found existing order at unit {unit}: {oid} @ ${order_price:.4f} (within ±${tolerance:.4f})")
+                    return True
+
+            logger.info(f"❌ No order found at unit {unit} @ ${target_price:.4f}")
+            return False
+        except Exception as e:
+            logger.error(f"Error checking orders at unit {unit}: {e}")
+            return False  # If we can't check, assume no order exists
+
     async def _process_unit_up(self, current_unit: int) -> None:
         """
         Process a single unit move UP. This is a TRENDING UP move.
-        The logic is "place-then-cancel".
+        Always place trailing sell, let duplicates happen if our tracking is wrong.
 
         Args:
             current_unit: The new unit level the price has moved to.
         """
-        logger.info(f"Processing UP to unit {current_unit}")
+        logger.warning(f"⬆️ PROCESSING UP to unit {current_unit}")
 
-        # NOTE: We no longer assume fills here. Fills are handled by process_fill_confirmation.
-        # We only adjust the grid based on price movement to maintain trailing behavior.
-
-        # 1. Place the new stop-loss sell order first.
-        # This new sell order trails the price. It's placed at the unit below the current one.
+        # 1. Place new stop-loss sell order at current_unit - 1
         new_sell_unit = current_unit - 1
 
-        # Check if we already have an order at this unit (prevent duplicates)
-        if new_sell_unit not in self.trailing_stop and not self.position_map.has_active_order_at_unit(new_sell_unit):
-            result = await self._place_sell_order_at_unit(new_sell_unit)
-            if result:  # Only add to list if order was successfully placed
-                self.trailing_stop.append(new_sell_unit)
-                logger.info(f"Placed new SELL at unit {new_sell_unit}. Active sells: {self.trailing_stop}")
-        else:
-            logger.debug(f"Skipping SELL at unit {new_sell_unit} - order already exists")
+        logger.info(f"🎯 Want to place SELL at unit {new_sell_unit}. Current tracking: {self.trailing_stop}")
 
-        # 2. Check if the grid has too many orders and cancel the oldest one.
+        # Check Hyperliquid's actual orders (source of truth)
+        has_order = self._has_order_at_unit_on_exchange(new_sell_unit)
+        logger.warning(f"🔍 Exchange check result for unit {new_sell_unit}: {'HAS ORDER' if has_order else 'NO ORDER'}")
+
+        if not has_order:
+            logger.warning(f"📤 PLACING new SELL at unit {new_sell_unit}")
+            result = await self._place_sell_order_at_unit(new_sell_unit)
+            if result:
+                self.trailing_stop.append(new_sell_unit)
+                logger.success(f"✅ Placed new SELL at unit {new_sell_unit}. Active sells: {self.trailing_stop}")
+            else:
+                logger.error(f"❌ Failed to place SELL at unit {new_sell_unit}")
+                return
+        else:
+            logger.info(f"⏭️ Skipping SELL at unit {new_sell_unit} - order exists on Hyperliquid")
+
+        # 2. Cancel oldest stop if we have more than 4
         if len(self.trailing_stop) > 4:
-            # The oldest order is at the beginning of the list (FIFO for cancellation).
-            oldest_unit_to_cancel = self.trailing_stop.pop(0)
-            logger.warning(f"Grid > 4 sells. Cancelling oldest SELL at unit {oldest_unit_to_cancel}")
-            await self._cancel_orders_at_unit(oldest_unit_to_cancel)
+            oldest_unit = self.trailing_stop.pop(0)
+            logger.warning(f"🗑️ Cancelling oldest SELL at unit {oldest_unit} (have {len(self.trailing_stop)+1} sells)")
+            await self._cancel_orders_at_unit(oldest_unit)
 
     async def _process_unit_down(self, current_unit: int) -> None:
         """
         Process a single unit move DOWN.
-        This function handles the logic for when a stop-loss may have been hit,
-        or when the price is simply trending down below the active grid.
-        It always ensures a new trailing buy order is placed.
+        Always place trailing buy, let duplicates happen if our tracking is wrong.
 
         Args:
             current_unit: The new unit level the price has moved to.
         """
-        logger.info(f"Processing DOWN to unit {current_unit}")
+        logger.warning(f"⬇️ PROCESSING DOWN to unit {current_unit}")
 
-        # NOTE: We no longer assume fills here. Fills are handled by process_fill_confirmation.
-        # We only adjust the grid based on price movement to maintain trailing behavior.
-
-        # 1. Immediately place a new stop-entry buy order.
-        # This new buy order is placed at the unit above the current one.
+        # 1. Place new stop-entry buy order at current_unit + 1
         new_buy_unit = current_unit + 1
 
-        # Check if we already have an order at this unit (prevent duplicates)
-        if new_buy_unit not in self.trailing_buy and not self.position_map.has_active_order_at_unit(new_buy_unit):
-            result = await self._place_buy_order_at_unit(new_buy_unit)
-            if result:  # Only add to list if order was successfully placed
-                self.trailing_buy.append(new_buy_unit)
-                logger.info(f"Placed new BUY at unit {new_buy_unit}. Active buys: {self.trailing_buy}")
-        else:
-            logger.debug(f"Skipping BUY at unit {new_buy_unit} - order already exists")
+        logger.info(f"🎯 Want to place BUY at unit {new_buy_unit}. Current tracking: {self.trailing_buy}")
 
-        # 2. Check if the grid has too many buy orders and cancel the oldest one.
-        if len(self.trailing_buy) > 4:
-            # The oldest buy order is at the beginning of the list (FIFO for cancellation).
-            oldest_unit_to_cancel = self.trailing_buy.pop(0)
-            logger.warning(f"Grid > 4 buys. Cancelling oldest BUY at unit {oldest_unit_to_cancel}")
-            await self._cancel_orders_at_unit(oldest_unit_to_cancel)
+        # Check Hyperliquid's actual orders (source of truth)
+        has_order = self._has_order_at_unit_on_exchange(new_buy_unit)
+        logger.warning(f"🔍 Exchange check result for unit {new_buy_unit}: {'HAS ORDER' if has_order else 'NO ORDER'}")
+
+        if not has_order:
+            # If we already have 4 buys, cancel the highest (index 0) BEFORE placing new one
+            if len(self.trailing_buy) >= 4:
+                highest_unit = self.trailing_buy.pop(0)
+                logger.warning(f"🗑️ Cancelling highest BUY at unit {highest_unit} to make room for new one")
+                await self._cancel_orders_at_unit(highest_unit)
+
+            logger.warning(f"📤 PLACING new BUY at unit {new_buy_unit}")
+            result = await self._place_buy_order_at_unit(new_buy_unit)
+            if result:
+                self.trailing_buy.append(new_buy_unit)
+                logger.success(f"✅ Placed new BUY at unit {new_buy_unit}. Active buys: {self.trailing_buy}")
+            else:
+                logger.error(f"❌ Failed to place BUY at unit {new_buy_unit}")
+                return
+        else:
+            logger.info(f"⏭️ Skipping BUY at unit {new_buy_unit} - order exists on Hyperliquid")
 
     async def _place_sell_order_at_unit(self, unit: int) -> Optional[str]:
         """
@@ -336,12 +402,12 @@ class GridTradingStrategy:
 
         logger.info(f"Placing SELL order at unit {unit} (${price:.2f}), size: {fragment_size:.4f} {self.config.symbol}")
 
-        result = self.client.place_stop_order(
+        result = self.client.place_limit_order(
             symbol=self.config.symbol,
             is_buy=False,
+            price=price,
             size=fragment_size,
-            trigger_price=price,
-            reduce_only=True
+            reduce_only=False
         )
 
         if result.success:
@@ -408,6 +474,42 @@ class GridTradingStrategy:
             else:
                 logger.warning(f"Failed to cancel order {order.order_id}")
 
+    async def cleanup_duplicate_orders(self) -> None:
+        """
+        Clean up any duplicate orders at the same unit.
+        Keeps the most recent order, cancels the rest.
+        """
+        try:
+            open_orders = self.client.get_open_orders(self.config.symbol)
+
+            # Group orders by price
+            orders_by_price = {}
+            for order in open_orders:
+                price = Decimal(str(order.get("limitPx", 0)))
+                if price not in orders_by_price:
+                    orders_by_price[price] = []
+                orders_by_price[price].append(order)
+
+            # Cancel duplicates (keep most recent)
+            cancelled_count = 0
+            for price, orders in orders_by_price.items():
+                if len(orders) > 1:
+                    logger.warning(f"Found {len(orders)} orders at price ${price} - keeping most recent")
+                    # Sort by timestamp (most recent first)
+                    sorted_orders = sorted(orders, key=lambda x: x.get("timestamp", 0), reverse=True)
+                    # Cancel all except the first one
+                    for order in sorted_orders[1:]:
+                        order_id = str(order.get("oid"))
+                        if self.client.cancel_order(self.config.symbol, order_id):
+                            logger.info(f"Cancelled duplicate order {order_id} at ${price}")
+                            cancelled_count += 1
+
+            if cancelled_count > 0:
+                logger.warning(f"Cleaned up {cancelled_count} duplicate orders")
+
+        except Exception as e:
+            logger.error(f"Failed to cleanup duplicates: {e}")
+
     async def process_fill_confirmation(self, order_id: str, price: Decimal, size: Decimal) -> None:
         """
         Process confirmed order fills from WebSocket.
@@ -433,6 +535,10 @@ class GridTradingStrategy:
 
         # Handle based on order type
         if order_record.order_type == "sell":
+            # Decrement fragments_invested (sold 1/4 of position)
+            self.fragments_invested = max(0, self.fragments_invested - 1)
+            logger.warning(f"SELL FILLED at ${price:.2f} | Fragments now: {self.fragments_invested}/4")
+
             # Remove from trailing_stop if present
             if unit in self.trailing_stop:
                 self.trailing_stop.remove(unit)
@@ -452,6 +558,10 @@ class GridTradingStrategy:
                 logger.info(f"Cancelled oldest BUY at unit {oldest_unit}")
 
         elif order_record.order_type == "buy":
+            # Increment fragments_invested (bought back 1/4 of position)
+            self.fragments_invested = min(4, self.fragments_invested + 1)
+            logger.warning(f"BUY FILLED at ${price:.2f} | Fragments now: {self.fragments_invested}/4")
+
             # Remove from trailing_buy if present
             if unit in self.trailing_buy:
                 self.trailing_buy.remove(unit)
@@ -539,10 +649,18 @@ class GridTradingStrategy:
         """
         logger.info(f"Starting main strategy loop for {self.config.symbol}...")
 
+        # Track last cleanup time
+        last_cleanup = asyncio.get_event_loop().time()
+
         try:
             while self.state == StrategyState.RUNNING:
                 await asyncio.sleep(10)  # Main loop heartbeat
-                # No periodic logging
+
+                # Cleanup duplicates every 60 seconds
+                current_time = asyncio.get_event_loop().time()
+                if current_time - last_cleanup >= 60:
+                    await self.cleanup_duplicate_orders()
+                    last_cleanup = current_time
 
         except KeyboardInterrupt:
             logger.warning("Strategy interrupted by user")
