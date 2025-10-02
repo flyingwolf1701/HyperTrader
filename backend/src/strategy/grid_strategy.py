@@ -55,9 +55,11 @@ class GridTradingStrategy:
         # 4 = fully invested, 3 = 1/4 sold (need 1 buy), 0 = fully sold (need 4 buys)
         self.fragments_invested: int = 0
 
-        # Whipsaw detection
-        self.whipsaw_paused = False
-        self.whipsaw_resolution_pending = False
+        # Whipsaw detection - simple pattern matching on last 3 units
+        self.running_units: List[int] = []  # Track last 3 units for whipsaw detection
+        self.whipsaw_active: bool = False   # True when in whipsaw protection mode
+        self.whipsaw_range_min: int = 0     # Min unit when whipsaw detected
+        self.whipsaw_range_max: int = 0     # Max unit when whipsaw detected
 
         logger.info(f"Grid Trading Strategy initialized for {config.symbol}")
         logger.info(f"Configuration: Leverage={config.leverage}x, Unit Size=${config.unit_size_usd}, "
@@ -250,138 +252,170 @@ class GridTradingStrategy:
         Args:
             event: UnitChangeEvent containing unit transition details
         """
+        current = event.current_unit
+        previous = event.previous_unit
+
+        # --- Whipsaw Detection ---
+        # Track last 3 units
+        self.running_units.append(current)
+        if len(self.running_units) > 3:
+            self.running_units.pop(0)
+
+        # Detect whipsaw pattern: [5,4,5] or [4,5,4] - reversal pattern
+        if len(self.running_units) == 3:
+            if (self.running_units[0] == self.running_units[2] and
+                self.running_units[1] != self.running_units[0]):
+                if not self.whipsaw_active:
+                    self.whipsaw_active = True
+                    # Capture the oscillation range at detection time
+                    self.whipsaw_range_min = min(self.running_units)
+                    self.whipsaw_range_max = max(self.running_units)
+                    logger.warning(f"🌀 WHIPSAW DETECTED! Pattern: {self.running_units}, Range: [{self.whipsaw_range_min}, {self.whipsaw_range_max}]")
+
+        # Exit whipsaw when breaking out of the captured oscillation range
+        exited_whipsaw_on_up = False
+        if self.whipsaw_active:
+            if current > self.whipsaw_range_max:
+                logger.success(f"✅ Exiting whipsaw UP - broke above {self.whipsaw_range_max} at unit {current}")
+                self.whipsaw_active = False
+                exited_whipsaw_on_up = True
+            elif current < self.whipsaw_range_min:
+                logger.success(f"✅ Exiting whipsaw DOWN - broke below {self.whipsaw_range_min} at unit {current}")
+                self.whipsaw_active = False
+
         logger.info(
-            f"Unit Change: {event.previous_unit} -> {event.current_unit} | "
+            f"Unit Change: {previous} -> {current} | "
+            f"Whipsaw: {'ACTIVE' if self.whipsaw_active else 'off'} | "
             f"Fragments: {self.fragments_invested}/4 | "
             f"Sells: {len(self.trailing_stop)} {self.trailing_stop} | "
             f"Buys: {len(self.trailing_buy)} {self.trailing_buy}"
         )
-
-        current = event.current_unit
-        previous = event.previous_unit
 
         # --- Process Unit Changes Sequentially ---
         if current > previous:
             # Price went UP
             for unit in range(previous + 1, current + 1):
                 await self._process_unit_up(unit)
+
+            # Catch-up logic when exiting whipsaw on UP move
+            if exited_whipsaw_on_up:
+                await self._catchup_sells_after_whipsaw(current)
+
         elif current < previous:
             # Price went DOWN
             for unit in range(previous - 1, current - 1, -1):
                 await self._process_unit_down(unit)
 
-    def _has_order_at_unit_on_exchange(self, unit: int) -> bool:
-        """
-        Check if Hyperliquid actually has an active order at this unit.
-        This is the source of truth, not our internal tracking.
-        """
-        try:
-            open_orders = self.client.get_open_orders(self.config.symbol)
-            target_price = self.unit_tracker.get_unit_price(unit)
-
-            # Calculate proper tolerance based on actual price gap between units
-            # For ETH at $2000 with $0.5 unit: unit_price_gap = $0.5 / ($2000/1) = ~$0.00025
-            # We use half the unit gap as tolerance to avoid matching adjacent units
-            unit_0_price = self.unit_tracker.get_unit_price(0)
-            unit_1_price = self.unit_tracker.get_unit_price(1)
-            unit_price_gap = abs(unit_1_price - unit_0_price)
-            tolerance = unit_price_gap / Decimal("2")  # Half a unit gap
-
-            logger.debug(f"🔍 Checking unit {unit}: target=${target_price:.4f}, tolerance=±${tolerance:.4f}")
-            logger.debug(f"📊 Open orders on exchange: {len(open_orders)}")
-
-            # Check if any order matches this unit's price (within tolerance)
-            for order in open_orders:
-                order_price = Decimal(str(order.get("limitPx", 0)))
-                price_diff = abs(order_price - target_price)
-                side = order.get("side", "?")
-                oid = order.get("oid", "?")
-
-                logger.debug(f"   Order {oid}: ${order_price:.4f} ({side}) | diff=${price_diff:.4f}")
-
-                if price_diff < tolerance:
-                    logger.warning(f"✅ Found existing order at unit {unit}: {oid} @ ${order_price:.4f} (within ±${tolerance:.4f})")
-                    return True
-
-            logger.info(f"❌ No order found at unit {unit} @ ${target_price:.4f}")
-            return False
-        except Exception as e:
-            logger.error(f"Error checking orders at unit {unit}: {e}")
-            return False  # If we can't check, assume no order exists
 
     async def _process_unit_up(self, current_unit: int) -> None:
         """
-        Process a single unit move UP. This is a TRENDING UP move.
-        Always place trailing sell, let duplicates happen if our tracking is wrong.
+        Process a single unit move UP - Price is RISING.
+
+        Whipsaw protection logic:
+        - If whipsaw active: place sells at [current-5, current-4, current-3, current-2]
+        - Normal: place sell at current-1
+        - Always maintain 4 total sells
 
         Args:
             current_unit: The new unit level the price has moved to.
         """
-        logger.warning(f"⬆️ PROCESSING UP to unit {current_unit}")
+        logger.warning(f"⬆️ UNIT UP to {current_unit}")
 
-        # 1. Place new stop-loss sell order at current_unit - 1
-        new_sell_unit = current_unit - 1
+        if self.whipsaw_active:
+            # Whipsaw protection: place sells further away at -5, -4, -3, -2
+            logger.warning(f"🌀 Whipsaw - placing sells at {[current_unit-5, current_unit-4, current_unit-3, current_unit-2]}")
+            target_units = [current_unit - 5, current_unit - 4, current_unit - 3, current_unit - 2]
 
-        logger.info(f"🎯 Want to place SELL at unit {new_sell_unit}. Current tracking: {self.trailing_stop}")
+            for unit in target_units:
+                if unit not in self.trailing_stop:
+                    result = await self._place_sell_order_at_unit(unit)
+                    if result:
+                        self.trailing_stop.append(unit)
 
-        # Check Hyperliquid's actual orders (source of truth)
-        has_order = self._has_order_at_unit_on_exchange(new_sell_unit)
-        logger.warning(f"🔍 Exchange check result for unit {new_sell_unit}: {'HAS ORDER' if has_order else 'NO ORDER'}")
-
-        if not has_order:
-            logger.warning(f"📤 PLACING new SELL at unit {new_sell_unit}")
-            result = await self._place_sell_order_at_unit(new_sell_unit)
-            if result:
-                self.trailing_stop.append(new_sell_unit)
-                logger.success(f"✅ Placed new SELL at unit {new_sell_unit}. Active sells: {self.trailing_stop}")
-            else:
-                logger.error(f"❌ Failed to place SELL at unit {new_sell_unit}")
-                return
+            # Maintain 4 sells - cancel oldest if needed
+            while len(self.trailing_stop) > 4:
+                oldest_unit = self.trailing_stop.pop(0)
+                await self._cancel_orders_at_unit(oldest_unit)
         else:
-            logger.info(f"⏭️ Skipping SELL at unit {new_sell_unit} - order exists on Hyperliquid")
+            # Normal operation: place sell at current-1
+            new_sell_unit = current_unit - 1
 
-        # 2. Cancel oldest stop if we have more than 4
-        if len(self.trailing_stop) > 4:
-            oldest_unit = self.trailing_stop.pop(0)
-            logger.warning(f"🗑️ Cancelling oldest SELL at unit {oldest_unit} (have {len(self.trailing_stop)+1} sells)")
-            await self._cancel_orders_at_unit(oldest_unit)
+            # Check if we already have this unit in our tracking list
+            if new_sell_unit not in self.trailing_stop:
+                result = await self._place_sell_order_at_unit(new_sell_unit)
+                if result:
+                    self.trailing_stop.append(new_sell_unit)
+                    logger.success(f"✅ SELL placed at {new_sell_unit}. Sells: {self.trailing_stop}")
+                else:
+                    logger.error(f"❌ Failed to place SELL at {new_sell_unit}")
+                    return
+
+            # Cancel oldest sell if we have > 4
+            if len(self.trailing_stop) > 4:
+                oldest_unit = self.trailing_stop.pop(0)
+                await self._cancel_orders_at_unit(oldest_unit)
 
     async def _process_unit_down(self, current_unit: int) -> None:
         """
-        Process a single unit move DOWN.
-        Always place trailing buy, let duplicates happen if our tracking is wrong.
+        Process a single unit move DOWN - Price is FALLING.
+
+        Whipsaw protection logic:
+        - If whipsaw active: skip buy placement (avoid catching falling knife)
+        - Normal: place buy at current+1, maintain 4 total buys
 
         Args:
             current_unit: The new unit level the price has moved to.
         """
-        logger.warning(f"⬇️ PROCESSING DOWN to unit {current_unit}")
+        logger.warning(f"⬇️ UNIT DOWN to {current_unit}")
 
-        # 1. Place new stop-entry buy order at current_unit + 1
+        # Skip buy placement during whipsaw
+        if self.whipsaw_active:
+            logger.warning(f"🌀 Whipsaw - skipping BUY")
+            return
+
+        # Normal operation: place buy at current+1
         new_buy_unit = current_unit + 1
 
-        logger.info(f"🎯 Want to place BUY at unit {new_buy_unit}. Current tracking: {self.trailing_buy}")
+        # If we already have 4 buys, cancel highest BEFORE placing new one
+        if len(self.trailing_buy) >= 4:
+            highest_unit = self.trailing_buy.pop(0)
+            await self._cancel_orders_at_unit(highest_unit)
 
-        # Check Hyperliquid's actual orders (source of truth)
-        has_order = self._has_order_at_unit_on_exchange(new_buy_unit)
-        logger.warning(f"🔍 Exchange check result for unit {new_buy_unit}: {'HAS ORDER' if has_order else 'NO ORDER'}")
-
-        if not has_order:
-            # If we already have 4 buys, cancel the highest (index 0) BEFORE placing new one
-            if len(self.trailing_buy) >= 4:
-                highest_unit = self.trailing_buy.pop(0)
-                logger.warning(f"🗑️ Cancelling highest BUY at unit {highest_unit} to make room for new one")
-                await self._cancel_orders_at_unit(highest_unit)
-
-            logger.warning(f"📤 PLACING new BUY at unit {new_buy_unit}")
+        # Check if we already have this unit in our tracking list
+        if new_buy_unit not in self.trailing_buy:
             result = await self._place_buy_order_at_unit(new_buy_unit)
             if result:
                 self.trailing_buy.append(new_buy_unit)
-                logger.success(f"✅ Placed new BUY at unit {new_buy_unit}. Active buys: {self.trailing_buy}")
+                logger.success(f"✅ BUY placed at {new_buy_unit}. Buys: {self.trailing_buy}")
             else:
-                logger.error(f"❌ Failed to place BUY at unit {new_buy_unit}")
+                logger.error(f"❌ Failed to place BUY at {new_buy_unit}")
                 return
-        else:
-            logger.info(f"⏭️ Skipping BUY at unit {new_buy_unit} - order exists on Hyperliquid")
+
+    async def _catchup_sells_after_whipsaw(self, current_unit: int) -> None:
+        """
+        Catch-up logic when exiting whipsaw on an UP move.
+        Fills in missing sell orders between the furthest sell and current position.
+        Example: If at unit 2 with sells at [-5,-4,-3,-2], add sells at [-1,0] to get [-3,-2,-1,0]
+
+        Args:
+            current_unit: The current unit level after breaking out of whipsaw
+        """
+        # Target: 4 sells at [current-1, current-2, current-3, current-4]
+        target_units = [current_unit - 1, current_unit - 2, current_unit - 3, current_unit - 4]
+
+        # Place any missing sells
+        for unit in target_units:
+            if unit not in self.trailing_stop:
+                result = await self._place_sell_order_at_unit(unit)
+                if result:
+                    self.trailing_stop.append(unit)
+
+        # Maintain exactly 4 sells - cancel oldest if needed
+        while len(self.trailing_stop) > 4:
+            oldest_unit = self.trailing_stop.pop(0)
+            await self._cancel_orders_at_unit(oldest_unit)
+
+        logger.success(f"✅ Catch-up complete. Sells: {self.trailing_stop}")
 
     async def _place_sell_order_at_unit(self, unit: int) -> Optional[str]:
         """
@@ -400,8 +434,6 @@ class GridTradingStrategy:
         divisor = min(num_active_sells, 4)  # Cap at 4
         fragment_size = self.metrics.current_position_size / divisor
 
-        logger.info(f"Placing SELL order at unit {unit} (${price:.2f}), size: {fragment_size:.4f} {self.config.symbol}")
-
         result = self.client.place_limit_order(
             symbol=self.config.symbol,
             is_buy=False,
@@ -412,10 +444,9 @@ class GridTradingStrategy:
 
         if result.success:
             self.position_map.add_order(unit, result.order_id, "sell", fragment_size)
-            logger.info(f"SELL order placed at unit {unit}: {result.order_id}")
             return result.order_id
         else:
-            logger.error(f"Failed to place sell order: {result.error_message}")
+            logger.error(f"Failed to place sell order at {unit}: {result.error_message}")
             return None
 
     async def _place_buy_order_at_unit(self, unit: int) -> Optional[str]:
@@ -434,8 +465,6 @@ class GridTradingStrategy:
         fragment_usd = self.metrics.new_buy_fragment
         fragment_size = self.client.calculate_position_size(self.config.symbol, fragment_usd)
 
-        logger.info(f"Placing BUY order at unit {unit} (${price:.2f}), size: {fragment_size:.4f} {self.config.symbol}, value: ${fragment_usd:.2f}")
-
         result = self.client.place_stop_buy(
             symbol=self.config.symbol,
             size=fragment_size,
@@ -446,10 +475,9 @@ class GridTradingStrategy:
 
         if result.success:
             self.position_map.add_order(unit, result.order_id, "buy", fragment_size)
-            logger.info(f"BUY order placed at unit {unit}: {result.order_id}")
             return result.order_id
         else:
-            logger.error(f"Failed to place buy order: {result.error_message}")
+            logger.error(f"Failed to place buy order at {unit}: {result.error_message}")
             return None
 
     async def _cancel_orders_at_unit(self, unit: int) -> None:
@@ -462,11 +490,9 @@ class GridTradingStrategy:
         active_orders = self.position_map.get_active_orders_at_unit(unit)
 
         if not active_orders:
-            logger.warning(f"Attempted to cancel orders at unit {unit}, but PositionMap found no active orders.")
             return
 
         for order in active_orders:
-            logger.info(f"Cancelling {order.order_type} order {order.order_id} at unit {unit}")
             success = self.client.cancel_order(self.config.symbol, order.order_id)
 
             if success:
@@ -474,111 +500,78 @@ class GridTradingStrategy:
             else:
                 logger.warning(f"Failed to cancel order {order.order_id}")
 
-    async def cleanup_duplicate_orders(self) -> None:
-        """
-        Clean up any duplicate orders at the same unit.
-        Keeps the most recent order, cancels the rest.
-        """
-        try:
-            open_orders = self.client.get_open_orders(self.config.symbol)
-
-            # Group orders by price
-            orders_by_price = {}
-            for order in open_orders:
-                price = Decimal(str(order.get("limitPx", 0)))
-                if price not in orders_by_price:
-                    orders_by_price[price] = []
-                orders_by_price[price].append(order)
-
-            # Cancel duplicates (keep most recent)
-            cancelled_count = 0
-            for price, orders in orders_by_price.items():
-                if len(orders) > 1:
-                    logger.warning(f"Found {len(orders)} orders at price ${price} - keeping most recent")
-                    # Sort by timestamp (most recent first)
-                    sorted_orders = sorted(orders, key=lambda x: x.get("timestamp", 0), reverse=True)
-                    # Cancel all except the first one
-                    for order in sorted_orders[1:]:
-                        order_id = str(order.get("oid"))
-                        if self.client.cancel_order(self.config.symbol, order_id):
-                            logger.info(f"Cancelled duplicate order {order_id} at ${price}")
-                            cancelled_count += 1
-
-            if cancelled_count > 0:
-                logger.warning(f"Cleaned up {cancelled_count} duplicate orders")
-
-        except Exception as e:
-            logger.error(f"Failed to cleanup duplicates: {e}")
 
     async def process_fill_confirmation(self, order_id: str, price: Decimal, size: Decimal) -> None:
         """
         Process confirmed order fills from WebSocket.
-        This replaces the assumed fill logic with actual confirmations.
-
+        This is the ONLY place that should handle order replacement after fills.
+        
         Args:
             order_id: The filled order ID
             price: Fill price
             size: Fill size
         """
-        logger.info(f"Processing fill confirmation for order {order_id}")
-
         # Find the order in position map
         order_info = self.position_map.get_order_by_id(order_id)
         if not order_info:
-            logger.warning(f"Fill confirmation for unknown order {order_id}")
             return
 
         unit, order_record = order_info
+        order_type = order_record.order_type
 
         # Update order status to filled
         self.position_map.update_order_status(order_id, "filled", price)
 
-        # Handle based on order type
-        if order_record.order_type == "sell":
-            # Decrement fragments_invested (sold 1/4 of position)
-            self.fragments_invested = max(0, self.fragments_invested - 1)
-            logger.warning(f"SELL FILLED at ${price:.2f} | Fragments now: {self.fragments_invested}/4")
+        logger.warning(f"🎯 FILL at {unit}: {order_type.upper()} @ ${price:.2f}")
 
-            # Remove from trailing_stop if present
+        # Handle based on order type
+        if order_type == "sell":
+            # A sell was filled - we need to replace it with a buy
+            # Remove from trailing_stop
             if unit in self.trailing_stop:
                 self.trailing_stop.remove(unit)
-                logger.info(f"Removed unit {unit} from trailing_stop after fill confirmation")
 
-            # Place replacement buy order at current unit
-            new_buy_unit = self.unit_tracker.current_unit
-            if new_buy_unit not in self.trailing_buy and not self.position_map.has_active_order_at_unit(new_buy_unit):
-                await self._place_buy_order_at_unit(new_buy_unit)
-                self.trailing_buy.append(new_buy_unit)
-                logger.info(f"Placed replacement BUY at unit {new_buy_unit}")
+            # Decrement fragments
+            self.fragments_invested = max(0, self.fragments_invested - 1)
+            logger.warning(f"📊 Fragments: {self.fragments_invested}/4")
 
-            # Cancel oldest buy if > 4
-            if len(self.trailing_buy) > 4:
-                oldest_unit = self.trailing_buy.pop(0)
-                await self._cancel_orders_at_unit(oldest_unit)
-                logger.info(f"Cancelled oldest BUY at unit {oldest_unit}")
+            # Place replacement buy at current unit + 1
+            replacement_unit = self.unit_tracker.current_unit + 1
 
-        elif order_record.order_type == "buy":
-            # Increment fragments_invested (bought back 1/4 of position)
-            self.fragments_invested = min(4, self.fragments_invested + 1)
-            logger.warning(f"BUY FILLED at ${price:.2f} | Fragments now: {self.fragments_invested}/4")
+            if replacement_unit not in self.trailing_buy:
+                result = await self._place_buy_order_at_unit(replacement_unit)
+                if result:
+                    self.trailing_buy.append(replacement_unit)
+                    logger.success(f"✅ Replacement BUY at {replacement_unit}. Buys: {self.trailing_buy}")
 
-            # Remove from trailing_buy if present
+                    # Cancel oldest buy if > 4
+                    if len(self.trailing_buy) > 4:
+                        oldest = self.trailing_buy.pop(0)
+                        await self._cancel_orders_at_unit(oldest)
+
+        elif order_type == "buy":
+            # A buy was filled - we need to replace it with a sell
+            # Remove from trailing_buy
             if unit in self.trailing_buy:
                 self.trailing_buy.remove(unit)
-                logger.info(f"Removed unit {unit} from trailing_buy after fill confirmation")
 
-            # Place replacement sell order at current unit
-            new_sell_unit = self.unit_tracker.current_unit
-            if new_sell_unit not in self.trailing_stop and not self.position_map.has_active_order_at_unit(new_sell_unit):
-                await self._place_sell_order_at_unit(new_sell_unit)
-                self.trailing_stop.append(new_sell_unit)
-                logger.info(f"Placed replacement SELL at unit {new_sell_unit}")
+            # Increment fragments
+            self.fragments_invested = min(4, self.fragments_invested + 1)
+            logger.warning(f"📊 Fragments: {self.fragments_invested}/4")
 
-            # Cancel oldest sell if > 4
-            if len(self.trailing_stop) > 4:
-                oldest_unit = self.trailing_stop.pop(0)
-                await self._cancel_orders_at_unit(oldest_unit)
-                logger.info(f"Cancelled oldest SELL at unit {oldest_unit}")
+            # Place replacement sell at current unit - 1
+            replacement_unit = self.unit_tracker.current_unit - 1
+
+            if replacement_unit not in self.trailing_stop:
+                result = await self._place_sell_order_at_unit(replacement_unit)
+                if result:
+                    self.trailing_stop.append(replacement_unit)
+                    logger.success(f"✅ Replacement SELL at {replacement_unit}. Sells: {self.trailing_stop}")
+                    
+                    # Cancel oldest sell if > 4
+                    if len(self.trailing_stop) > 4:
+                        oldest = self.trailing_stop.pop(0)
+                        await self._cancel_orders_at_unit(oldest)
 
         # Call the existing fill handler for metrics
         self._on_order_fill(order_id, price, size)
@@ -592,7 +585,6 @@ class GridTradingStrategy:
             price: Fill price
             size: Fill size
         """
-        logger.info(f"ORDER FILLED: {order_id} - {size:.4f} {self.config.symbol} @ ${price:.2f}")
 
         # Update position map
         self.position_map.update_order_status(order_id, "filled", price)
@@ -649,18 +641,18 @@ class GridTradingStrategy:
         """
         logger.info(f"Starting main strategy loop for {self.config.symbol}...")
 
-        # Track last cleanup time
-        last_cleanup = asyncio.get_event_loop().time()
+        # Track last order history log time
+        last_history_log = asyncio.get_event_loop().time()
 
         try:
             while self.state == StrategyState.RUNNING:
                 await asyncio.sleep(10)  # Main loop heartbeat
 
-                # Cleanup duplicates every 60 seconds
+                # Log order history every 60 seconds
                 current_time = asyncio.get_event_loop().time()
-                if current_time - last_cleanup >= 60:
-                    await self.cleanup_duplicate_orders()
-                    last_cleanup = current_time
+                if current_time - last_history_log >= 60:
+                    await self._log_order_history()
+                    last_history_log = current_time
 
         except KeyboardInterrupt:
             logger.warning("Strategy interrupted by user")
@@ -668,6 +660,36 @@ class GridTradingStrategy:
             logger.error(f"Strategy error: {e}")
         finally:
             await self.shutdown()
+
+    async def _log_order_history(self) -> None:
+        """Log order history from Hyperliquid for comparison with app logs."""
+        try:
+            fills = self.client.get_order_history(self.config.symbol, limit=20)
+
+            if fills:
+                logger.info("=" * 80)
+                logger.info(f"HYPERLIQUID ORDER HISTORY (last {len(fills)} fills for {self.config.symbol})")
+                logger.info("=" * 80)
+
+                for fill in fills:
+                    side = fill.get("side", "?")
+                    px = fill.get("px", "?")
+                    sz = fill.get("sz", "?")
+                    time_ms = fill.get("time", "?")
+                    oid = fill.get("oid", "?")
+                    fee = fill.get("fee", "?")
+
+                    logger.info(
+                        f"  {side:5} | Size: {sz:10} | Price: ${px:10} | "
+                        f"OID: {oid} | Fee: ${fee} | Time: {time_ms}"
+                    )
+
+                logger.info("=" * 80)
+            else:
+                logger.info(f"No order history found for {self.config.symbol}")
+
+        except Exception as e:
+            logger.error(f"Failed to log order history: {e}")
 
 
     def get_diagnostic_status(self) -> dict:
