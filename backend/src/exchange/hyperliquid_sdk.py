@@ -829,22 +829,49 @@ class HyperliquidClient:
     def get_open_orders(self, symbol: Optional[str] = None) -> list:
         """
         Get all open orders.
-        
+
         Args:
             symbol: Optional symbol to filter by
-            
+
         Returns:
             List of open orders
         """
         try:
             user_state = self.info.user_state(self.get_user_address())
             open_orders = user_state.get("openOrders", [])
-            
+
             if symbol:
                 open_orders = [o for o in open_orders if o.get("coin") == symbol]
-            
+
             return open_orders
-            
+
         except Exception as e:
             logger.error(f"Failed to get open orders: {e}")
+            return []
+
+    def get_order_history(self, symbol: Optional[str] = None, limit: int = 100) -> list:
+        """
+        Get order fill history from Hyperliquid.
+
+        Args:
+            symbol: Optional symbol to filter by
+            limit: Maximum number of fills to retrieve
+
+        Returns:
+            List of filled orders
+        """
+        try:
+            user_address = self.get_user_address()
+            fills = self.info.user_fills(user_address)
+
+            if symbol:
+                fills = [f for f in fills if f.get("coin") == symbol]
+
+            # Limit results
+            fills = fills[:limit] if len(fills) > limit else fills
+
+            return fills
+
+        except Exception as e:
+            logger.error(f"Failed to get order history: {e}")
             return []
