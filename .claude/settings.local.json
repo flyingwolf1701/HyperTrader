@@ -20,7 +20,8 @@
       "Bash(Select-Object -Last 10)",
       "Bash(tasklist)",
       "Bash(findstr:*)",
-      "Bash(Get-Content backend/logs/hypertrader_20*.log -Tail 50)"
+      "Bash(Get-Content backend/logs/hypertrader_20*.log -Tail 50)",
+      "Bash(Get-Content \"C:\\Users\\trini\\Desktop\\software_engineer\\2025\\crypto\\HyperTrader-2\\HyperTrader\\backend\\logs\\hypertrader_2025-10-02_16-13-06_341006.log\" -Tail 100)"
     ],
     "deny": [],
     "ask": [],

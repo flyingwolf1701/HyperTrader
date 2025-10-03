@@ -332,6 +332,9 @@ class GridTradingStrategy:
                     if result:
                         self.trailing_stop.append(unit)
 
+            # Sort so oldest/furthest (most negative) is at index 0
+            self.trailing_stop.sort()
+
             # Maintain 4 sells - cancel oldest if needed
             while len(self.trailing_stop) > 4:
                 oldest_unit = self.trailing_stop.pop(0)
@@ -386,6 +389,8 @@ class GridTradingStrategy:
             result = await self._place_buy_order_at_unit(new_buy_unit)
             if result:
                 self.trailing_buy.append(new_buy_unit)
+                # Sort descending so highest/furthest is at index 0
+                self.trailing_buy.sort(reverse=True)
                 logger.success(f"✅ BUY placed at {new_buy_unit}. Buys: {self.trailing_buy}")
             else:
                 logger.error(f"❌ Failed to place BUY at {new_buy_unit}")
@@ -395,25 +400,49 @@ class GridTradingStrategy:
         """
         Catch-up logic when exiting whipsaw on an UP move.
         Fills in missing sell orders between the furthest sell and current position.
-        Example: If at unit 2 with sells at [-5,-4,-3,-2], add sells at [-1,0] to get [-3,-2,-1,0]
+        Example: If at unit 2 with sells at [-5,-4,-3,-2], add sells at [0,1] to get [-2,-1,0,1]
 
         Args:
             current_unit: The current unit level after breaking out of whipsaw
         """
-        # Target: 4 sells at [current-1, current-2, current-3, current-4]
-        target_units = [current_unit - 1, current_unit - 2, current_unit - 3, current_unit - 4]
+        # Target: 4 sells at [current-4, current-3, current-2, current-1]
+        # After exiting whipsaw upward, we want sells trailing immediately below
+        target_units = [current_unit - 4, current_unit - 3, current_unit - 2, current_unit - 1]
 
-        # Place any missing sells
+        logger.info(f"Catch-up: Current sells {self.trailing_stop}, Target: {target_units}")
+
+        # First, cancel any sells that are too far below (older than target range)
+        # Sort current sells to identify oldest first
+        self.trailing_stop.sort()
+
+        # Remove sells that are below our target range
+        min_target = min(target_units)
+        to_remove = []
+        for unit in self.trailing_stop:
+            if unit < min_target:
+                to_remove.append(unit)
+
+        for unit in to_remove:
+            self.trailing_stop.remove(unit)
+            await self._cancel_orders_at_unit(unit)
+            logger.info(f"Catch-up: Removed old sell at {unit}")
+
+        # Now add missing sells in the target range
         for unit in target_units:
             if unit not in self.trailing_stop:
                 result = await self._place_sell_order_at_unit(unit)
                 if result:
                     self.trailing_stop.append(unit)
+                    logger.info(f"Catch-up: Added sell at {unit}")
 
-        # Maintain exactly 4 sells - cancel oldest if needed
+        # Sort so oldest/furthest (most negative) is at index 0
+        self.trailing_stop.sort()
+
+        # Final safety check - maintain exactly 4 sells
         while len(self.trailing_stop) > 4:
             oldest_unit = self.trailing_stop.pop(0)
             await self._cancel_orders_at_unit(oldest_unit)
+            logger.warning(f"Catch-up: Safety removal of {oldest_unit}")
 
         logger.success(f"✅ Catch-up complete. Sells: {self.trailing_stop}")
 
