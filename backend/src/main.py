@@ -180,21 +180,32 @@ async def main():
         # Run the strategy
         strategy_task = asyncio.create_task(strategy.run())
 
-        # Wait for strategy completion
-        await strategy_task
-
-        # Cancel websocket task
-        websocket_task.cancel()
         try:
-            await websocket_task
-        except asyncio.CancelledError:
-            pass
+            # Wait for strategy completion
+            await strategy_task
+        except (KeyboardInterrupt, asyncio.CancelledError):
+            logger.warning("Received interrupt signal, shutting down...")
+            # Cancel both tasks
+            strategy_task.cancel()
+            websocket_task.cancel()
+            try:
+                await asyncio.gather(strategy_task, websocket_task, return_exceptions=True)
+            except Exception:
+                pass
+
+        # Cancel websocket task if still running
+        if not websocket_task.done():
+            websocket_task.cancel()
+            try:
+                await websocket_task
+            except asyncio.CancelledError:
+                pass
 
         # Disconnect websocket
         await websocket.disconnect()
 
     except KeyboardInterrupt:
-        logger.warning("Received interrupt signal, shutting down...")
+        logger.warning("Received interrupt signal in main handler, shutting down...")
     except Exception as e:
         logger.error(f"Fatal error: {e}", exc_info=True)
     finally:

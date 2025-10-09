@@ -1,6 +1,32 @@
 # HyperTrader
 
+## ⚠️ CRITICAL: Fee Economics Warning
+
+**Trading fees will destroy your capital if you use improper parameters!**
+
+Hyperliquid charges **0.035% per trade** (taker fees). With 4 active grid orders, you'll execute many round-trip trades. **Micro-trading with small positions/unit sizes will bleed capital to fees.**
+
+### Minimum Recommended Parameters
+
+**To keep fees under 1% of profit target:**
+
+| Asset | Min Position | Min Unit Size | Why |
+|-------|-------------|---------------|-----|
+| BTC   | $5,000      | $500          | Fees = $35 per $500 move (7% cost) |
+| ETH   | $3,000      | $100          | Fees = $10.50 per $100 move (10.5% cost) |
+| SOL   | $2,000      | $20           | Fees = $7 per $20 move (35% cost) |
+
+**Golden Rule:** Unit size should be **at least 5% of position value**
+
+- ❌ BAD: $200 position + $50 units = **17.6% fee/profit ratio** (unprofitable)
+- ✅ GOOD: $5,000 position + $500 units = **7% fee/profit ratio** (profitable)
+
+📖 **See `docs/strategy_doc_v11.md` Section 9 for detailed fee analysis and examples**
+
+---
+
 ## Starting the Trading Bot
+
 ``` bash
 .venv\Scripts\activate
 ```
@@ -9,28 +35,37 @@
 
 - `--symbol`: Trading symbol (e.g., SOL, BTC, ETH)
 - `--strategy`: Trading strategy (currently only 'long' is implemented)
-- `--unit-size-usd`: USD per unit movement (e.g., 0.5 = $0.50 price moves)
-- `--position-value-usd`: Total position value in USD (e.g., 100 = $100 position)
+- `--unit-size-usd`: USD per unit movement (e.g., 500 = $500 price moves)
+- `--position-value-usd`: Total position value in USD (e.g., 5000 = $5,000 position)
 - `--leverage`: Leverage multiplier (e.g., 10, 20, 40)
-- `--testnet`: Use testnet (default: True for safety) 
+- `--testnet`: Use testnet (default: True for safety)
 
-**Full Examples:**
+**Recommended Examples (Fee-Optimized):**
 
 ```bash
 cd backend
 
-# Small position on SOL with 10x leverage (testnet by default)
-uv run python src/main.py --symbol SOL --strategy long --unit-size-usd 0.5 --position-value-usd 50 --leverage 10 --testnet
+# Minimum viable BTC position (7% fee ratio)
+uv run python src/main.py --symbol BTC --strategy long --unit-size-usd 500 --position-value-usd 5000 --leverage 40 --testnet
+
+# Minimum viable ETH position (10.5% fee ratio)
+uv run python src/main.py --symbol ETH --strategy long --unit-size-usd 100 --position-value-usd 3000 --leverage 25 --testnet
+
+# Minimum viable SOL position (35% fee ratio - aggressive)
+uv run python src/main.py --symbol SOL --strategy long --unit-size-usd 20 --position-value-usd 2000 --leverage 20 --testnet
+
+# Conservative BTC position (3.5% fee ratio)
+uv run python src/main.py --symbol BTC --strategy long --unit-size-usd 1000 --position-value-usd 10000 --leverage 40 --testnet
+```
+
+**⚠️ DON'T USE THESE (Unprofitable Examples):**
+
+```bash
+# ❌ Micro-trading trap - 17.6% fee ratio, will lose money
 uv run python src/main.py --symbol BTC --strategy long --unit-size-usd 50 --position-value-usd 200 --leverage 40 --testnet
 
-# Medium position on SOL with 20x leverage (testnet)
-uv run python src/main.py --symbol SOL --strategy long --unit-size-usd 0.5 --position-value-usd 2000 --leverage 20 --testnet
-
-# Large position on BTC with 40x leverage (testnet)
-uv run python src/main.py --symbol BTC --strategy long --unit-size-usd 25 --position-value-usd 2000 --leverage 40 --testnet
-
-# Medium position on ETH with 25x leverage
-uv run python src/main.py --symbol ETH --strategy long --unit-size-usd 0.5 --position-value-usd 2500 --leverage 25 --testnet
+# ❌ Too small - 70% fee ratio, extreme losses
+uv run python src/main.py --symbol SOL --strategy long --unit-size-usd 0.5 --position-value-usd 50 --leverage 10 --testnet
 ```
 
 ## Utility Commands

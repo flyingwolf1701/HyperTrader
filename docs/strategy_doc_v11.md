@@ -205,3 +205,144 @@ Dict[order_id: str, unit: int] \
 - **Order List Management**: The active sell and buy orders are managed as sorted lists. When a new order is added, if the list length exceeds four, the oldest order is popped from the list and scheduled for cancellation.
 
 - **Resilience**: On startup, the system must query open orders to reconstruct its state.
+
+## 9. Fee Economics & Profitability
+
+Understanding exchange fees is **critical** to running this strategy profitably. The fee structure directly determines your minimum viable parameters.
+
+### Hyperliquid Fee Structure
+
+- **Taker Orders** (market orders, stop orders): 0.035% fee
+- **Maker Orders** (limit orders that add liquidity): 0% fee + 0.02% rebate
+
+**Important:** This strategy uses **stop orders** (taker fees) for both buys and sells, resulting in 0.035% fee per trade.
+
+### Break-Even Analysis
+
+To profit from a round-trip trade (sell then buy back), you must overcome:
+
+**Round-trip fee cost = 2 × 0.035% = 0.07% of position size**
+
+#### Example: The Micro-Trading Trap
+
+**Bad Setup (Unprofitable):**
+- Position: $200 @ 40x leverage = $8,000 notional
+- Unit size: $50
+- Fragment: 25% = $2,000 notional per trade
+
+**Fee Calculation:**
+- Sell fee: $2,000 × 0.035% = $0.70
+- Buy fee: $2,000 × 0.035% = $0.70
+- **Total round-trip: $1.40 in fees**
+
+**Profit Calculation:**
+- Target profit per unit: $50 (position moves 1 unit)
+- **Actual profit: $50 - $1.40 = $48.60**
+
+This seems okay at first glance, but consider:
+
+**Break-even price move required:**
+- Fee cost / Fragment size = $1.40 / $2,000 = 0.07%
+- On BTC @ $123,000: 0.07% = **$86.15**
+
+**Problem:** You're targeting $50 moves but need $86 moves to break even!
+
+**Fee-to-profit ratio: $1.40 / $50 = 2.8% loss per round trip**
+
+In volatile/choppy markets with whipsaws, you'll execute many round trips and **bleed capital to fees**.
+
+### Recommended Minimum Parameters
+
+To keep fees below 0.5% of profit target:
+
+| Asset | Min Position | Min Unit Size | Fragment Size | Round-Trip Fee | Fee/Profit |
+|-------|-------------|---------------|---------------|----------------|------------|
+| BTC   | $5,000      | $500          | $1,250        | $0.88          | 0.18%      |
+| ETH   | $3,000      | $100          | $750          | $0.53          | 0.53%      |
+| SOL   | $2,000      | $20           | $500          | $0.35          | 1.75%      |
+
+**Why these work:**
+- Larger unit sizes make fees insignificant compared to profit target
+- Adequate position size ensures meaningful absolute dollar amounts
+- Fee-to-profit ratio stays under 2%
+
+### Real-World Scenarios
+
+#### Profitable Example
+
+**Setup:**
+- Asset: BTC @ $123,000
+- Position: $5,000 @ 40x = $200,000 notional
+- Unit size: $500
+- Fragment: 25% = $50,000 per trade
+
+**Trade Cycle:**
+1. Price drops $500 (1 unit) → Sell fragment
+   - Fee: $50,000 × 0.035% = $17.50
+2. Price rises $500 (1 unit) → Buy fragment
+   - Fee: $50,000 × 0.035% = $17.50
+3. **Profit: $500 - $35 = $465 (93% profit retention)**
+
+**Analysis:** Fees are only 7% of profit. Even with whipsaws, you stay profitable.
+
+#### Unprofitable Example (Your Scenario)
+
+**Setup:**
+- Asset: BTC @ $123,000
+- Position: $200 @ 40x = $8,000 notional
+- Unit size: $50
+- Fragment: 25% = $2,000 per trade
+
+**5 Whipsaw Cycles (price oscillates):**
+- 10 trades total (5 sells, 5 buys)
+- Total fees: 10 × $0.70 = **$7.00**
+- Total profit: 5 × $50 = $250
+- Net: $250 - $7 = **$243 (2.8% loss)**
+
+Even if price trends favorably, whipsaws destroy profitability with tiny units.
+
+### Common Mistakes to Avoid
+
+1. **Micro-Trading**: Using unit sizes below $100 (BTC) or $10 (SOL)
+2. **Undersized Positions**: Running < $2,000 positions with high leverage
+3. **Ignoring Whipsaw Impact**: Not accounting for oscillating markets
+4. **Testing with Testnet**: Testnet often has lower liquidity causing more whipsaws
+
+### Optimization Tips
+
+1. **Start Conservative**: Use larger unit sizes until you understand fee impact
+2. **Track Fee Ratios**: Monitor fees/profit in your logs
+3. **Consider Maker Orders**: Future versions could use limit orders (0% fees) for lower frequency
+4. **Backtest First**: Calculate expected fees before going live
+5. **Account for Slippage**: Larger positions may face slippage beyond fees
+
+### Position Sizing Calculator
+
+**Target fee-to-profit ratio: < 1%**
+
+```
+Minimum Unit Size = (Position × 0.25 × 0.0007) / 0.01
+
+Where:
+- Position × 0.25 = Fragment size
+- 0.0007 = Round-trip fee (0.07%)
+- 0.01 = Target 1% fee ratio
+```
+
+**Example for $5,000 position:**
+```
+Min Unit = ($5,000 × 0.25 × 0.0007) / 0.01
+Min Unit = ($1,250 × 0.0007) / 0.01
+Min Unit = $0.875 / 0.01
+Min Unit = $87.50
+```
+
+Round up to reasonable price levels (e.g., $100 for BTC, $10 for SOL).
+
+### Summary: Don't Micro-Trade!
+
+**The golden rule:** Unit size should be at least 5% of your position value to keep fees under 1% of profit.
+
+- $2,000 position → $100+ unit size
+- $5,000 position → $250+ unit size
+- $10,000 position → $500+ unit size

@@ -131,13 +131,15 @@ class GridTradingStrategy:
             # Register unit change callback
             self.unit_tracker.on_unit_change = self._on_unit_change
 
+            # Subscribe to websocket feeds BEFORE placing grid
+            # This ensures fill handler is ready to catch any immediate fills
+            await self._setup_websocket_subscriptions()
+            logger.info("WebSocket subscriptions active, ready to handle fills")
+
             # Place initial grid (4 sell orders below current unit)
             if not await self._place_initial_grid():
                 logger.error("Failed to establish initial grid - aborting initialization")
                 return False
-
-            # Subscribe to websocket feeds
-            await self._setup_websocket_subscriptions()
 
             self.state = StrategyState.RUNNING
             logger.success(f"Strategy initialization complete for {self.config.symbol}")
@@ -165,13 +167,13 @@ class GridTradingStrategy:
             # Calculate sell fragment (1/4 of position)
             fragment_size = self.metrics.current_position_size / 4
 
-            logger.info(f"Placing sell order at unit {unit} (${price:.2f}), size: {fragment_size:.4f} {self.config.symbol}")
+            logger.info(f"Placing sell STOP order at unit {unit} (${price:.2f}), size: {fragment_size:.4f} {self.config.symbol}")
 
-            result = self.client.place_limit_order(
+            result = self.client.place_stop_order(
                 symbol=self.config.symbol,
                 is_buy=False,
-                price=price,
                 size=fragment_size,
+                trigger_price=price,
                 reduce_only=False
             )
 
@@ -463,11 +465,11 @@ class GridTradingStrategy:
         divisor = min(num_active_sells, 4)  # Cap at 4
         fragment_size = self.metrics.current_position_size / divisor
 
-        result = self.client.place_limit_order(
+        result = self.client.place_stop_order(
             symbol=self.config.symbol,
             is_buy=False,
-            price=price,
             size=fragment_size,
+            trigger_price=price,
             reduce_only=False
         )
 
